@@ -87,6 +87,24 @@ def load_llama_model(model_name="meta-llama/Llama-3.1-8B-Instruct"):
         print("Llama model loaded successfully")
     return _llama_model, _llama_tokenizer
 
+# Global variables for Qwen model (lazy loading)
+_qwen_model = None
+_qwen_tokenizer = None
+
+def load_qwen_model(model_name="Qwen/Qwen2.5-7B-Instruct"):
+    """Lazy load Qwen model and tokenizer."""
+    global _qwen_model, _qwen_tokenizer
+    if _qwen_model is None:
+        print(f"Loading Qwen model: {model_name}")
+        _qwen_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        _qwen_model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            device_map="auto"
+        )
+        print("Qwen model loaded successfully")
+    return _qwen_model, _qwen_tokenizer
+
 def completion_with_backoff_llama(**kwargs) -> Dict[str, Any]:
     """Completion function for Llama models using local HuggingFace."""
     try:
@@ -140,6 +158,61 @@ def completion_with_backoff_llama(**kwargs) -> Dict[str, Any]:
         }
     except Exception as e:
         print(f"Error in Llama completion: {e}")
+        return None
+
+def completion_with_backoff_qwen(**kwargs) -> Dict[str, Any]:
+    """Completion function for Qwen models using local HuggingFace."""
+    try:
+        model_name = kwargs.get('model_name', 'Qwen/Qwen2.5-7B-Instruct')
+        messages = kwargs['messages']
+        max_tokens = kwargs.get('max_tokens', 1000)
+        temperature = kwargs.get('temperature', 0.7)
+
+        # Load model
+        model, tokenizer = load_qwen_model(model_name)
+
+        # Format messages for Qwen chat template
+        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+        # Tokenize
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+
+        # Generate
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_tokens,
+                temperature=temperature,
+                do_sample=True if temperature > 0 else False,
+                pad_token_id=tokenizer.eos_token_id
+            )
+
+        # Decode
+        response_text = tokenizer.decode(outputs[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True)
+
+        # Try to fix incomplete JSON by adding missing closing braces
+        response_text = response_text.strip()
+        if response_text.startswith('{'):
+            # Count opening and closing braces
+            open_braces = response_text.count('{')
+            close_braces = response_text.count('}')
+            # Add missing closing braces
+            if open_braces > close_braces:
+                # Add newline for better formatting before closing braces
+                if not response_text.endswith('\n'):
+                    response_text += '\n'
+                response_text += '}' * (open_braces - close_braces)
+
+        # Format response to match OpenAI structure
+        return {
+            'choices': [{
+                'message': {
+                    'content': response_text
+                }
+            }]
+        }
+    except Exception as e:
+        print(f"Error in Qwen completion: {e}")
         return None
 
 def completion_with_backoff(**kwargs) -> Dict[str, Any]:

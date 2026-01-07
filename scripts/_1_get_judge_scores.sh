@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-#SBATCH --job-name=mslr
+#SBATCH --job-name=summeval_qwen
 #SBATCH --partition=nigam-h100
 #SBATCH --nodelist=secure-gpu-14
 #SBATCH --gres=gpu:1
@@ -19,8 +19,8 @@ COND_ENV="pac_judge"
 # Uncomment ONE dataset:
 # DATASET="summeval"
 # DATASET="hanna"
-DATASET="mslr"
-# DATASET="medval"
+# DATASET="mslr"
+DATASET="medval"
 
 # ---------- MODEL OPTIONS ----------
 # Uncomment ONE model:
@@ -34,8 +34,11 @@ DATASET="mslr"
 # MODEL_NAME="claude-3.5-sonnet"
 
 # Llama models (use full HuggingFace path):
-MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct"
+# MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct"
 # MODEL_NAME="meta-llama/Llama-3.1-70B-Instruct"
+
+# Qwen models (use full HuggingFace path):
+MODEL_NAME="Qwen/Qwen2.5-7B-Instruct"
 
 # ==============================================================================
 # AUTO-CONFIGURATION (Do not edit below this line)
@@ -48,6 +51,8 @@ elif [[ "$MODEL_NAME" == *"claude"* ]]; then
     JUDGE_MODEL="anthropic"
 elif [[ "$MODEL_NAME" == *"llama"* ]] || [[ "$MODEL_NAME" == *"meta-llama"* ]]; then
     JUDGE_MODEL="llama"
+elif [[ "$MODEL_NAME" == *"Qwen"* ]] || [[ "$MODEL_NAME" == *"qwen"* ]]; then
+    JUDGE_MODEL="qwen"
 else
     echo "ERROR: Could not infer judge model type from MODEL_NAME: $MODEL_NAME"
     exit 1

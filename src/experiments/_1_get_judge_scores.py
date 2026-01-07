@@ -8,7 +8,7 @@ import argparse
 # Add the src directory to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from utils.api_support_functions import completion_with_backoff, completion_with_backoff_anthropic, completion_with_backoff_llama
+from utils.api_support_functions import completion_with_backoff, completion_with_backoff_anthropic, completion_with_backoff_llama, completion_with_backoff_qwen
 from dataset_classes.summ_eval import SummevalDataset
 from dataset_classes.hanna import HannaDataset
 from dataset_classes.mslr import MSLRDataset
@@ -53,6 +53,25 @@ def evaluate_text(prompt_text: str, judge_model="openai", model_name="gpt-4o", t
 
     elif judge_model == "llama":
         response = completion_with_backoff_llama(
+        messages=[
+            {"role": "system", "content": f"You are an AI assistant tasked with evaluating text."},
+            {"role": "user", "content": prompt_text}
+        ],
+        max_tokens=1000,
+        temperature=temperature,
+        model_name=model_name,
+    )
+        try:
+            evaluation = json.loads(response['choices'][0]['message']['content'])
+            return evaluation
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            print(f"Error parsing LLM response: {e}")
+            print("Raw response:")
+            print(response)
+            return None
+
+    elif judge_model == "qwen":
+        response = completion_with_backoff_qwen(
         messages=[
             {"role": "system", "content": f"You are an AI assistant tasked with evaluating text."},
             {"role": "user", "content": prompt_text}
@@ -170,7 +189,7 @@ def main():
     parser.add_argument('--sample_size', type=int, default=None, help='Number of samples to evaluate (default: all)')
     parser.add_argument('--dataset', type=str, default='summeval', help='Dataset to evaluate (default: summeval)')
     parser.add_argument('--dimension', type=str, default=None, help='Specific dimension to evaluate (default: evaluate all dimensions)')
-    parser.add_argument('--judge_model', type=str, default="openai", help='Judge model type: openai, anthropic, or llama')
+    parser.add_argument('--judge_model', type=str, default="openai", help='Judge model type: openai, anthropic, llama, or qwen')
     parser.add_argument('--model_name', type=str, default="gpt-4o", help='Model name (e.g., gpt-4o, gpt-4o-mini for OpenAI)')
     parser.add_argument('--temperature', type=float, default=None, help='Temperature for model (default: 0.2 if not specified)')
     parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducibility')
