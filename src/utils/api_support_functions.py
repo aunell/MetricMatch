@@ -105,6 +105,24 @@ def load_qwen_model(model_name="Qwen/Qwen2.5-7B-Instruct"):
         print("Qwen model loaded successfully")
     return _qwen_model, _qwen_tokenizer
 
+# Global variables for Gemma model (lazy loading)
+_gemma_model = None
+_gemma_tokenizer = None
+
+def load_gemma_model(model_name="google/gemma-3-1b-it"):
+    """Lazy load Gemma model and tokenizer."""
+    global _gemma_model, _gemma_tokenizer
+    if _gemma_model is None:
+        print(f"Loading Gemma model: {model_name}")
+        _gemma_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        _gemma_model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            device_map="auto"
+        )
+        print("Gemma model loaded successfully")
+    return _gemma_model, _gemma_tokenizer
+
 def completion_with_backoff_llama(**kwargs) -> Dict[str, Any]:
     """Completion function for Llama models using local HuggingFace."""
     try:
@@ -215,6 +233,63 @@ def completion_with_backoff_qwen(**kwargs) -> Dict[str, Any]:
         print(f"Error in Qwen completion: {e}")
         return None
 
+def completion_with_backoff_gemma(**kwargs) -> Dict[str, Any]:
+    """Completion function for Gemma models using local HuggingFace."""
+    try:
+        model_name = kwargs.get('model_name', 'google/gemma-3-1b-it')
+        messages = kwargs['messages']
+        max_tokens = kwargs.get('max_tokens', 1000)
+        temperature = kwargs.get('temperature', 0.7)
+
+        # Load model and tokenizer
+        model, tokenizer = load_gemma_model(model_name)
+
+        # Apply chat template and tokenize
+        inputs = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+        ).to(model.device)
+
+        # Generate
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_tokens,
+                temperature=temperature,
+                do_sample=True if temperature > 0 else False,
+            )
+
+        # Decode only the generated part (skip the input prompt)
+        response_text = tokenizer.decode(outputs[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True)
+
+        # Try to fix incomplete JSON by adding missing closing braces
+        response_text = response_text.strip()
+        if response_text.startswith('{'):
+            # Count opening and closing braces
+            open_braces = response_text.count('{')
+            close_braces = response_text.count('}')
+            # Add missing closing braces
+            if open_braces > close_braces:
+                # Add newline for better formatting before closing braces
+                if not response_text.endswith('\n'):
+                    response_text += '\n'
+                response_text += '}' * (open_braces - close_braces)
+
+        # Format response to match OpenAI structure
+        return {
+            'choices': [{
+                'message': {
+                    'content': response_text
+                }
+            }]
+        }
+    except Exception as e:
+        print(f"Error in Gemma completion: {e}")
+        return None
+
 def completion_with_backoff(**kwargs) -> Dict[str, Any]:
     retry_count = 0
     model_name = kwargs.get('model_name', 'gpt-4o')  # Default to gpt-4o if not specified
@@ -230,6 +305,10 @@ def completion_with_backoff(**kwargs) -> Dict[str, Any]:
                 "messages": kwargs['messages'],
                 "max_tokens": kwargs.get('max_tokens', 1000),
                 "temperature": kwargs.get('temperature', 0.7)
+            }
+            if model_name=="gpt-5":
+                data = {
+                "messages": kwargs['messages'],
             }
             response = requests.post(url, headers=headers, json=data)
             try:

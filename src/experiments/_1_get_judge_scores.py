@@ -8,7 +8,7 @@ import argparse
 # Add the src directory to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from utils.api_support_functions import completion_with_backoff, completion_with_backoff_anthropic, completion_with_backoff_llama, completion_with_backoff_qwen
+from utils.api_support_functions import completion_with_backoff, completion_with_backoff_anthropic, completion_with_backoff_llama, completion_with_backoff_qwen, completion_with_backoff_gemma
 from dataset_classes.summ_eval import SummevalDataset
 from dataset_classes.hanna import HannaDataset
 from dataset_classes.mslr import MSLRDataset
@@ -82,6 +82,39 @@ def evaluate_text(prompt_text: str, judge_model="openai", model_name="gpt-4o", t
     )
         try:
             evaluation = json.loads(response['choices'][0]['message']['content'])
+            return evaluation
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            print(f"Error parsing LLM response: {e}")
+            print("Raw response:")
+            print(response)
+            return None
+
+    elif judge_model == "gemma":
+        # Gemma models don't support system messages, so we prepend it to the user message
+        gemma_prompt = f"You are an AI assistant tasked with evaluating text.\n\n{prompt_text}"
+        response = completion_with_backoff_gemma(
+        messages=[
+            {"role": "user", "content": gemma_prompt}
+        ],
+        max_tokens=1000,
+        temperature=temperature,
+        model_name=model_name,
+    )
+        try:
+            content = response['choices'][0]['message']['content']
+            # Gemma often wraps JSON in markdown code blocks, so extract it
+            if '```json' in content:
+                # Extract JSON from code block
+                json_start = content.find('```json') + 7
+                json_end = content.find('```', json_start)
+                content = content[json_start:json_end].strip()
+            elif '```' in content:
+                # Handle case where it's just ``` without json
+                json_start = content.find('```') + 3
+                json_end = content.find('```', json_start)
+                content = content[json_start:json_end].strip()
+
+            evaluation = json.loads(content)
             return evaluation
         except (json.JSONDecodeError, KeyError, IndexError) as e:
             print(f"Error parsing LLM response: {e}")
@@ -189,7 +222,7 @@ def main():
     parser.add_argument('--sample_size', type=int, default=None, help='Number of samples to evaluate (default: all)')
     parser.add_argument('--dataset', type=str, default='summeval', help='Dataset to evaluate (default: summeval)')
     parser.add_argument('--dimension', type=str, default=None, help='Specific dimension to evaluate (default: evaluate all dimensions)')
-    parser.add_argument('--judge_model', type=str, default="openai", help='Judge model type: openai, anthropic, llama, or qwen')
+    parser.add_argument('--judge_model', type=str, default="openai", help='Judge model type: openai, anthropic, llama, qwen, or gemma')
     parser.add_argument('--model_name', type=str, default="gpt-4o", help='Model name (e.g., gpt-4o, gpt-4o-mini for OpenAI)')
     parser.add_argument('--temperature', type=float, default=None, help='Temperature for model (default: 0.2 if not specified)')
     parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducibility')
