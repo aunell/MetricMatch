@@ -14,7 +14,7 @@ np.random.seed(42)
 # CONFIG
 # -------------------------
 datasets = ["hanna", "medval", "mslr", "summeval"]
-model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct"]
+model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "gpt-5", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
 evaluation_axes = {
     "hanna": ["Coherence", "Complexity", "Empathy", "Engagement", "Relevance", "Surprise"],
     "medval": ["Risk"],
@@ -22,7 +22,7 @@ evaluation_axes = {
     "summeval": ["coherence", "consistency", "fluency", "relevance"]
 }
 
-dataset = "summeval"
+dataset =  "medval" #"summeval" #"hanna" #"medval" #
 DATA_DIR = "data/judge_scores"
 
 # Comparison mode: "pairwise" or "aggregate"
@@ -120,8 +120,8 @@ def icc_from_ms(msb, mse):
     icc = (msb - mse) / msb
 
     # Clip ICC to be between 0 and 1
-    if not np.isnan(icc):
-        icc = np.clip(icc, 0, 1)
+    # if not np.isnan(icc):
+    #     icc = np.clip(icc, 0, 1)
 
     return icc
 
@@ -137,22 +137,38 @@ def compute_variance_alignment(df, model_names, mode="aggregate"):
         model_names: List of model names (excluding "original")
         mode: "aggregate" (all models vs each model+human) or
               "pairwise" (model vs avg(other models) for both IM and HM)
+    
+    Returns:
+        per_model_variance: dict mapping model_name to {im_msb, im_mse, hm_msb, hm_mse}
+        aggregate_stats: dict with overall statistics
     """
+    per_model_variance = {}
+    
     if mode == "aggregate":
         # Original behavior: all models for IM, each model+human for HM
         im_df = df[df["model_name"] != "original"]
-        im_msb, im_mse = compute_ms_components(im_df)
+        im_msb_global, im_mse_global = compute_ms_components(im_df)
 
-        hm_msb_list, hm_mse_list = [], []
         for m in model_names:
             hm_msb, hm_mse = compute_ms_components(
                 df[df["model_name"].isin([m, "original"])]
             )
-            hm_msb_list.append(hm_msb)
-            hm_mse_list.append(hm_mse)
+            per_model_variance[m] = {
+                "im_msb": im_msb_global,
+                "im_mse": im_mse_global,
+                "hm_msb": hm_msb,
+                "hm_mse": hm_mse
+            }
 
         print(f"\nMode: AGGREGATE (k=4 for IM, k=2 for HM)")
-        print(f"Inter-model (all 4 models): MSB={im_msb:.4f}, MSE={im_mse:.4f}")
+        print(f"Inter-model (all 4 models): MSB={im_msb_global:.4f}, MSE={im_mse_global:.4f}")
+
+        aggregate_stats = {
+            "im_msb": im_msb_global,
+            "im_mse": im_mse_global,
+            "hm_msb_list": [per_model_variance[m]["hm_msb"] for m in model_names],
+            "hm_mse_list": [per_model_variance[m]["hm_mse"] for m in model_names]
+        }
 
     elif mode == "pairwise":
         # Fair comparison: each model vs avg(other models) for both IM and HM
@@ -182,31 +198,50 @@ def compute_variance_alignment(df, model_names, mode="aggregate"):
                 im_msb, im_mse = compute_ms_components(im_pair_df)
                 im_msb_list.append(im_msb)
                 im_mse_list.append(im_mse)
+            else:
+                im_msb, im_mse = np.nan, np.nan
+                im_msb_list.append(im_msb)
+                im_mse_list.append(im_mse)
 
-            # Human-model: this model vs human (same as before)
+            # Human-model: this model vs human
             hm_msb, hm_mse = compute_ms_components(
                 df[df["model_name"].isin([m, "original"])]
             )
             hm_msb_list.append(hm_msb)
             hm_mse_list.append(hm_mse)
+            
+            # Store per-model variance
+            per_model_variance[m] = {
+                "im_msb": im_msb,
+                "im_mse": im_mse,
+                "hm_msb": hm_msb,
+                "hm_mse": hm_mse
+            }
 
         print(f"\nMode: PAIRWISE (k=2 for both IM and HM)")
         print(f"Inter-model MSBs (each model vs avg of others): {[f'{x:.4f}' for x in im_msb_list]}")
         print(f"Inter-model MSEs: {[f'{x:.4f}' for x in im_mse_list]}")
-        im_msb = np.mean(im_msb_list)
-        im_mse = np.mean(im_mse_list)
-        print(f"Inter-model mean: MSB={im_msb:.4f}, MSE={im_mse:.4f}")
+        im_msb_mean = np.mean(im_msb_list)
+        im_mse_mean = np.mean(im_mse_list)
+        print(f"Inter-model mean: MSB={im_msb_mean:.4f}, MSE={im_mse_mean:.4f}")
+        
+        aggregate_stats = {
+            "im_msb": im_msb_mean,
+            "im_mse": im_mse_mean,
+            "hm_msb_list": hm_msb_list,
+            "hm_mse_list": hm_mse_list
+        }
 
-    print(f"Human-model MSBs: {[f'{x:.4f}' for x in hm_msb_list]}")
-    print(f"Human-model MSEs: {[f'{x:.4f}' for x in hm_mse_list]}")
+    print(f"Human-model MSBs: {[f'{x:.4f}' for x in aggregate_stats['hm_msb_list']]}")
+    print(f"Human-model MSEs: {[f'{x:.4f}' for x in aggregate_stats['hm_mse_list']]}")
 
-    if len(hm_msb_list) > 1:
-        print(f"\nMSB: IM={im_msb:.4f}, HM mean={np.mean(hm_msb_list):.4f}")
-        print(f"MSE: IM={im_mse:.4f}, HM mean={np.mean(hm_mse_list):.4f}")
+    if len(aggregate_stats['hm_msb_list']) > 1:
+        print(f"\nMSB: IM={aggregate_stats['im_msb']:.4f}, HM mean={np.mean(aggregate_stats['hm_msb_list']):.4f}")
+        print(f"MSE: IM={aggregate_stats['im_mse']:.4f}, HM mean={np.mean(aggregate_stats['hm_mse_list']):.4f}")
 
-    return im_msb, im_mse, hm_msb_list, hm_mse_list
+    return per_model_variance, aggregate_stats
 
-im_msb, im_mse, hm_msb_list, hm_mse_list = compute_variance_alignment(df, model_names, mode=COMPARISON_MODE)
+per_model_variance, aggregate_stats = compute_variance_alignment(df, model_names, mode=COMPARISON_MODE)
 
 # -------------------------
 # ICC ESTIMATION EXPERIMENT
@@ -214,28 +249,42 @@ im_msb, im_mse, hm_msb_list, hm_mse_list = compute_variance_alignment(df, model_
 def evaluate_icc_estimators(
     df,
     model_names,
+    per_model_variance,
     budgets=range(5, 55, 5),
     n_trials=100
 ):
     results = []
 
-    # Compute full population inter-model variance
-    im_full_df = df[df["model_name"] != "original"]
-    im_full_msb, im_full_mse, _, _ = compute_variance_alignment(df, model_names, mode=COMPARISON_MODE) #compute_ms_components(im_full_df)
-    im_full_icc = icc_from_ms(im_full_msb, im_full_mse)
-
-    # Get per-item inter-model variance for stratified sampling
-    im_text_vars = {}
-    for text_id in im_full_df["text_id"].unique():
-        text_scores = im_full_df[im_full_df["text_id"] == text_id]["evaluation_score"]
-        im_text_vars[text_id] = text_scores.var() if len(text_scores) > 1 else 0
-
     for model in model_names:
+        # Get this model's specific inter-model variance components
+        im_msb_target = per_model_variance[model]["im_msb"]
+        im_mse_target = per_model_variance[model]["im_mse"]
+        
         hm_full_df = df[df["model_name"].isin([model, "original"])]
         true_msb, true_mse = compute_ms_components(hm_full_df)
         true_icc = icc_from_ms(true_msb, true_mse)
 
         text_ids = hm_full_df["text_id"].unique()
+        
+        # Get inter-model data for variance matching
+        if COMPARISON_MODE == "pairwise":
+            # For pairwise mode, recreate the model vs avg(others) dataset
+            other_models = [x for x in model_names if x != model]
+            im_subset = df[df["model_name"].isin(model_names)].copy()
+            
+            im_full_df = []
+            for text_id in im_subset["text_id"].unique():
+                text_data = im_subset[im_subset["text_id"] == text_id]
+                model_score = text_data[text_data["model_name"] == model]["evaluation_score"]
+                if len(model_score) > 0:
+                    im_full_df.append({"text_id": text_id, "model_name": model, "evaluation_score": model_score.iloc[0]})
+                other_scores = text_data[text_data["model_name"].isin(other_models)]["evaluation_score"]
+                if len(other_scores) > 0:
+                    im_full_df.append({"text_id": text_id, "model_name": "avg_other", "evaluation_score": other_scores.mean()})
+            im_full_df = pd.DataFrame(im_full_df)
+        else:
+            # For aggregate mode, use all models
+            im_full_df = df[df["model_name"] != "original"]
 
         for k in budgets:
             # Random baseline
@@ -263,10 +312,10 @@ def evaluate_icc_estimators(
                     "estimation_error": np.mean(random_errors)
                 })
 
-            # Variance-matched: select subset that best matches population IM variance
+            # Variance-matched: select subset that best matches THIS MODEL's IM variance
             matched_errors = []
             for _ in range(n_trials):
-                # Try multiple random subsets and pick the one with variance closest to population
+                # Try multiple random subsets and pick the one with variance closest to this model's IM variance
                 best_ids = None
                 best_score = float('inf')
 
@@ -283,9 +332,9 @@ def evaluate_icc_estimators(
                         cand_msb, cand_mse = compute_ms_components(im_candidate)
 
                         if np.isfinite(cand_msb) and np.isfinite(cand_mse):
-                            # Score: how well does this subset match population variance?
-                            msb_diff = abs(cand_msb - im_full_msb)
-                            mse_diff = abs(cand_mse - im_full_mse)
+                            # Score: how well does this subset match THIS MODEL's population variance?
+                            msb_diff = abs(cand_msb - im_msb_target)
+                            mse_diff = abs(cand_mse - im_mse_target)
                             score = msb_diff + mse_diff  # Could also use weighted combination
 
                             if score < best_score:
@@ -319,7 +368,7 @@ def main():
     print("\n" + "="*50)
     print("Running ICC estimation experiment...")
     print("="*50)
-    results = evaluate_icc_estimators(df, model_names)
+    results = evaluate_icc_estimators(df, model_names, per_model_variance)
 
     print(f"\nTotal results collected: {len(results)}")
     print(f"Results by method:")
@@ -382,6 +431,7 @@ def plot_results(results):
 
     avg_results = compute_model_cis(results)
 
+    # Plot 1: Averaged across all models
     plt.figure(figsize=(10, 6))
 
     # Plot each method separately with 95% CI error bars
@@ -401,12 +451,69 @@ def plot_results(results):
 
     plt.ylabel("Absolute ICC Error (avg across models)", fontsize=12)
     plt.xlabel("Human Annotation Budget", fontsize=12)
-    plt.title("ICC Estimation: Random vs Variance-Matched\n(Averaged over all models with 95% CI)", fontsize=13)
+    plt.title(f"{dataset} ICC Estimation: Random vs Variance-Matched\n(Averaged over all models with 95% CI)", fontsize=13)
     plt.legend(title="Method", fontsize=11)
     plt.grid(alpha=0.3)
     plt.tight_layout()
-    plt.savefig("icc_estimation_comparison.jpg", dpi=300)
+    plt.savefig(f"{dataset}_icc_estimation_comparison.jpg", dpi=300)
     plt.close()
+    print(f"Saved averaged plot: {dataset}_icc_estimation_comparison.jpg")
+
+    # Plot 2-N: Individual plots for each model
+    for model in results["model"].unique():
+        model_results = results[results["model"] == model]
+        
+        plt.figure(figsize=(10, 6))
+        
+        for method in model_results["method"].unique():
+            method_data = model_results[model_results["method"] == method]
+            
+            # Group by budget and compute mean and CI
+            budget_stats = []
+            for budget in sorted(method_data["budget"].unique()):
+                budget_data = method_data[method_data["budget"] == budget]
+                errors = budget_data["estimation_error"].values
+                
+                if len(errors) > 0:
+                    mean_error = errors.mean()
+                    if len(errors) > 1:
+                        ci_half_width = stats.sem(errors) * stats.t.ppf(0.975, len(errors) - 1)
+                    else:
+                        ci_half_width = 0
+                    
+                    budget_stats.append({
+                        "budget": budget,
+                        "mean": mean_error,
+                        "ci_half_width": ci_half_width
+                    })
+            
+            if budget_stats:
+                budget_df = pd.DataFrame(budget_stats)
+                plt.errorbar(
+                    budget_df["budget"],
+                    budget_df["mean"],
+                    yerr=budget_df["ci_half_width"],
+                    marker='o',
+                    linewidth=2.5,
+                    capsize=5,
+                    capthick=2,
+                    label=method,
+                    alpha=0.8
+                )
+        
+        plt.ylabel("Absolute ICC Error", fontsize=12)
+        plt.xlabel("Human Annotation Budget", fontsize=12)
+        plt.title(f"{dataset} ICC Estimation: {model}\n(Random vs Variance-Matched with 95% CI)", fontsize=13)
+        plt.legend(title="Method", fontsize=11)
+        plt.grid(alpha=0.3)
+        plt.tight_layout()
+        
+        # Clean model name for filename
+        safe_model_name = model.replace("/", "-").replace("\\", "-")
+        plt.savefig(f"{dataset}_icc_estimation_{safe_model_name}.jpg", dpi=300)
+        plt.close()
+        
+        print(f"Saved plot for model: {model} -> {dataset}_icc_estimation_{safe_model_name}.jpg")
 
     print("\n" + "="*50)
     print("Average ICC Estimation Error by Method and Budget (Mean with 95% CI)")
