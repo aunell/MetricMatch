@@ -49,7 +49,7 @@ def compute_pointwise_ms(data: pd.DataFrame, targets: str = "text_id", raters: s
     return msb_expand, msb, mse_partial_expand, mse
 
 datasets = ["hanna", "medval", "mslr", "summeval"]
-model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct"]
+model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "gpt-5", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
 evaluation_axes = {
     "hanna": ["Coherence", "Complexity", "Empathy", "Engagement", "Relevance", "Surprise"],
     "medval": ["Risk"],
@@ -57,7 +57,7 @@ evaluation_axes = {
     "summeval": ["coherence", "consistency", "fluency", "relevance"]
 }
 
-dataset = "summeval"
+dataset = "hanna" #"mslr" #"summeval" 
 mode = "pairwise" #"pairwise"  # "aggregate" or "pairwise"
 
 plotpath = os.path.join(os.getcwd(), "plots")

@@ -22,7 +22,7 @@ evaluation_axes = {
     "summeval": ["coherence", "consistency", "fluency", "relevance"]
 }
 
-dataset =  "medval" #"summeval" #"hanna" #"medval" #
+dataset =  "summeval" #"summeval" #"hanna" #"medval" #
 DATA_DIR = "data/judge_scores"
 
 # Comparison mode: "pairwise" or "aggregate"
@@ -57,6 +57,7 @@ for model_name in model_names:
             r = {k: v for k, v in r.items() if k != "evaluation"}
             r["evaluation_score"] = score
             r["model_name"] = model_name
+            r["evaluation_axis"] = ev_ax  # Add axis information
             rows.append(r)
 
         dfs.append(pd.DataFrame(rows))
@@ -65,18 +66,18 @@ df = pd.concat(dfs, ignore_index=True)
 
 # Add human ("original") scores
 text_info = (
-    df[["text_id", "input_text", "source_text", "original_score"]]
+    df[["text_id", "input_text", "source_text", "original_score", "evaluation_axis"]]
     .drop_duplicates()
 )
 
 human_df = (
-    text_info[["text_id", "original_score"]]
+    text_info[["text_id", "original_score", "evaluation_axis"]]
     .rename(columns={"original_score": "evaluation_score"})
 )
 human_df["model_name"] = "original"
 
 df = pd.concat(
-    [df[["text_id", "model_name", "evaluation_score"]], human_df],
+    [df[["text_id", "model_name", "evaluation_score", "evaluation_axis"]], human_df],
     ignore_index=True
 )
 
@@ -91,22 +92,21 @@ def compute_ms_components(data):
     if n <= 1 or k <= 1:
         return np.nan, np.nan
 
-    s = data.groupby("text_id")["evaluation_score"].mean()
-    m = data.groupby("model_name")["evaluation_score"].mean()
+    # Cache groupby results to avoid repeated computation
+    grouped_by_text = data.groupby("text_id")["evaluation_score"]
+    grouped_by_model = data.groupby("model_name")["evaluation_score"]
+
+    s = grouped_by_text.mean()
+    m = grouped_by_model.mean()
     xbar = data["evaluation_score"].mean()
 
     msb = (k / (n - 1)) * ((s - xbar) ** 2).sum()
 
-    # MSE: within-text variance
-    mse_vals = []
-    for text_id, group in data.groupby("text_id"):
-        scores = group.set_index("model_name")["evaluation_score"]
-        # For each rater in this text, compute squared deviation from rater's overall mean
-        for rater, score in scores.items():
-            if rater in m.index:
-                mse_vals.append((score - m[rater]) ** 2)
-
-    mse = np.mean(mse_vals) if mse_vals else np.nan
+    # MSE: within-text variance - vectorized approach
+    # Merge model means back to original data for vectorized computation
+    data_with_means = data.merge(m.rename("model_mean"), left_on="model_name", right_index=True, how="left")
+    mse_vals = (data_with_means["evaluation_score"] - data_with_means["model_mean"]) ** 2
+    mse = mse_vals.mean()
 
     return msb, mse
 
@@ -119,9 +119,7 @@ def icc_from_ms(msb, mse):
     # ICC(3,k) = (MSB - MSE) / MSB = 1 - MSE/MSB
     icc = (msb - mse) / msb
 
-    # Clip ICC to be between 0 and 1
-    # if not np.isnan(icc):
-    #     icc = np.clip(icc, 0, 1)
+
 
     return icc
 
@@ -175,21 +173,24 @@ def compute_variance_alignment(df, model_names, mode="aggregate"):
         im_msb_list, im_mse_list = [], []
         hm_msb_list, hm_mse_list = [], []
 
+        # Pre-filter to only model data (avoid repeated filtering in loop)
+        im_subset = df[df["model_name"].isin(model_names)].copy()
+        # Group by text_id once for efficiency
+        im_grouped = im_subset.groupby("text_id")
+
         for m in model_names:
             other_models = [x for x in model_names if x != m]
 
             # Inter-model: this model vs avg of other models
-            im_subset = df[df["model_name"].isin(model_names)].copy()
-            # Create "avg_other" pseudo-rater
+            # Create "avg_other" pseudo-rater using vectorized operations
             im_avg_df = []
-            for text_id in im_subset["text_id"].unique():
-                text_data = im_subset[im_subset["text_id"] == text_id]
+            for text_id, text_data in im_grouped:
                 # Current model score
-                model_score = text_data[text_data["model_name"] == m]["evaluation_score"]
+                model_score = text_data.loc[text_data["model_name"] == m, "evaluation_score"]
                 if len(model_score) > 0:
                     im_avg_df.append({"text_id": text_id, "model_name": m, "evaluation_score": model_score.iloc[0]})
                 # Avg of other models
-                other_scores = text_data[text_data["model_name"].isin(other_models)]["evaluation_score"]
+                other_scores = text_data.loc[text_data["model_name"].isin(other_models), "evaluation_score"]
                 if len(other_scores) > 0:
                     im_avg_df.append({"text_id": text_id, "model_name": "avg_other", "evaluation_score": other_scores.mean()})
 
@@ -209,7 +210,7 @@ def compute_variance_alignment(df, model_names, mode="aggregate"):
             )
             hm_msb_list.append(hm_msb)
             hm_mse_list.append(hm_mse)
-            
+
             # Store per-model variance
             per_model_variance[m] = {
                 "im_msb": im_msb,
@@ -251,9 +252,14 @@ def evaluate_icc_estimators(
     model_names,
     per_model_variance,
     budgets=range(5, 55, 5),
-    n_trials=100
+    n_trials=100,
+    evaluation_axis=None  # Optional: filter by evaluation axis
 ):
     results = []
+
+    # Filter by axis if specified
+    if evaluation_axis is not None:
+        df = df[df["evaluation_axis"] == evaluation_axis].copy()
 
     for model in model_names:
         # Get this model's specific inter-model variance components
@@ -271,14 +277,15 @@ def evaluate_icc_estimators(
             # For pairwise mode, recreate the model vs avg(others) dataset
             other_models = [x for x in model_names if x != model]
             im_subset = df[df["model_name"].isin(model_names)].copy()
-            
+
+            # Group once outside the loop for efficiency
+            im_grouped = im_subset.groupby("text_id")
             im_full_df = []
-            for text_id in im_subset["text_id"].unique():
-                text_data = im_subset[im_subset["text_id"] == text_id]
-                model_score = text_data[text_data["model_name"] == model]["evaluation_score"]
+            for text_id, text_data in im_grouped:
+                model_score = text_data.loc[text_data["model_name"] == model, "evaluation_score"]
                 if len(model_score) > 0:
                     im_full_df.append({"text_id": text_id, "model_name": model, "evaluation_score": model_score.iloc[0]})
-                other_scores = text_data[text_data["model_name"].isin(other_models)]["evaluation_score"]
+                other_scores = text_data.loc[text_data["model_name"].isin(other_models), "evaluation_score"]
                 if len(other_scores) > 0:
                     im_full_df.append({"text_id": text_id, "model_name": "avg_other", "evaluation_score": other_scores.mean()})
             im_full_df = pd.DataFrame(im_full_df)
@@ -368,6 +375,8 @@ def main():
     print("\n" + "="*50)
     print("Running ICC estimation experiment...")
     print("="*50)
+
+    # Run experiment for all axes combined
     results = evaluate_icc_estimators(df, model_names, per_model_variance)
 
     print(f"\nTotal results collected: {len(results)}")
@@ -376,13 +385,26 @@ def main():
         count = len(results[results["method"] == method])
         print(f"  {method}: {count}")
 
-    return results
+    # Run experiment for each axis separately
+    results_by_axis = {}
+    for axis in evaluation_axes[dataset]:
+        print(f"\n{'='*50}")
+        print(f"Running for axis: {axis}")
+        print(f"{'='*50}")
+        axis_results = evaluate_icc_estimators(
+            df, model_names, per_model_variance, evaluation_axis=axis
+        )
+        results_by_axis[axis] = axis_results
+        print(f"Collected {len(axis_results)} results for {axis}")
+
+    return results, results_by_axis
 
 if __name__ == "__main__":
-    results = main()
+    results, results_by_axis = main()
 else:
     # When imported, just compute variance alignment
     results = None
+    results_by_axis = None
 
 # -------------------------
 # PLOTS
@@ -423,15 +445,23 @@ def compute_model_cis(results_df):
 
     return pd.DataFrame(ci_data)
 
-def plot_results(results):
-    """Generate plots and summary tables."""
+def plot_results(results, results_by_axis=None):
+    """Generate plots and summary tables.
+
+    Creates three sets of plots:
+    1. Averaged across both axis and model (1 plot)
+    2. Averaged across axis only (k plots, where k = number of models)
+    3. Averaged across model only (m plots, where m = number of evaluation axes)
+    """
     if results is None or len(results) == 0:
         print("\nNo results to plot.")
         return
 
+    # =====================================
+    # SET 1: Averaged across axis AND model (1 plot)
+    # =====================================
     avg_results = compute_model_cis(results)
 
-    # Plot 1: Averaged across all models
     plt.figure(figsize=(10, 6))
 
     # Plot each method separately with 95% CI error bars
@@ -449,17 +479,21 @@ def plot_results(results):
             alpha=0.8
         )
 
-    plt.ylabel("Absolute ICC Error (avg across models)", fontsize=12)
+    plt.ylabel("Absolute ICC Error (avg across models & axes)", fontsize=12)
     plt.xlabel("Human Annotation Budget", fontsize=12)
-    plt.title(f"{dataset} ICC Estimation: Random vs Variance-Matched\n(Averaged over all models with 95% CI)", fontsize=13)
+    plt.title(f"{dataset} ICC Estimation: Random vs Variance-Matched\n(Averaged over all models & axes with 95% CI)", fontsize=13)
     plt.legend(title="Method", fontsize=11)
     plt.grid(alpha=0.3)
     plt.tight_layout()
-    plt.savefig(f"{dataset}_icc_estimation_comparison.jpg", dpi=300)
+    plt.savefig(f"{dataset}_icc_estimation_comparison_avg_all.jpg", dpi=300)
     plt.close()
-    print(f"Saved averaged plot: {dataset}_icc_estimation_comparison.jpg")
+    print(f"\n[SET 1: Avg across axis AND model]")
+    print(f"  Saved: {dataset}_icc_estimation_comparison_avg_all.jpg")
 
-    # Plot 2-N: Individual plots for each model
+    # =====================================
+    # SET 2: Averaged across axis only (k model plots)
+    # =====================================
+    print(f"\n[SET 2: Avg across axis only - {len(results['model'].unique())} model plots]")
     for model in results["model"].unique():
         model_results = results[results["model"] == model]
         
@@ -501,22 +535,68 @@ def plot_results(results):
                     alpha=0.8
                 )
         
-        plt.ylabel("Absolute ICC Error", fontsize=12)
+        plt.ylabel("Absolute ICC Error (avg across axes)", fontsize=12)
         plt.xlabel("Human Annotation Budget", fontsize=12)
-        plt.title(f"{dataset} ICC Estimation: {model}\n(Random vs Variance-Matched with 95% CI)", fontsize=13)
+        plt.title(f"{dataset} ICC Estimation: {model}\n(Averaged across axes with 95% CI)", fontsize=13)
         plt.legend(title="Method", fontsize=11)
         plt.grid(alpha=0.3)
         plt.tight_layout()
         
         # Clean model name for filename
         safe_model_name = model.replace("/", "-").replace("\\", "-")
-        plt.savefig(f"{dataset}_icc_estimation_{safe_model_name}.jpg", dpi=300)
+        plt.savefig(f"{dataset}_icc_estimation_by_model_{safe_model_name}.jpg", dpi=300)
         plt.close()
         
-        print(f"Saved plot for model: {model} -> {dataset}_icc_estimation_{safe_model_name}.jpg")
+        print(f"  Saved: {dataset}_icc_estimation_by_model_{safe_model_name}.jpg")
 
+    # =====================================
+    # SET 3: Averaged across model only (m axis plots)
+    # =====================================
+    if results_by_axis is not None and len(results_by_axis) > 0:
+        print(f"\n[SET 3: Avg across model only - {len(results_by_axis)} axis plots]")
+        for axis, axis_results in results_by_axis.items():
+            if axis_results is None or len(axis_results) == 0:
+                continue
+
+            avg_axis_results = compute_model_cis(axis_results)
+
+            plt.figure(figsize=(10, 6))
+
+            # Plot each method separately with 95% CI error bars
+            for method in avg_axis_results["method"].unique():
+                method_data = avg_axis_results[avg_axis_results["method"] == method]
+                plt.errorbar(
+                    method_data["budget"],
+                    method_data["mean"],
+                    yerr=method_data["ci_half_width"],
+                    marker='o',
+                    linewidth=2.5,
+                    capsize=5,
+                    capthick=2,
+                    label=method,
+                    alpha=0.8
+                )
+
+            plt.ylabel("Absolute ICC Error (avg across models)", fontsize=12)
+            plt.xlabel("Human Annotation Budget", fontsize=12)
+            plt.title(f"{dataset} ICC Estimation: {axis}\n(Averaged across models with 95% CI)", fontsize=13)
+            plt.legend(title="Method", fontsize=11)
+            plt.grid(alpha=0.3)
+            plt.tight_layout()
+
+            # Clean axis name for filename
+            safe_axis_name = axis.replace("/", "-").replace("\\", "-").replace(" ", "_")
+            plt.savefig(f"{dataset}_icc_estimation_by_axis_{safe_axis_name}.jpg", dpi=300)
+            plt.close()
+
+            print(f"  Saved: {dataset}_icc_estimation_by_axis_{safe_axis_name}.jpg")
+
+    # =====================================
+    # Summary table
+    # =====================================
     print("\n" + "="*50)
     print("Average ICC Estimation Error by Method and Budget (Mean with 95% CI)")
+    print("(Averaged across all models and axes)")
     print("="*50)
 
     # Create a nicer formatted table
@@ -530,4 +610,4 @@ def plot_results(results):
             print(f"  Budget {int(row['budget']):2d}: {row['formatted']}")
 
 if __name__ == "__main__":
-    plot_results(results)
+    plot_results(results, results_by_axis)
