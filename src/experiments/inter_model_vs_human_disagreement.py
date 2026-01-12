@@ -30,6 +30,15 @@ from typing import Dict, List, Tuple
 import warnings
 warnings.filterwarnings('ignore')
 
+# -------------------------
+# CONFIG
+# -------------------------
+# Default plots output directory - change this to specify where plots should be saved
+DEFAULT_PLOTS_DIR = "results/plots"  # Default: results/plots
+# Alternative examples:
+# DEFAULT_PLOTS_DIR = "01_11_plots"
+# DEFAULT_PLOTS_DIR = "/path/to/custom/plots/directory"
+
 
 def get_available_models(base_dir: Path, dataset_name: str, dimension: str) -> List[str]:
     """
@@ -329,7 +338,7 @@ def main():
     """Main analysis function."""
 
     base_dir = Path("/share/pi/nigam/users/aunell/SmartSample_local/data/judge_scores")
-    output_dir = Path("/share/pi/nigam/users/aunell/SmartSample_local/results/inter_model_disagreement_analysis")
+    output_dir = Path(DEFAULT_PLOTS_DIR)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Define datasets and dimensions

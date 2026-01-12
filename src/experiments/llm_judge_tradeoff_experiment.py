@@ -28,6 +28,15 @@ from typing import Tuple, Dict, List
 sys.path.append(str(Path(__file__).parent.parent))
 from utils.calculate_icc import calculate_icc
 
+# -------------------------
+# CONFIG
+# -------------------------
+# Default plots output directory - change this to specify where plots should be saved
+DEFAULT_PLOTS_DIR = "results/plots"  # Default: results/plots
+# Alternative examples:
+# DEFAULT_PLOTS_DIR = "01_11_plots"
+# DEFAULT_PLOTS_DIR = "/path/to/custom/plots/directory"
+
 def generate_human_ratings(n_items: int, n_raters: int, true_icc: float,
                           random_state: int = None) -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -499,7 +508,7 @@ if __name__ == "__main__":
     # Rater counts must be <= N_TOTAL_RATERS
     RATER_COUNTS = [1, 2, 3, 4, 5, 6, 8, 10, 20]
 
-    OUTPUT_DIR = 'results/llm_judge_tradeoff'
+    OUTPUT_DIR = DEFAULT_PLOTS_DIR
 
     print("="*80)
     print("LLM JUDGE VS HUMAN RATERS: ICC ESTIMATION ERROR EXPERIMENT")

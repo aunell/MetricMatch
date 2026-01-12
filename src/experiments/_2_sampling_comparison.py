@@ -15,6 +15,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from utils.calculate_icc import calculate_icc
 from utils.selection_strategies import *
 
+# -------------------------
+# CONFIG
+# -------------------------
+# Default plots output directory - change this to specify where plots should be saved
+# This is used as the default when --images_dir is not provided
+DEFAULT_PLOTS_DIR = "results/plots"  # Default: results/plots
+# Alternative examples:
+# DEFAULT_PLOTS_DIR = "01_11_plots"
+# DEFAULT_PLOTS_DIR = "/path/to/custom/plots/directory"
+
 # ------------------------
 # Data Loading
 # ------------------------
@@ -324,7 +334,7 @@ if __name__ == "__main__":
     dataset_size = args.dataset_size
     n_rollouts = args.n_rollouts
     JUDGE_SCORES_DIR = args.judge_scores_dir
-    IMAGES_DIR = args.images_dir or f"results/{DATE}-{model_name}-rwe-icc-results-{dataset_size}"
+    IMAGES_DIR = args.images_dir or DEFAULT_PLOTS_DIR
 
     calculate_icc_fn = calculate_icc
 

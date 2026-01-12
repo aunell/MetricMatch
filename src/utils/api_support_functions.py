@@ -4,6 +4,7 @@ import time
 from typing import Dict, Any
 import tiktoken
 import torch
+import json
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 # Azure OpenAI settings
@@ -289,6 +290,106 @@ def completion_with_backoff_gemma(**kwargs) -> Dict[str, Any]:
     except Exception as e:
         print(f"Error in Gemma completion: {e}")
         return None
+
+def completion_with_backoff_gemini(**kwargs) -> Dict[str, Any]:
+    """Completion function for Gemini models using Stanford Healthcare API."""
+    retry_count = 0
+    while True:
+        retry_count += 1
+        try:
+            url = "https://apim.stanfordhealthcare.org/gemini-25-pro/gemini-25-pro"
+            headers = {
+                "Ocp-Apim-Subscription-Key": OPENAI_API_KEY,
+                "Content-Type": 'application/json'
+            }
+            # Extract text from messages - combine system and user messages
+            messages = kwargs['messages']
+            combined_text = ""
+            for msg in messages:
+                if msg['role'] == 'system':
+                    combined_text += msg['content'] + "\n\n"
+                elif msg['role'] == 'user':
+                    combined_text += msg['content']
+
+            data = {
+                "contents": [
+                    {
+                    "role": "user",
+                    "parts": [
+                    {
+                    "text": combined_text,
+                    }
+                    ]
+                    }
+                    ]
+                }
+
+            # Add generation config if temperature or max_tokens provided
+            generation_config = {}
+            if 'temperature' in kwargs and kwargs['temperature'] is not None:
+                generation_config['temperature'] = kwargs['temperature']
+            if 'max_tokens' in kwargs and kwargs['max_tokens'] is not None:
+                generation_config['maxOutputTokens'] = kwargs['max_tokens']
+            if generation_config:
+                data['generationConfig'] = generation_config
+            # Pass data directly to json parameter - don't double-encode with json.dumps
+            response = requests.post(url, headers=headers, json=data)
+            try:
+                response.raise_for_status()
+            except requests.exceptions.HTTPError as http_err:
+                print(f"HTTP error occurred: {http_err}")
+                print(f"Response text: {response.text}")
+                # If it's a 400 error, likely a content policy violation or malformed request, skip this prompt
+                if response.status_code == 400:
+                    print("400 error encountered. Skipping this prompt.")
+                    return None
+                # If it's a 429 error, rate limit, retry
+                if response.status_code == 429:
+                    print("429 Rate limit hit. Retrying after delay.")
+                    time.sleep(10)
+                    continue
+                # For other errors, retry up to 3 times
+                if retry_count > 3:
+                    return {}
+                time.sleep(10)
+                continue
+
+            # Transform Gemini response format to OpenAI format for compatibility
+            gemini_response = response.json()
+
+            # Handle case where response is a list (Gemini returns a list with one element)
+            if isinstance(gemini_response, list) and len(gemini_response) > 0:
+                gemini_response = gemini_response[0]
+
+            # Debug: print the response structure if it's not what we expect
+            try:
+                text_content = gemini_response['candidates'][0]['content']['parts'][0]['text']
+            except (KeyError, TypeError, IndexError) as e:
+                print(f"Unexpected Gemini response structure: {e}")
+                print(f"Response: {gemini_response}")
+                # Try to handle error responses
+                if isinstance(gemini_response, dict) and 'error' in gemini_response:
+                    print(f"Gemini API error: {gemini_response.get('error')}")
+                    return None
+                raise
+
+            return {
+                'choices': [{
+                    'message': {
+                        'content': text_content
+                    }
+                }]
+            }
+        except requests.exceptions.RequestException as error:
+            print(f"Error: {error}")
+            if hasattr(error, 'response') and error.response is not None:
+                print("Response text:", error.response.text)
+                if getattr(error.response, 'status_code', None) == 400:
+                    print("400 error encountered. Skipping this prompt.")
+                    return None
+            if retry_count > 3:
+                return {}
+            time.sleep(10)
 
 def completion_with_backoff(**kwargs) -> Dict[str, Any]:
     retry_count = 0

@@ -6,6 +6,15 @@ import numpy as np
 from scipy.stats import f
 import matplotlib.pyplot as plt
 
+# -------------------------
+# CONFIG
+# -------------------------
+# Default plots output directory - change this to specify where plots should be saved
+DEFAULT_PLOTS_DIR = "results/plots"  # Default: results/plots
+# Alternative examples:
+# DEFAULT_PLOTS_DIR = "01_11_plots"
+# DEFAULT_PLOTS_DIR = "/path/to/custom/plots/directory"
+
 # Dataset name mapping (used across plotting functions)
 DATASET_NAMES = {
     "hanna": "HANNA",
@@ -358,8 +367,7 @@ if __name__ == "__main__":
 
     # Construct base directory if not provided
     if args.base_dir is None:
-        date = datetime.datetime.now().strftime("%Y-%m-%d")
-        base_dir = f"../results/images/{date}-rwe-icc-results-{args.n_subjects}"
+        base_dir = DEFAULT_PLOTS_DIR
     else:
         base_dir = args.base_dir
 

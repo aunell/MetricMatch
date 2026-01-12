@@ -11,6 +11,15 @@ from scipy.stats import pearsonr
 import matplotlib.pyplot as plt
 import seaborn as sb
 
+# -------------------------
+# CONFIG
+# -------------------------
+# Default plots output directory - change this to specify where plots should be saved
+DEFAULT_PLOTS_DIR = "results/plots"  # Default: results/plots
+# Alternative examples:
+# DEFAULT_PLOTS_DIR = "01_11_plots"
+# DEFAULT_PLOTS_DIR = "/path/to/custom/plots/directory"
+
 ## Util function for obtaining evaluation score with differing data organization 
 def get_deepest_key(d):
     if not isinstance(d, dict) or not d:
@@ -57,11 +66,10 @@ evaluation_axes = {
     "summeval": ["coherence", "consistency", "fluency", "relevance"]
 }
 
-dataset = "hanna" #"mslr" #"summeval" 
+dataset = "hanna" #"mslr" #"summeval"
 mode = "pairwise" #"pairwise"  # "aggregate" or "pairwise"
 
-plotpath = os.path.join(os.getcwd(), "plots")
-plotpath = os.path.join(plotpath, dataset)
+plotpath = os.path.join(DEFAULT_PLOTS_DIR, dataset)
 if not os.path.exists(plotpath):
     os.makedirs(plotpath, exist_ok = True)
 

@@ -15,6 +15,9 @@ np.random.seed(42)
 # -------------------------
 datasets = ["hanna", "medval", "mslr", "summeval"]
 model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "gpt-5", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
+model_names = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
+model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5"]
+
 evaluation_axes = {
     "hanna": ["Coherence", "Complexity", "Empathy", "Engagement", "Relevance", "Surprise"],
     "medval": ["Risk"],
@@ -22,13 +25,22 @@ evaluation_axes = {
     "summeval": ["coherence", "consistency", "fluency", "relevance"]
 }
 
-dataset =  "summeval" #"summeval" #"hanna" #"medval" #
+dataset =  "hanna" #"mslr" #"hanna" #"medval" #
 DATA_DIR = "data/judge_scores"
+
+# Plots output directory - change this to specify where plots should be saved
+PLOTS_DIR = "results/01_12_plots_big_models"  # Default: results/plots
+# Alternative examples:
+# PLOTS_DIR = "01_11_plots"
+# PLOTS_DIR = "/path/to/custom/plots/directory"
 
 # Comparison mode: "pairwise" or "aggregate"
 # "pairwise": Compare each model vs average of other models (k=2 for both HM and IM)
 # "aggregate": Use all models for inter-model (k=4), each model+human for HM (k=2)
 COMPARISON_MODE = "pairwise"  # Toggle this between "pairwise" and "aggregate"
+
+# Create plots directory if it doesn't exist
+os.makedirs(PLOTS_DIR, exist_ok=True)
 
 # -------------------------
 # LOAD DATA
@@ -391,8 +403,18 @@ def main():
         print(f"\n{'='*50}")
         print(f"Running for axis: {axis}")
         print(f"{'='*50}")
+
+        # Filter df to this axis
+        axis_df = df[df["evaluation_axis"] == axis]
+
+        # Recompute variance components for THIS axis only
+        axis_per_model_variance, axis_aggregate_stats = compute_variance_alignment(
+            axis_df, model_names, mode=COMPARISON_MODE
+        )
+
+        # Now run evaluation with axis-specific variance targets
         axis_results = evaluate_icc_estimators(
-            df, model_names, per_model_variance, evaluation_axis=axis
+            axis_df, model_names, axis_per_model_variance
         )
         results_by_axis[axis] = axis_results
         print(f"Collected {len(axis_results)} results for {axis}")
@@ -485,10 +507,10 @@ def plot_results(results, results_by_axis=None):
     plt.legend(title="Method", fontsize=11)
     plt.grid(alpha=0.3)
     plt.tight_layout()
-    plt.savefig(f"{dataset}_icc_estimation_comparison_avg_all.jpg", dpi=300)
+    plt.savefig(os.path.join(PLOTS_DIR, f"{dataset}_icc_estimation_comparison_avg_all.jpg"), dpi=300)
     plt.close()
     print(f"\n[SET 1: Avg across axis AND model]")
-    print(f"  Saved: {dataset}_icc_estimation_comparison_avg_all.jpg")
+    print(f"  Saved: {os.path.join(PLOTS_DIR, f'{dataset}_icc_estimation_comparison_avg_all.jpg')}")
 
     # =====================================
     # SET 2: Averaged across axis only (k model plots)
@@ -541,13 +563,13 @@ def plot_results(results, results_by_axis=None):
         plt.legend(title="Method", fontsize=11)
         plt.grid(alpha=0.3)
         plt.tight_layout()
-        
+
         # Clean model name for filename
         safe_model_name = model.replace("/", "-").replace("\\", "-")
-        plt.savefig(f"{dataset}_icc_estimation_by_model_{safe_model_name}.jpg", dpi=300)
+        plt.savefig(os.path.join(PLOTS_DIR, f"{dataset}_icc_estimation_by_model_{safe_model_name}.jpg"), dpi=300)
         plt.close()
-        
-        print(f"  Saved: {dataset}_icc_estimation_by_model_{safe_model_name}.jpg")
+
+        print(f"  Saved: {os.path.join(PLOTS_DIR, f'{dataset}_icc_estimation_by_model_{safe_model_name}.jpg')}")
 
     # =====================================
     # SET 3: Averaged across model only (m axis plots)
@@ -586,10 +608,10 @@ def plot_results(results, results_by_axis=None):
 
             # Clean axis name for filename
             safe_axis_name = axis.replace("/", "-").replace("\\", "-").replace(" ", "_")
-            plt.savefig(f"{dataset}_icc_estimation_by_axis_{safe_axis_name}.jpg", dpi=300)
+            plt.savefig(os.path.join(PLOTS_DIR, f"{dataset}_icc_estimation_by_axis_{safe_axis_name}.jpg"), dpi=300)
             plt.close()
 
-            print(f"  Saved: {dataset}_icc_estimation_by_axis_{safe_axis_name}.jpg")
+            print(f"  Saved: {os.path.join(PLOTS_DIR, f'{dataset}_icc_estimation_by_axis_{safe_axis_name}.jpg')}")
 
     # =====================================
     # Summary table

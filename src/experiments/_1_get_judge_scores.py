@@ -4,11 +4,13 @@ import sys
 from typing import Dict, Any, List
 import signal
 import argparse
+from datetime import datetime
+import pandas as pd
 
 # Add the src directory to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from utils.api_support_functions import completion_with_backoff, completion_with_backoff_anthropic, completion_with_backoff_llama, completion_with_backoff_qwen, completion_with_backoff_gemma
+from utils.api_support_functions import completion_with_backoff, completion_with_backoff_anthropic, completion_with_backoff_llama, completion_with_backoff_qwen, completion_with_backoff_gemma, completion_with_backoff_gemini
 from dataset_classes.summ_eval import SummevalDataset
 from dataset_classes.hanna import HannaDataset
 from dataset_classes.mslr import MSLRDataset
@@ -16,6 +18,36 @@ from dataset_classes.medval import MedValDataset
 
 def timeout_handler(signum, frame):
     raise TimeoutError("Evaluation timed out")
+
+# Model list configurations
+MODEL_LISTS = {
+    'small_models': [
+        {'judge_model': 'gemma', 'model_name': 'google/gemma-3-1b-it'},
+        {'judge_model': 'qwen', 'model_name': 'Qwen/Qwen2.5-7B-Instruct'},
+        {'judge_model': 'llama', 'model_name': 'meta-llama/Llama-3.1-8B-Instruct'},
+    ],
+    'large_models': [
+        {'judge_model': 'openai', 'model_name': 'gpt-4o'},
+        {'judge_model': 'openai', 'model_name': 'gpt-5'},
+        {'judge_model': 'anthropic', 'model_name': 'claude-3-5-sonnet'},
+        {'judge_model': 'gemini', 'model_name': 'gemini-2.5-pro'},
+    ],
+    'openai_models': [
+        {'judge_model': 'openai', 'model_name': 'gpt-4o'},
+        {'judge_model': 'openai', 'model_name': 'gpt-4o-mini'},
+        {'judge_model': 'openai', 'model_name': 'gpt-5'},
+    ],
+    'all_models': [
+        {'judge_model': 'openai', 'model_name': 'gpt-4o'},
+        {'judge_model': 'openai', 'model_name': 'gpt-4o-mini'},
+        {'judge_model': 'openai', 'model_name': 'gpt-5'},
+        {'judge_model': 'anthropic', 'model_name': 'claude-3-5-sonnet'},
+        {'judge_model': 'gemini', 'model_name': 'gemini-2.5-pro'},
+        {'judge_model': 'llama', 'model_name': 'meta-llama/Llama-3.1-8B-Instruct'},
+        {'judge_model': 'qwen', 'model_name': 'Qwen/Qwen2.5-7B-Instruct'},
+        {'judge_model': 'gemma', 'model_name': 'google/gemma-3-1b-it'},
+    ],
+}
 
 def evaluate_text(prompt_text: str, judge_model="openai", model_name="gpt-4o", temperature=0.2) -> Dict[str, Any]:
     if judge_model == "openai":
@@ -121,6 +153,37 @@ def evaluate_text(prompt_text: str, judge_model="openai", model_name="gpt-4o", t
             print("Raw response:")
             print(response)
             return None
+
+    elif judge_model == "gemini":
+        response = completion_with_backoff_gemini(
+        messages=[
+            {"role": "system", "content": f"You are an AI assistant tasked with evaluating text."},
+            {"role": "user", "content": prompt_text}
+        ],
+        max_tokens=1000,
+        temperature=temperature,
+    )
+        try:
+            content = response['choices'][0]['message']['content']
+            # Gemini often wraps JSON in markdown code blocks, so extract it
+            if '```json' in content:
+                # Extract JSON from code block
+                json_start = content.find('```json') + 7
+                json_end = content.find('```', json_start)
+                content = content[json_start:json_end].strip()
+            elif '```' in content:
+                # Handle case where it's just ``` without json
+                json_start = content.find('```') + 3
+                json_end = content.find('```', json_start)
+                content = content[json_start:json_end].strip()
+
+            evaluation = json.loads(content)
+            return evaluation
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            print(f"Error parsing LLM response: {e}")
+            print("Raw response:")
+            print(response)
+            return None
     else:
         raise ValueError(f"Invalid judge model: {judge_model}")
 
@@ -205,6 +268,42 @@ def judge_pipeline(results, dataset_obj, processed_ids, output_file, dimension=N
             print(f"Error processing text {idx}: {str(e)}")
     return results
 
+def results_to_dataframe(results: List[Dict[str, Any]], dimension: str, dataset: str, judge_model: str, model_name: str, temperature: float) -> pd.DataFrame:
+    """
+    Convert results list to a pandas DataFrame for easier analysis and visualization.
+    """
+    df_data = []
+    for result in results:
+        try:
+            # Extract evaluation score
+            evaluation = result.get('evaluation', {})
+            if isinstance(evaluation, str):
+                evaluation = json.loads(evaluation)
+
+            try:
+                model_score = evaluation['evaluation']['score']
+            except (KeyError, TypeError):
+                model_score = evaluation.get('score')
+
+            row = {
+                'text_id': result.get('text_id'),
+                'dimension': dimension,
+                'dataset': dataset,
+                'judge_model': judge_model,
+                'model_name': model_name,
+                'temperature': temperature,
+                'human_score': result.get('original_score'),
+                'model_score': model_score,
+                'score_difference': result.get('score_difference'),
+                'absolute_difference': abs(result.get('score_difference', 0)) if result.get('score_difference') is not None else None,
+            }
+            df_data.append(row)
+        except Exception as e:
+            print(f"Error converting result to dataframe row: {e}")
+            continue
+
+    return pd.DataFrame(df_data)
+
 def print_results(results, output_file):
     """
     This function is used to print the results.
@@ -218,11 +317,11 @@ def print_results(results, output_file):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--output_file', required=True, type=str, help='Output JSON file for results')
+    parser.add_argument('--output_file', required=True, type=str, help='Base name for output files (JSON and CSV will be created in a timestamped results folder)')
     parser.add_argument('--sample_size', type=int, default=None, help='Number of samples to evaluate (default: all)')
     parser.add_argument('--dataset', type=str, default='summeval', help='Dataset to evaluate (default: summeval)')
     parser.add_argument('--dimension', type=str, default=None, help='Specific dimension to evaluate (default: evaluate all dimensions)')
-    parser.add_argument('--judge_model', type=str, default="openai", help='Judge model type: openai, anthropic, llama, qwen, or gemma')
+    parser.add_argument('--judge_model', type=str, default="openai", help='Judge model type: openai, anthropic, llama, qwen, gemma, or gemini')
     parser.add_argument('--model_name', type=str, default="gpt-4o", help='Model name (e.g., gpt-4o, gpt-4o-mini for OpenAI)')
     parser.add_argument('--temperature', type=float, default=None, help='Temperature for model (default: 0.2 if not specified)')
     parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducibility')
@@ -234,6 +333,28 @@ def main():
         import numpy as np
         random.seed(args.seed)
         np.random.seed(args.seed)
+
+    # Create date-stamped results folder
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_dir = f"results_{timestamp}"
+    os.makedirs(results_dir, exist_ok=True)
+    print(f"Results will be saved to: {results_dir}/")
+
+    # Save experiment metadata
+    metadata = {
+        'timestamp': timestamp,
+        'dataset': args.dataset,
+        'judge_model': args.judge_model,
+        'model_name': args.model_name,
+        'temperature': args.temperature if args.temperature is not None else 0.2,
+        'sample_size': args.sample_size,
+        'seed': args.seed,
+        'dimension': args.dimension if args.dimension else 'all'
+    }
+    metadata_file = os.path.join(results_dir, 'experiment_metadata.json')
+    with open(metadata_file, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    print(f"Experiment metadata saved to: {metadata_file}")
 
     # Create initial dataset object to get dimensions
     if args.dataset == 'summeval':
@@ -250,12 +371,17 @@ def main():
     # Get dimensions to evaluate
     dimensions = [args.dimension] if args.dimension else dataset_class(None, None).get_available_dimensions()
 
+    # Track all results across dimensions for combined CSV
+    all_dimension_dfs = []
+    temperature = args.temperature if args.temperature is not None else 0.2
+
     for dimension in dimensions:
         # Create dataset object for this dimension
         dataset_obj = dataset_class(dimension, args.sample_size)
-        
-        # Modify output file path to include dimension
-        dimension_output_file = args.output_file.replace('.json', f'_{dimension}.json')
+
+        # Modify output file path to include dimension and save in results folder
+        base_filename = os.path.basename(args.output_file).replace('.json', '')
+        dimension_output_file = os.path.join(results_dir, f'{base_filename}_{dimension}.json')
 
         results = []
         processed_ids = set()
@@ -266,9 +392,34 @@ def main():
             processed_ids = set(result.get('text_id') for result in results)
         
         signal.signal(signal.SIGALRM, timeout_handler)
-        temperature = args.temperature if args.temperature is not None else 0.2
         results = judge_pipeline(results, dataset_obj, processed_ids, dimension_output_file, dimension, judge_model=args.judge_model, model_name=args.model_name, temperature=temperature)
         print_results(results, dimension_output_file)
+
+        # Convert results to DataFrame and save as CSV
+        df = results_to_dataframe(results, dimension, args.dataset, args.judge_model, args.model_name, temperature)
+        csv_filename = os.path.join(results_dir, f'{base_filename}_{dimension}.csv')
+        df.to_csv(csv_filename, index=False)
+        print(f"CSV saved to: {csv_filename}")
+
+        # Add to combined results
+        all_dimension_dfs.append(df)
+
+    # Create combined CSV with all dimensions
+    if all_dimension_dfs:
+        combined_df = pd.concat(all_dimension_dfs, ignore_index=True)
+        combined_csv_filename = os.path.join(results_dir, f'{base_filename}_all_dimensions.csv')
+        combined_df.to_csv(combined_csv_filename, index=False)
+        print(f"\nCombined CSV saved to: {combined_csv_filename}")
+        print(f"Total evaluations across all dimensions: {len(combined_df)}")
+
+        # Print summary statistics
+        print("\n=== Summary Statistics ===")
+        summary = combined_df.groupby('dimension').agg({
+            'score_difference': ['mean', 'std'],
+            'absolute_difference': ['mean', 'std'],
+            'text_id': 'count'
+        }).round(3)
+        print(summary)
 
 if __name__ == "__main__":
     main()

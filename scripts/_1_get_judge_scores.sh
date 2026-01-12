@@ -29,7 +29,7 @@ DATASET="summeval"
 # MODEL_NAME="gpt-4.1"
 # MODEL_NAME="gpt-4o"
 # MODEL_NAME="gpt-4o-mini"
-MODEL_NAME="gpt-5"
+# MODEL_NAME="gpt-5"
 
 # Anthropic models:
 # MODEL_NAME="claude-3.5-sonnet"
@@ -43,6 +43,9 @@ MODEL_NAME="gpt-5"
 
 # Gemma models (use full HuggingFace path):
 # MODEL_NAME="google/gemma-3-1b-it"
+
+# Gemini models:
+MODEL_NAME="gemini-2.5-pro"
 
 # ==============================================================================
 # AUTO-CONFIGURATION (Do not edit below this line)
@@ -59,6 +62,8 @@ elif [[ "$MODEL_NAME" == *"Qwen"* ]] || [[ "$MODEL_NAME" == *"qwen"* ]]; then
     JUDGE_MODEL="qwen"
 elif [[ "$MODEL_NAME" == *"gemma"* ]] || [[ "$MODEL_NAME" == *"Gemma"* ]]; then
     JUDGE_MODEL="gemma"
+elif [[ "$MODEL_NAME" == *"gemini"* ]] || [[ "$MODEL_NAME" == *"Gemini"* ]]; then
+    JUDGE_MODEL="gemini"
 else
     echo "ERROR: Could not infer judge model type from MODEL_NAME: $MODEL_NAME"
     exit 1
