@@ -15,8 +15,8 @@ np.random.seed(42)
 # -------------------------
 datasets = ["hanna", "medval", "mslr", "summeval"]
 model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "gpt-5", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
-model_names = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
-model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5"]
+# model_names = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
+# model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5"]
 
 evaluation_axes = {
     "hanna": ["Coherence", "Complexity", "Empathy", "Engagement", "Relevance", "Surprise"],
@@ -25,11 +25,11 @@ evaluation_axes = {
     "summeval": ["coherence", "consistency", "fluency", "relevance"]
 }
 
-dataset =  "hanna" #"mslr" #"hanna" #"medval" #
+dataset =  "mslr" #"mslr" #"hanna" #"medval" #summeval
 DATA_DIR = "data/judge_scores"
 
 # Plots output directory - change this to specify where plots should be saved
-PLOTS_DIR = "results/01_12_plots_big_models"  # Default: results/plots
+PLOTS_DIR = "results/01_12_plots_agg"  # Default: results/plots
 # Alternative examples:
 # PLOTS_DIR = "01_11_plots"
 # PLOTS_DIR = "/path/to/custom/plots/directory"
