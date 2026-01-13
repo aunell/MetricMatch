@@ -25,11 +25,11 @@ evaluation_axes = {
     "summeval": ["coherence", "consistency", "fluency", "relevance"]
 }
 
-dataset =  "mslr" #"mslr" #"hanna" #"medval" #summeval
+dataset =  "hanna" #"mslr" #"hanna" #"medval" #summeval
 DATA_DIR = "data/judge_scores"
 
 # Plots output directory - change this to specify where plots should be saved
-PLOTS_DIR = "results/01_12_plots_agg"  # Default: results/plots
+PLOTS_DIR = "results/01_13"  # Default: results/plots
 # Alternative examples:
 # PLOTS_DIR = "01_11_plots"
 # PLOTS_DIR = "/path/to/custom/plots/directory"
@@ -268,6 +268,7 @@ def evaluate_icc_estimators(
     evaluation_axis=None  # Optional: filter by evaluation axis
 ):
     results = []
+    icc_metadata = {}  # Store ICC values for each model
 
     # Filter by axis if specified
     if evaluation_axis is not None:
@@ -277,10 +278,17 @@ def evaluate_icc_estimators(
         # Get this model's specific inter-model variance components
         im_msb_target = per_model_variance[model]["im_msb"]
         im_mse_target = per_model_variance[model]["im_mse"]
-        
+
         hm_full_df = df[df["model_name"].isin([model, "original"])]
         true_msb, true_mse = compute_ms_components(hm_full_df)
         true_icc = icc_from_ms(true_msb, true_mse)
+
+        # Store ICC metadata for this model
+        im_icc = icc_from_ms(im_msb_target, im_mse_target)
+        icc_metadata[model] = {
+            "true_hm_icc": true_icc,
+            "im_icc": im_icc
+        }
 
         text_ids = hm_full_df["text_id"].unique()
         
@@ -380,7 +388,7 @@ def evaluate_icc_estimators(
                     "estimation_error": np.mean(matched_errors)
                 })
 
-    return pd.DataFrame(results)
+    return pd.DataFrame(results), icc_metadata
 
 def main():
     """Main execution function."""
@@ -389,7 +397,7 @@ def main():
     print("="*50)
 
     # Run experiment for all axes combined
-    results = evaluate_icc_estimators(df, model_names, per_model_variance)
+    results, icc_metadata_all = evaluate_icc_estimators(df, model_names, per_model_variance)
 
     print(f"\nTotal results collected: {len(results)}")
     print(f"Results by method:")
@@ -399,6 +407,7 @@ def main():
 
     # Run experiment for each axis separately
     results_by_axis = {}
+    icc_metadata_by_axis = {}
     for axis in evaluation_axes[dataset]:
         print(f"\n{'='*50}")
         print(f"Running for axis: {axis}")
@@ -413,20 +422,23 @@ def main():
         )
 
         # Now run evaluation with axis-specific variance targets
-        axis_results = evaluate_icc_estimators(
+        axis_results, axis_icc_metadata = evaluate_icc_estimators(
             axis_df, model_names, axis_per_model_variance
         )
         results_by_axis[axis] = axis_results
+        icc_metadata_by_axis[axis] = axis_icc_metadata
         print(f"Collected {len(axis_results)} results for {axis}")
 
-    return results, results_by_axis
+    return results, results_by_axis, icc_metadata_all, icc_metadata_by_axis
 
 if __name__ == "__main__":
-    results, results_by_axis = main()
+    results, results_by_axis, icc_metadata_all, icc_metadata_by_axis = main()
 else:
     # When imported, just compute variance alignment
     results = None
     results_by_axis = None
+    icc_metadata_all = None
+    icc_metadata_by_axis = None
 
 # -------------------------
 # PLOTS
@@ -467,7 +479,7 @@ def compute_model_cis(results_df):
 
     return pd.DataFrame(ci_data)
 
-def plot_results(results, results_by_axis=None):
+def plot_results(results, results_by_axis=None, icc_metadata_all=None, icc_metadata_by_axis=None):
     """Generate plots and summary tables.
 
     Creates three sets of plots:
@@ -483,6 +495,13 @@ def plot_results(results, results_by_axis=None):
     # SET 1: Averaged across axis AND model (1 plot)
     # =====================================
     avg_results = compute_model_cis(results)
+
+    # Compute average ICC values across all models
+    legend_text = ""
+    if icc_metadata_all is not None:
+        avg_true_hm_icc = np.mean([v["true_hm_icc"] for v in icc_metadata_all.values() if np.isfinite(v["true_hm_icc"])])
+        avg_im_icc = np.mean([v["im_icc"] for v in icc_metadata_all.values() if np.isfinite(v["im_icc"])])
+        legend_text = f"\nAxis: All | Avg HM-ICC: {avg_true_hm_icc:.3f} | Avg {'Pairwise' if COMPARISON_MODE == 'pairwise' else 'Aggregate'} IM-ICC: {avg_im_icc:.3f}"
 
     plt.figure(figsize=(10, 6))
 
@@ -503,7 +522,7 @@ def plot_results(results, results_by_axis=None):
 
     plt.ylabel("Absolute ICC Error (avg across models & axes)", fontsize=12)
     plt.xlabel("Human Annotation Budget", fontsize=12)
-    plt.title(f"{dataset} ICC Estimation: Random vs Variance-Matched\n(Averaged over all models & axes with 95% CI)", fontsize=13)
+    plt.title(f"{dataset} ICC Estimation: Random vs Variance-Matched{legend_text}\n(Averaged over all models & axes with 95% CI)", fontsize=11)
     plt.legend(title="Method", fontsize=11)
     plt.grid(alpha=0.3)
     plt.tight_layout()
@@ -518,31 +537,45 @@ def plot_results(results, results_by_axis=None):
     print(f"\n[SET 2: Avg across axis only - {len(results['model'].unique())} model plots]")
     for model in results["model"].unique():
         model_results = results[results["model"] == model]
-        
+
+        # Compute average ICC across axes for this model
+        legend_text = ""
+        if icc_metadata_by_axis is not None:
+            model_hm_iccs = [icc_metadata_by_axis[ax][model]["true_hm_icc"]
+                            for ax in icc_metadata_by_axis if model in icc_metadata_by_axis[ax]
+                            and np.isfinite(icc_metadata_by_axis[ax][model]["true_hm_icc"])]
+            model_im_iccs = [icc_metadata_by_axis[ax][model]["im_icc"]
+                            for ax in icc_metadata_by_axis if model in icc_metadata_by_axis[ax]
+                            and np.isfinite(icc_metadata_by_axis[ax][model]["im_icc"])]
+            if model_hm_iccs and model_im_iccs:
+                avg_hm_icc = np.mean(model_hm_iccs)
+                avg_im_icc = np.mean(model_im_iccs)
+                legend_text = f"\nAxis: All | Avg HM-ICC: {avg_hm_icc:.3f} | Avg {'Pairwise' if COMPARISON_MODE == 'pairwise' else 'Aggregate'} IM-ICC: {avg_im_icc:.3f}"
+
         plt.figure(figsize=(10, 6))
-        
+
         for method in model_results["method"].unique():
             method_data = model_results[model_results["method"] == method]
-            
+
             # Group by budget and compute mean and CI
             budget_stats = []
             for budget in sorted(method_data["budget"].unique()):
                 budget_data = method_data[method_data["budget"] == budget]
                 errors = budget_data["estimation_error"].values
-                
+
                 if len(errors) > 0:
                     mean_error = errors.mean()
                     if len(errors) > 1:
                         ci_half_width = stats.sem(errors) * stats.t.ppf(0.975, len(errors) - 1)
                     else:
                         ci_half_width = 0
-                    
+
                     budget_stats.append({
                         "budget": budget,
                         "mean": mean_error,
                         "ci_half_width": ci_half_width
                     })
-            
+
             if budget_stats:
                 budget_df = pd.DataFrame(budget_stats)
                 plt.errorbar(
@@ -556,10 +589,10 @@ def plot_results(results, results_by_axis=None):
                     label=method,
                     alpha=0.8
                 )
-        
+
         plt.ylabel("Absolute ICC Error (avg across axes)", fontsize=12)
         plt.xlabel("Human Annotation Budget", fontsize=12)
-        plt.title(f"{dataset} ICC Estimation: {model}\n(Averaged across axes with 95% CI)", fontsize=13)
+        plt.title(f"{dataset} ICC Estimation: {model}{legend_text}\n(Averaged across axes with 95% CI)", fontsize=11)
         plt.legend(title="Method", fontsize=11)
         plt.grid(alpha=0.3)
         plt.tight_layout()
@@ -582,6 +615,20 @@ def plot_results(results, results_by_axis=None):
 
             avg_axis_results = compute_model_cis(axis_results)
 
+            # Compute average ICC across models for this axis
+            legend_text = ""
+            if icc_metadata_by_axis is not None and axis in icc_metadata_by_axis:
+                axis_hm_iccs = [icc_metadata_by_axis[axis][model]["true_hm_icc"]
+                                for model in icc_metadata_by_axis[axis]
+                                if np.isfinite(icc_metadata_by_axis[axis][model]["true_hm_icc"])]
+                axis_im_iccs = [icc_metadata_by_axis[axis][model]["im_icc"]
+                                for model in icc_metadata_by_axis[axis]
+                                if np.isfinite(icc_metadata_by_axis[axis][model]["im_icc"])]
+                if axis_hm_iccs and axis_im_iccs:
+                    avg_hm_icc = np.mean(axis_hm_iccs)
+                    avg_im_icc = np.mean(axis_im_iccs)
+                    legend_text = f"\nAxis: {axis} | Avg HM-ICC: {avg_hm_icc:.3f} | Avg {'Pairwise' if COMPARISON_MODE == 'pairwise' else 'Aggregate'} IM-ICC: {avg_im_icc:.3f}"
+
             plt.figure(figsize=(10, 6))
 
             # Plot each method separately with 95% CI error bars
@@ -601,7 +648,7 @@ def plot_results(results, results_by_axis=None):
 
             plt.ylabel("Absolute ICC Error (avg across models)", fontsize=12)
             plt.xlabel("Human Annotation Budget", fontsize=12)
-            plt.title(f"{dataset} ICC Estimation: {axis}\n(Averaged across models with 95% CI)", fontsize=13)
+            plt.title(f"{dataset} ICC Estimation{legend_text}\n(Averaged across models with 95% CI)", fontsize=11)
             plt.legend(title="Method", fontsize=11)
             plt.grid(alpha=0.3)
             plt.tight_layout()
@@ -632,4 +679,4 @@ def plot_results(results, results_by_axis=None):
             print(f"  Budget {int(row['budget']):2d}: {row['formatted']}")
 
 if __name__ == "__main__":
-    plot_results(results, results_by_axis)
+    plot_results(results, results_by_axis, icc_metadata_all, icc_metadata_by_axis)
