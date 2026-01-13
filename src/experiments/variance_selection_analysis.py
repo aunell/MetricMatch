@@ -13,6 +13,9 @@ np.random.seed(42)
 # -------------------------
 # CONFIG
 # -------------------------
+# Number of bootstrap samples for confidence interval estimation
+N_BOOTSTRAP_SAMPLES = 10
+
 datasets = ["hanna", "medval", "mslr", "summeval"]
 model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "gpt-5", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
 # model_names = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
@@ -25,14 +28,11 @@ evaluation_axes = {
     "summeval": ["coherence", "consistency", "fluency", "relevance"]
 }
 
-dataset =  "hanna" #"mslr" #"hanna" #"medval" #summeval
+dataset =  "medval" #"mslr" #"hanna" #"medval" #summeval
 DATA_DIR = "data/judge_scores"
 
 # Plots output directory - change this to specify where plots should be saved
-PLOTS_DIR = "results/01_13"  # Default: results/plots
-# Alternative examples:
-# PLOTS_DIR = "01_11_plots"
-# PLOTS_DIR = "/path/to/custom/plots/directory"
+PLOTS_DIR = "results/01_13_test"  # Default: results/plots
 
 # Comparison mode: "pairwise" or "aggregate"
 # "pairwise": Compare each model vs average of other models (k=2 for both HM and IM)
@@ -264,11 +264,15 @@ def evaluate_icc_estimators(
     model_names,
     per_model_variance,
     budgets=range(5, 55, 5),
-    n_trials=100,
+    n_trials=None,  # Will default to N_BOOTSTRAP_SAMPLES
     evaluation_axis=None  # Optional: filter by evaluation axis
 ):
     results = []
     icc_metadata = {}  # Store ICC values for each model
+
+    # Use N_BOOTSTRAP_SAMPLES if n_trials not specified
+    if n_trials is None:
+        n_trials = N_BOOTSTRAP_SAMPLES
 
     # Filter by axis if specified
     if evaluation_axis is not None:
@@ -314,9 +318,12 @@ def evaluate_icc_estimators(
             im_full_df = df[df["model_name"] != "original"]
 
         for k in budgets:
-            # Random baseline
+            # Random baseline - each trial uses a different seed
             random_errors = []
-            for _ in range(n_trials):
+            for trial_idx in range(n_trials):
+                # Set a unique seed for each trial for reproducibility
+                np.random.seed(42 + trial_idx)
+
                 sampled_ids = np.random.choice(
                     text_ids, size=min(k, len(text_ids)), replace=False
                 )
@@ -331,17 +338,21 @@ def evaluate_icc_estimators(
                 except Exception:
                     pass
 
-            if random_errors:
+            # Store each trial separately for proper bootstrapping
+            for error in random_errors:
                 results.append({
                     "model": model,
                     "budget": k,
                     "method": "random",
-                    "estimation_error": np.mean(random_errors)
+                    "estimation_error": error
                 })
 
             # Variance-matched: select subset that best matches THIS MODEL's IM variance
             matched_errors = []
-            for _ in range(n_trials):
+            for trial_idx in range(n_trials):
+                # Set a unique seed for each trial for reproducibility
+                np.random.seed(42 + trial_idx)
+
                 # Try multiple random subsets and pick the one with variance closest to this model's IM variance
                 best_ids = None
                 best_score = float('inf')
@@ -380,12 +391,13 @@ def evaluate_icc_estimators(
                     except Exception:
                         pass
 
-            if matched_errors:
+            # Store each trial separately for proper bootstrapping
+            for error in matched_errors:
                 results.append({
                     "model": model,
                     "budget": k,
                     "method": "variance_matched",
-                    "estimation_error": np.mean(matched_errors)
+                    "estimation_error": error
                 })
 
     return pd.DataFrame(results), icc_metadata
@@ -443,11 +455,9 @@ else:
 # -------------------------
 # PLOTS
 # -------------------------
-# Compute 95% CI for each model, then average the CIs
-from scipy import stats
 
-def compute_model_cis(results_df):
-    """Compute 95% CI for each model separately, then average."""
+def compute_model_cis(results_df, n_bootstrap=1000):
+    """Compute 95% bootstrap CI for each model separately, then average."""
     ci_data = []
 
     for method in results_df["method"].unique():
@@ -462,18 +472,29 @@ def compute_model_cis(results_df):
                 errors = subset["estimation_error"].values
                 mean_error = errors.mean()
 
-                # 95% CI using t-distribution
+                # 95% CI using bootstrap resampling
                 if len(errors) > 1:
-                    ci_half_width = stats.sem(errors) * stats.t.ppf(0.975, len(errors) - 1)
+                    bootstrap_means = []
+                    for _ in range(n_bootstrap):
+                        # Resample with replacement
+                        bootstrap_sample = np.random.choice(errors, size=len(errors), replace=True)
+                        bootstrap_means.append(bootstrap_sample.mean())
+
+                    # Compute 95% CI using percentiles
+                    ci_lower = np.percentile(bootstrap_means, 2.5)
+                    ci_upper = np.percentile(bootstrap_means, 97.5)
+                    ci_half_width = (ci_upper - ci_lower) / 2
                 else:
+                    ci_lower = mean_error
+                    ci_upper = mean_error
                     ci_half_width = 0
 
                 ci_data.append({
                     "method": method,
                     "budget": budget,
                     "mean": mean_error,
-                    "ci_lower": mean_error - ci_half_width,
-                    "ci_upper": mean_error + ci_half_width,
+                    "ci_lower": ci_lower,
+                    "ci_upper": ci_upper,
                     "ci_half_width": ci_half_width
                 })
 
@@ -534,54 +555,49 @@ def plot_results(results, results_by_axis=None, icc_metadata_all=None, icc_metad
     # =====================================
     # SET 2: Averaged across axis only (k model plots)
     # =====================================
-    print(f"\n[SET 2: Avg across axis only - {len(results['model'].unique())} model plots]")
-    for model in results["model"].unique():
-        model_results = results[results["model"] == model]
+    if results_by_axis is not None and len(results_by_axis) > 0:
+        print(f"\n[SET 2: Avg across axis only - {len(results['model'].unique())} model plots]")
+        for model in results["model"].unique():
+            # Collect data across all axes for this model
+            model_data_across_axes = []
+            for axis, axis_results in results_by_axis.items():
+                if axis_results is not None and len(axis_results) > 0:
+                    model_axis_data = axis_results[axis_results["model"] == model]
+                    if len(model_axis_data) > 0:
+                        model_data_across_axes.append(model_axis_data)
 
-        # Compute average ICC across axes for this model
-        legend_text = ""
-        if icc_metadata_by_axis is not None:
-            model_hm_iccs = [icc_metadata_by_axis[ax][model]["true_hm_icc"]
-                            for ax in icc_metadata_by_axis if model in icc_metadata_by_axis[ax]
-                            and np.isfinite(icc_metadata_by_axis[ax][model]["true_hm_icc"])]
-            model_im_iccs = [icc_metadata_by_axis[ax][model]["im_icc"]
-                            for ax in icc_metadata_by_axis if model in icc_metadata_by_axis[ax]
-                            and np.isfinite(icc_metadata_by_axis[ax][model]["im_icc"])]
-            if model_hm_iccs and model_im_iccs:
-                avg_hm_icc = np.mean(model_hm_iccs)
-                avg_im_icc = np.mean(model_im_iccs)
-                legend_text = f"\nAxis: All | Avg HM-ICC: {avg_hm_icc:.3f} | Avg {'Pairwise' if COMPARISON_MODE == 'pairwise' else 'Aggregate'} IM-ICC: {avg_im_icc:.3f}"
+            if len(model_data_across_axes) == 0:
+                continue
 
-        plt.figure(figsize=(10, 6))
+            # Concatenate all axis data for this model
+            model_results = pd.concat(model_data_across_axes, ignore_index=True)
 
-        for method in model_results["method"].unique():
-            method_data = model_results[model_results["method"] == method]
+            # Compute bootstrap CIs using the same function as SET 1 and SET 3
+            avg_model_results = compute_model_cis(model_results)
 
-            # Group by budget and compute mean and CI
-            budget_stats = []
-            for budget in sorted(method_data["budget"].unique()):
-                budget_data = method_data[method_data["budget"] == budget]
-                errors = budget_data["estimation_error"].values
+            # Compute average ICC across axes for this model
+            legend_text = ""
+            if icc_metadata_by_axis is not None:
+                model_hm_iccs = [icc_metadata_by_axis[ax][model]["true_hm_icc"]
+                                for ax in icc_metadata_by_axis if model in icc_metadata_by_axis[ax]
+                                and np.isfinite(icc_metadata_by_axis[ax][model]["true_hm_icc"])]
+                model_im_iccs = [icc_metadata_by_axis[ax][model]["im_icc"]
+                                for ax in icc_metadata_by_axis if model in icc_metadata_by_axis[ax]
+                                and np.isfinite(icc_metadata_by_axis[ax][model]["im_icc"])]
+                if model_hm_iccs and model_im_iccs:
+                    avg_hm_icc = np.mean(model_hm_iccs)
+                    avg_im_icc = np.mean(model_im_iccs)
+                    legend_text = f"\nAxis: All | Avg HM-ICC: {avg_hm_icc:.3f} | Avg {'Pairwise' if COMPARISON_MODE == 'pairwise' else 'Aggregate'} IM-ICC: {avg_im_icc:.3f}"
 
-                if len(errors) > 0:
-                    mean_error = errors.mean()
-                    if len(errors) > 1:
-                        ci_half_width = stats.sem(errors) * stats.t.ppf(0.975, len(errors) - 1)
-                    else:
-                        ci_half_width = 0
+            plt.figure(figsize=(10, 6))
 
-                    budget_stats.append({
-                        "budget": budget,
-                        "mean": mean_error,
-                        "ci_half_width": ci_half_width
-                    })
-
-            if budget_stats:
-                budget_df = pd.DataFrame(budget_stats)
+            # Plot each method separately with 95% CI error bars
+            for method in avg_model_results["method"].unique():
+                method_data = avg_model_results[avg_model_results["method"] == method]
                 plt.errorbar(
-                    budget_df["budget"],
-                    budget_df["mean"],
-                    yerr=budget_df["ci_half_width"],
+                    method_data["budget"],
+                    method_data["mean"],
+                    yerr=method_data["ci_half_width"],
                     marker='o',
                     linewidth=2.5,
                     capsize=5,
@@ -590,19 +606,19 @@ def plot_results(results, results_by_axis=None, icc_metadata_all=None, icc_metad
                     alpha=0.8
                 )
 
-        plt.ylabel("Absolute ICC Error (avg across axes)", fontsize=12)
-        plt.xlabel("Human Annotation Budget", fontsize=12)
-        plt.title(f"{dataset} ICC Estimation: {model}{legend_text}\n(Averaged across axes with 95% CI)", fontsize=11)
-        plt.legend(title="Method", fontsize=11)
-        plt.grid(alpha=0.3)
-        plt.tight_layout()
+            plt.ylabel("Absolute ICC Error (avg across axes)", fontsize=12)
+            plt.xlabel("Human Annotation Budget", fontsize=12)
+            plt.title(f"{dataset} ICC Estimation: {model}{legend_text}\n(Averaged across axes with 95% CI)", fontsize=11)
+            plt.legend(title="Method", fontsize=11)
+            plt.grid(alpha=0.3)
+            plt.tight_layout()
 
-        # Clean model name for filename
-        safe_model_name = model.replace("/", "-").replace("\\", "-")
-        plt.savefig(os.path.join(PLOTS_DIR, f"{dataset}_icc_estimation_by_model_{safe_model_name}.jpg"), dpi=300)
-        plt.close()
+            # Clean model name for filename
+            safe_model_name = model.replace("/", "-").replace("\\", "-")
+            plt.savefig(os.path.join(PLOTS_DIR, f"{dataset}_icc_estimation_by_model_{safe_model_name}.jpg"), dpi=300)
+            plt.close()
 
-        print(f"  Saved: {os.path.join(PLOTS_DIR, f'{dataset}_icc_estimation_by_model_{safe_model_name}.jpg')}")
+            print(f"  Saved: {os.path.join(PLOTS_DIR, f'{dataset}_icc_estimation_by_model_{safe_model_name}.jpg')}")
 
     # =====================================
     # SET 3: Averaged across model only (m axis plots)
