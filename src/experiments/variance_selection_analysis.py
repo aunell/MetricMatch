@@ -14,7 +14,7 @@ np.random.seed(42)
 # CONFIG
 # -------------------------
 # Number of bootstrap samples for confidence interval estimation
-N_BOOTSTRAP_SAMPLES = 10
+N_BOOTSTRAP_SAMPLES = 100
 
 datasets = ["hanna", "medval", "mslr", "summeval"]
 model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "gpt-5", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
@@ -28,11 +28,11 @@ evaluation_axes = {
     "summeval": ["coherence", "consistency", "fluency", "relevance"]
 }
 
-dataset =  "medval" #"mslr" #"hanna" #"medval" #summeval
+dataset =  "summeval" #"mslr" #"hanna" #"medval" #summeval
 DATA_DIR = "data/judge_scores"
 
 # Plots output directory - change this to specify where plots should be saved
-PLOTS_DIR = "results/01_13_test"  # Default: results/plots
+PLOTS_DIR = "results/01_15_all"  # Default: results/plots
 
 # Comparison mode: "pairwise" or "aggregate"
 # "pairwise": Compare each model vs average of other models (k=2 for both HM and IM)
@@ -134,6 +134,61 @@ def icc_from_ms(msb, mse):
 
 
     return icc
+
+def compute_icc_pingouin(data, models=None):
+    """
+    Compute ICC(3,k) using pingouin library.
+    Filters to only include text_ids that have all required raters.
+
+    Args:
+        data: DataFrame with text_id, model_name, evaluation_score
+        models: Optional list of model names to include. If None, uses all models in data.
+                Can include special names like "original" or "avg_other".
+
+    Returns:
+        ICC(3,k) value or np.nan if computation fails
+    """
+    if len(data) == 0:
+        return np.nan
+
+    # Filter to specified models if provided
+    if models is not None:
+        data = data[data["model_name"].isin(models)].copy()
+
+    if len(data) == 0:
+        return np.nan
+
+    # Get the unique raters (models) in this dataset
+    required_raters = data["model_name"].unique()
+    n_raters = len(required_raters)
+
+    if n_raters < 2:
+        return np.nan
+
+    # Filter to only include text_ids that have all required raters
+    data_filtered = (
+        data.groupby('text_id')
+            .filter(lambda x: x['model_name'].nunique() == n_raters)
+    )
+
+    if len(data_filtered) == 0:
+        return np.nan
+
+    try:
+        icc_result = pg.intraclass_corr(
+            data=data_filtered,
+            targets='text_id',
+            raters='model_name',
+            ratings='evaluation_score'
+        )
+
+        icc_3k_row = icc_result[icc_result['Type'] == 'ICC3k']
+        if len(icc_3k_row) > 0:
+            return icc_3k_row['ICC'].values[0]
+        else:
+            return np.nan
+    except Exception:
+        return np.nan
 
 # -------------------------
 # VARIANCE ALIGNMENT CHECK
@@ -284,18 +339,21 @@ def evaluate_icc_estimators(
         im_mse_target = per_model_variance[model]["im_mse"]
 
         hm_full_df = df[df["model_name"].isin([model, "original"])]
-        true_msb, true_mse = compute_ms_components(hm_full_df)
-        true_icc = icc_from_ms(true_msb, true_mse)
 
-        # Store ICC metadata for this model
-        im_icc = icc_from_ms(im_msb_target, im_mse_target)
+        # Compute true ICC using pingouin
+        true_icc = compute_icc_pingouin(hm_full_df, models=[model, "original"])
+        print(model, true_icc)
+
+        # We'll compute im_icc from im_full_df later after it's constructed
+        im_icc = None  # Placeholder, will be computed below
+
         icc_metadata[model] = {
             "true_hm_icc": true_icc,
-            "im_icc": im_icc
+            "im_icc": im_icc  # Will be updated below
         }
 
         text_ids = hm_full_df["text_id"].unique()
-        
+
         # Get inter-model data for variance matching
         if COMPARISON_MODE == "pairwise":
             # For pairwise mode, recreate the model vs avg(others) dataset
@@ -313,9 +371,17 @@ def evaluate_icc_estimators(
                 if len(other_scores) > 0:
                     im_full_df.append({"text_id": text_id, "model_name": "avg_other", "evaluation_score": other_scores.mean()})
             im_full_df = pd.DataFrame(im_full_df)
+
+            # Compute IM ICC target
+            im_icc = compute_icc_pingouin(im_full_df, models=[model, "avg_other"])
+            icc_metadata[model]["im_icc"] = im_icc
         else:
             # For aggregate mode, use all models
             im_full_df = df[df["model_name"] != "original"]
+
+            # Compute IM ICC target
+            im_icc = compute_icc_pingouin(im_full_df, models=model_names)
+            icc_metadata[model]["im_icc"] = im_icc
 
         for k in budgets:
             # Random baseline - each trial uses a different seed
@@ -330,8 +396,7 @@ def evaluate_icc_estimators(
                 hm_sample = hm_full_df[hm_full_df["text_id"].isin(sampled_ids)]
 
                 try:
-                    hm_msb, hm_mse = compute_ms_components(hm_sample)
-                    est_icc = icc_from_ms(hm_msb, hm_mse)
+                    est_icc = compute_icc_pingouin(hm_sample, models=[model, "original"])
 
                     if np.isfinite(est_icc):
                         random_errors.append(abs(est_icc - true_icc))
@@ -367,6 +432,7 @@ def evaluate_icc_estimators(
                     im_candidate = im_full_df[im_full_df["text_id"].isin(candidate_ids)]
 
                     if len(im_candidate) > 0:
+                        # Match on MSB and MSE for variance matching
                         cand_msb, cand_mse = compute_ms_components(im_candidate)
 
                         if np.isfinite(cand_msb) and np.isfinite(cand_mse):
@@ -383,8 +449,7 @@ def evaluate_icc_estimators(
                     hm_sample = hm_full_df[hm_full_df["text_id"].isin(best_ids)]
 
                     try:
-                        hm_msb, hm_mse = compute_ms_components(hm_sample)
-                        est_icc = icc_from_ms(hm_msb, hm_mse)
+                        est_icc = compute_icc_pingouin(hm_sample, models=[model, "original"])
 
                         if np.isfinite(est_icc):
                             matched_errors.append(abs(est_icc - true_icc))
