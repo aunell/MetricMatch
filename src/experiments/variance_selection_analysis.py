@@ -6,6 +6,7 @@ import pingouin as pg
 import matplotlib.pyplot as plt
 import seaborn as sb
 from scipy.stats import pearsonr
+import krippendorff
 
 # Set random seed for reproducibility
 np.random.seed(42)
@@ -17,9 +18,9 @@ np.random.seed(42)
 N_BOOTSTRAP_SAMPLES = 100
 
 datasets = ["hanna", "medval", "mslr", "summeval"]
-model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "gpt-5", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
+# model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "gpt-5", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
 # model_names = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
-# model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5"]
+model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5"]
 
 evaluation_axes = {
     "hanna": ["Coherence", "Complexity", "Empathy", "Engagement", "Relevance", "Surprise"],
@@ -28,11 +29,11 @@ evaluation_axes = {
     "summeval": ["coherence", "consistency", "fluency", "relevance"]
 }
 
-dataset =  "summeval" #"mslr" #"hanna" #"medval" #summeval
+dataset =  "mslr" #"mslr" #"hanna" #"medval" #summeval
 DATA_DIR = "data/judge_scores"
 
 # Plots output directory - change this to specify where plots should be saved
-PLOTS_DIR = "results/01_15_all"  # Default: results/plots
+PLOTS_DIR = "results/01_16_big"  # Default: results/plots
 
 # Comparison mode: "pairwise" or "aggregate"
 # "pairwise": Compare each model vs average of other models (k=2 for both HM and IM)
@@ -122,19 +123,6 @@ def compute_ms_components(data):
 
     return msb, mse
 
-def icc_from_ms(msb, mse):
-    """Calculate ICC(3,k) from MSB and MSE components."""
-    if not np.isfinite(msb) or not np.isfinite(mse):
-        return np.nan
-    if msb <= 0:
-        return np.nan
-    # ICC(3,k) = (MSB - MSE) / MSB = 1 - MSE/MSB
-    icc = (msb - mse) / msb
-
-
-
-    return icc
-
 def compute_icc_pingouin(data, models=None):
     """
     Compute ICC(3,k) using pingouin library.
@@ -173,7 +161,6 @@ def compute_icc_pingouin(data, models=None):
 
     if len(data_filtered) == 0:
         return np.nan
-
     try:
         icc_result = pg.intraclass_corr(
             data=data_filtered,
@@ -189,6 +176,90 @@ def compute_icc_pingouin(data, models=None):
             return np.nan
     except Exception:
         return np.nan
+
+def _compute_single_krippendorff_alpha(data):
+    """
+    Compute Krippendorff's alpha for a single evaluation axis.
+
+    Args:
+        data: DataFrame with text_id, model_name, evaluation_score (single axis)
+
+    Returns:
+        Krippendorff's alpha value or np.nan if computation fails
+    """
+    if len(data) == 0:
+        return np.nan
+
+    # Get the unique raters (models) in this dataset
+    required_raters = data["model_name"].unique()
+    n_raters = len(required_raters)
+
+    if n_raters < 2:
+        return np.nan
+
+    # Filter to only include text_ids that have all required raters
+    data_filtered = (
+        data.groupby('text_id')
+            .filter(lambda x: x['model_name'].nunique() == n_raters)
+    )
+
+    if len(data_filtered) == 0:
+        return np.nan
+
+    try:
+        # Pivot to create reliability data matrix (raters x units)
+        # Drop duplicates before pivoting
+        data_filtered = data_filtered.drop_duplicates(subset=['text_id', 'model_name'], keep='first')
+
+        # Now pivot will work
+        pivot_table = data_filtered.pivot(index='model_name', columns='text_id', values='evaluation_score')
+
+        # Convert to numpy array for krippendorff library
+        reliability_data = pivot_table.values
+
+        # Compute Krippendorff's alpha (interval level for continuous scores)
+        alpha = krippendorff.alpha(reliability_data, level_of_measurement='interval')
+        return alpha
+    except Exception as e:
+        print(data_filtered)
+        print("EXCEPTION", e)
+        return np.nan
+
+
+def compute_krippendorff_alpha(data, models=None):
+    """
+    Compute Krippendorff's alpha for inter-rater reliability.
+
+    If data contains multiple evaluation axes, computes alpha for each axis separately.
+
+    Args:
+        data: DataFrame with text_id, model_name, evaluation_score, and optionally evaluation_axis
+        models: Optional list of model names to include. If None, uses all models in data.
+
+    Returns:
+        If single axis (or no axis column): float alpha value or np.nan
+        If multiple axes: dict mapping axis -> alpha value
+    """
+    if len(data) == 0:
+        return np.nan
+
+    # Filter to specified models if provided
+    if models is not None:
+        data = data[data["model_name"].isin(models)].copy()
+
+    if len(data) == 0:
+        return np.nan
+
+    # Check if there are multiple evaluation axes
+    if "evaluation_axis" in data.columns and data["evaluation_axis"].nunique() > 1:
+        # Compute alpha for each axis separately
+        alphas = {}
+        for axis in data["evaluation_axis"].unique():
+            axis_data = data[data["evaluation_axis"] == axis]
+            alphas[axis] = _compute_single_krippendorff_alpha(axis_data)
+        return alphas
+    else:
+        return _compute_single_krippendorff_alpha(data)
 
 # -------------------------
 # VARIANCE ALIGNMENT CHECK
@@ -312,9 +383,9 @@ def compute_variance_alignment(df, model_names, mode="aggregate"):
 per_model_variance, aggregate_stats = compute_variance_alignment(df, model_names, mode=COMPARISON_MODE)
 
 # -------------------------
-# ICC ESTIMATION EXPERIMENT
+# ICC AND ALPHA ESTIMATION EXPERIMENT
 # -------------------------
-def evaluate_icc_estimators(
+def evaluate_reliability_estimators(
     df,
     model_names,
     per_model_variance,
@@ -322,8 +393,17 @@ def evaluate_icc_estimators(
     n_trials=None,  # Will default to N_BOOTSTRAP_SAMPLES
     evaluation_axis=None  # Optional: filter by evaluation axis
 ):
-    results = []
-    icc_metadata = {}  # Store ICC values for each model
+    """
+    Evaluate both ICC(3,k) and Krippendorff's alpha estimators.
+
+    Returns:
+        icc_results: DataFrame with ICC estimation errors
+        alpha_results: DataFrame with Krippendorff's alpha estimation errors
+        reliability_metadata: dict with true ICC and alpha values for each model
+    """
+    icc_results = []
+    alpha_results = []
+    reliability_metadata = {}  # Store ICC and alpha values for each model
 
     # Use N_BOOTSTRAP_SAMPLES if n_trials not specified
     if n_trials is None:
@@ -342,14 +422,22 @@ def evaluate_icc_estimators(
 
         # Compute true ICC using pingouin
         true_icc = compute_icc_pingouin(hm_full_df, models=[model, "original"])
-        print(model, true_icc)
 
-        # We'll compute im_icc from im_full_df later after it's constructed
+        # Compute true Krippendorff's alpha
+        print(f"\nComputing true Krippendorff's alpha for model: {model}")
+        true_alpha = compute_krippendorff_alpha(hm_full_df, models=[model, "original"])
+
+        print(f"{model}: ICC={true_icc:.4f}, Alpha={true_alpha:.4f}")
+
+        # We'll compute im values from im_full_df later after it's constructed
         im_icc = None  # Placeholder, will be computed below
+        im_alpha = None  # Placeholder, will be computed below
 
-        icc_metadata[model] = {
+        reliability_metadata[model] = {
             "true_hm_icc": true_icc,
-            "im_icc": im_icc  # Will be updated below
+            "true_hm_alpha": true_alpha,
+            "im_icc": im_icc,  # Will be updated below
+            "im_alpha": im_alpha  # Will be updated below
         }
 
         text_ids = hm_full_df["text_id"].unique()
@@ -372,20 +460,25 @@ def evaluate_icc_estimators(
                     im_full_df.append({"text_id": text_id, "model_name": "avg_other", "evaluation_score": other_scores.mean()})
             im_full_df = pd.DataFrame(im_full_df)
 
-            # Compute IM ICC target
+            # Compute IM ICC and alpha targets
             im_icc = compute_icc_pingouin(im_full_df, models=[model, "avg_other"])
-            icc_metadata[model]["im_icc"] = im_icc
+            im_alpha = compute_krippendorff_alpha(im_full_df, models=[model, "avg_other"])
+            reliability_metadata[model]["im_icc"] = im_icc
+            reliability_metadata[model]["im_alpha"] = im_alpha
         else:
             # For aggregate mode, use all models
             im_full_df = df[df["model_name"] != "original"]
 
-            # Compute IM ICC target
+            # Compute IM ICC and alpha targets
             im_icc = compute_icc_pingouin(im_full_df, models=model_names)
-            icc_metadata[model]["im_icc"] = im_icc
+            im_alpha = compute_krippendorff_alpha(im_full_df, models=model_names)
+            reliability_metadata[model]["im_icc"] = im_icc
+            reliability_metadata[model]["im_alpha"] = im_alpha
 
         for k in budgets:
             # Random baseline - each trial uses a different seed
-            random_errors = []
+            random_icc_errors = []
+            random_alpha_errors = []
             for trial_idx in range(n_trials):
                 # Set a unique seed for each trial for reproducibility
                 np.random.seed(42 + trial_idx)
@@ -396,16 +489,30 @@ def evaluate_icc_estimators(
                 hm_sample = hm_full_df[hm_full_df["text_id"].isin(sampled_ids)]
 
                 try:
+                    # Compute ICC error
                     est_icc = compute_icc_pingouin(hm_sample, models=[model, "original"])
-
                     if np.isfinite(est_icc):
-                        random_errors.append(abs(est_icc - true_icc))
+                        random_icc_errors.append(min(2, abs(est_icc - true_icc)))
+
+                    # Compute alpha error
+                    est_alpha = compute_krippendorff_alpha(hm_sample, models=[model, "original"])
+                    if np.isfinite(est_alpha):
+                        random_alpha_errors.append(min(2, abs(est_alpha - true_alpha)))
                 except Exception:
                     pass
 
-            # Store each trial separately for proper bootstrapping
-            for error in random_errors:
-                results.append({
+            # Store ICC errors
+            for error in random_icc_errors:
+                icc_results.append({
+                    "model": model,
+                    "budget": k,
+                    "method": "random",
+                    "estimation_error": error
+                })
+
+            # Store alpha errors
+            for error in random_alpha_errors:
+                alpha_results.append({
                     "model": model,
                     "budget": k,
                     "method": "random",
@@ -413,7 +520,8 @@ def evaluate_icc_estimators(
                 })
 
             # Variance-matched: select subset that best matches THIS MODEL's IM variance
-            matched_errors = []
+            matched_icc_errors = []
+            matched_alpha_errors = []
             for trial_idx in range(n_trials):
                 # Set a unique seed for each trial for reproducibility
                 np.random.seed(42 + trial_idx)
@@ -449,42 +557,49 @@ def evaluate_icc_estimators(
                     hm_sample = hm_full_df[hm_full_df["text_id"].isin(best_ids)]
 
                     try:
+                        # Compute ICC error
                         est_icc = compute_icc_pingouin(hm_sample, models=[model, "original"])
-
                         if np.isfinite(est_icc):
-                            matched_errors.append(abs(est_icc - true_icc))
+                            matched_icc_errors.append(min(2, abs(est_icc - true_icc)))
+
+                        # Compute alpha error
+                        est_alpha = compute_krippendorff_alpha(hm_sample, models=[model, "original"])
+                        if np.isfinite(est_alpha):
+                            matched_alpha_errors.append(min(2, abs(est_alpha - true_alpha)))
                     except Exception:
                         pass
 
-            # Store each trial separately for proper bootstrapping
-            for error in matched_errors:
-                results.append({
+            # Store ICC errors
+            for error in matched_icc_errors:
+                icc_results.append({
                     "model": model,
                     "budget": k,
                     "method": "variance_matched",
                     "estimation_error": error
                 })
 
-    return pd.DataFrame(results), icc_metadata
+            # Store alpha errors
+            for error in matched_alpha_errors:
+                alpha_results.append({
+                    "model": model,
+                    "budget": k,
+                    "method": "variance_matched",
+                    "estimation_error": error
+                })
+
+    return pd.DataFrame(icc_results), pd.DataFrame(alpha_results), reliability_metadata
 
 def main():
     """Main execution function."""
     print("\n" + "="*50)
-    print("Running ICC estimation experiment...")
+    print("Running ICC and Krippendorff's Alpha estimation experiment...")
     print("="*50)
 
-    # Run experiment for all axes combined
-    results, icc_metadata_all = evaluate_icc_estimators(df, model_names, per_model_variance)
+    # Run experiment for each axis separately FIRST
+    icc_results_by_axis = {}
+    alpha_results_by_axis = {}
+    reliability_metadata_by_axis = {}
 
-    print(f"\nTotal results collected: {len(results)}")
-    print(f"Results by method:")
-    for method in results["method"].unique():
-        count = len(results[results["method"] == method])
-        print(f"  {method}: {count}")
-
-    # Run experiment for each axis separately
-    results_by_axis = {}
-    icc_metadata_by_axis = {}
     for axis in evaluation_axes[dataset]:
         print(f"\n{'='*50}")
         print(f"Running for axis: {axis}")
@@ -499,23 +614,79 @@ def main():
         )
 
         # Now run evaluation with axis-specific variance targets
-        axis_results, axis_icc_metadata = evaluate_icc_estimators(
+        axis_icc_results, axis_alpha_results, axis_reliability_metadata = evaluate_reliability_estimators(
             axis_df, model_names, axis_per_model_variance
         )
-        results_by_axis[axis] = axis_results
-        icc_metadata_by_axis[axis] = axis_icc_metadata
-        print(f"Collected {len(axis_results)} results for {axis}")
+        icc_results_by_axis[axis] = axis_icc_results
+        alpha_results_by_axis[axis] = axis_alpha_results
+        reliability_metadata_by_axis[axis] = axis_reliability_metadata
+        print(f"Collected {len(axis_icc_results)} ICC results and {len(axis_alpha_results)} Alpha results for {axis}")
 
-    return results, results_by_axis, icc_metadata_all, icc_metadata_by_axis
+    # Combine per-axis results for aggregate (instead of computing with mixed-axis data)
+    # This avoids the pivot issue and properly averages across axes
+    all_icc_results = []
+    all_alpha_results = []
+    for axis in evaluation_axes[dataset]:
+        if axis in icc_results_by_axis and len(icc_results_by_axis[axis]) > 0:
+            axis_icc = icc_results_by_axis[axis].copy()
+            axis_icc["axis"] = axis
+            all_icc_results.append(axis_icc)
+        if axis in alpha_results_by_axis and len(alpha_results_by_axis[axis]) > 0:
+            axis_alpha = alpha_results_by_axis[axis].copy()
+            axis_alpha["axis"] = axis
+            all_alpha_results.append(axis_alpha)
+
+    icc_results = pd.concat(all_icc_results, ignore_index=True) if all_icc_results else pd.DataFrame()
+    alpha_results = pd.concat(all_alpha_results, ignore_index=True) if all_alpha_results else pd.DataFrame()
+
+    # Compute aggregate reliability metadata (average across axes)
+    reliability_metadata_all = {}
+    for model in model_names:
+        hm_icc_vals = [reliability_metadata_by_axis[ax][model]["true_hm_icc"]
+                       for ax in reliability_metadata_by_axis if model in reliability_metadata_by_axis[ax]
+                       and np.isfinite(reliability_metadata_by_axis[ax][model]["true_hm_icc"])]
+        hm_alpha_vals = [reliability_metadata_by_axis[ax][model]["true_hm_alpha"]
+                         for ax in reliability_metadata_by_axis if model in reliability_metadata_by_axis[ax]
+                         and np.isfinite(reliability_metadata_by_axis[ax][model]["true_hm_alpha"])]
+        im_icc_vals = [reliability_metadata_by_axis[ax][model]["im_icc"]
+                       for ax in reliability_metadata_by_axis if model in reliability_metadata_by_axis[ax]
+                       and np.isfinite(reliability_metadata_by_axis[ax][model]["im_icc"])]
+        im_alpha_vals = [reliability_metadata_by_axis[ax][model]["im_alpha"]
+                         for ax in reliability_metadata_by_axis if model in reliability_metadata_by_axis[ax]
+                         and np.isfinite(reliability_metadata_by_axis[ax][model]["im_alpha"])]
+
+        reliability_metadata_all[model] = {
+            "true_hm_icc": np.mean(hm_icc_vals) if hm_icc_vals else np.nan,
+            "true_hm_alpha": np.mean(hm_alpha_vals) if hm_alpha_vals else np.nan,
+            "im_icc": np.mean(im_icc_vals) if im_icc_vals else np.nan,
+            "im_alpha": np.mean(im_alpha_vals) if im_alpha_vals else np.nan,
+        }
+
+    print(f"\n{'='*50}")
+    print("AGGREGATE RESULTS (combined from per-axis)")
+    print(f"{'='*50}")
+    print(f"Total ICC results collected: {len(icc_results)}")
+    print(f"Total Alpha results collected: {len(alpha_results)}")
+    if len(icc_results) > 0:
+        print(f"ICC Results by method:")
+        for method in icc_results["method"].unique():
+            count = len(icc_results[icc_results["method"] == method])
+            print(f"  {method}: {count}")
+
+    return (icc_results, alpha_results, icc_results_by_axis, alpha_results_by_axis,
+            reliability_metadata_all, reliability_metadata_by_axis)
 
 if __name__ == "__main__":
-    results, results_by_axis, icc_metadata_all, icc_metadata_by_axis = main()
+    (icc_results, alpha_results, icc_results_by_axis, alpha_results_by_axis,
+     reliability_metadata_all, reliability_metadata_by_axis) = main()
 else:
     # When imported, just compute variance alignment
-    results = None
-    results_by_axis = None
-    icc_metadata_all = None
-    icc_metadata_by_axis = None
+    icc_results = None
+    alpha_results = None
+    icc_results_by_axis = None
+    alpha_results_by_axis = None
+    reliability_metadata_all = None
+    reliability_metadata_by_axis = None
 
 # -------------------------
 # PLOTS
@@ -565,29 +736,41 @@ def compute_model_cis(results_df, n_bootstrap=1000):
 
     return pd.DataFrame(ci_data)
 
-def plot_results(results, results_by_axis=None, icc_metadata_all=None, icc_metadata_by_axis=None):
-    """Generate plots and summary tables.
+def plot_metric_results(results, results_by_axis=None, metadata_all=None, metadata_by_axis=None,
+                        metric_name="ICC", hm_key="true_hm_icc", im_key="im_icc"):
+    """Generate plots and summary tables for a reliability metric.
 
     Creates three sets of plots:
     1. Averaged across both axis and model (1 plot)
     2. Averaged across axis only (k plots, where k = number of models)
     3. Averaged across model only (m plots, where m = number of evaluation axes)
+
+    Args:
+        results: DataFrame with estimation errors
+        results_by_axis: Dict mapping axis -> DataFrame with estimation errors
+        metadata_all: Dict mapping model -> metadata dict
+        metadata_by_axis: Dict mapping axis -> model -> metadata dict
+        metric_name: Name of the metric (e.g., "ICC" or "Alpha")
+        hm_key: Key for human-model metric in metadata
+        im_key: Key for inter-model metric in metadata
     """
     if results is None or len(results) == 0:
-        print("\nNo results to plot.")
+        print(f"\nNo {metric_name} results to plot.")
         return
+
+    metric_lower = metric_name.lower()
 
     # =====================================
     # SET 1: Averaged across axis AND model (1 plot)
     # =====================================
     avg_results = compute_model_cis(results)
 
-    # Compute average ICC values across all models
+    # Compute average metric values across all models
     legend_text = ""
-    if icc_metadata_all is not None:
-        avg_true_hm_icc = np.mean([v["true_hm_icc"] for v in icc_metadata_all.values() if np.isfinite(v["true_hm_icc"])])
-        avg_im_icc = np.mean([v["im_icc"] for v in icc_metadata_all.values() if np.isfinite(v["im_icc"])])
-        legend_text = f"\nAxis: All | Avg HM-ICC: {avg_true_hm_icc:.3f} | Avg {'Pairwise' if COMPARISON_MODE == 'pairwise' else 'Aggregate'} IM-ICC: {avg_im_icc:.3f}"
+    if metadata_all is not None:
+        avg_true_hm = np.mean([v[hm_key] for v in metadata_all.values() if np.isfinite(v[hm_key])])
+        avg_im = np.mean([v[im_key] for v in metadata_all.values() if np.isfinite(v[im_key])])
+        legend_text = f"\nAxis: All | Avg HM-{metric_name}: {avg_true_hm:.3f} | Avg {'Pairwise' if COMPARISON_MODE == 'pairwise' else 'Aggregate'} IM-{metric_name}: {avg_im:.3f}"
 
     plt.figure(figsize=(10, 6))
 
@@ -606,22 +789,22 @@ def plot_results(results, results_by_axis=None, icc_metadata_all=None, icc_metad
             alpha=0.8
         )
 
-    plt.ylabel("Absolute ICC Error (avg across models & axes)", fontsize=12)
+    plt.ylabel(f"Absolute {metric_name} Error (avg across models & axes)", fontsize=12)
     plt.xlabel("Human Annotation Budget", fontsize=12)
-    plt.title(f"{dataset} ICC Estimation: Random vs Variance-Matched{legend_text}\n(Averaged over all models & axes with 95% CI)", fontsize=11)
+    plt.title(f"{dataset} {metric_name} Estimation: Random vs Variance-Matched{legend_text}\n(Averaged over all models & axes with 95% CI)", fontsize=11)
     plt.legend(title="Method", fontsize=11)
     plt.grid(alpha=0.3)
     plt.tight_layout()
-    plt.savefig(os.path.join(PLOTS_DIR, f"{dataset}_icc_estimation_comparison_avg_all.jpg"), dpi=300)
+    plt.savefig(os.path.join(PLOTS_DIR, f"{dataset}_{metric_lower}_estimation_comparison_avg_all.jpg"), dpi=300)
     plt.close()
-    print(f"\n[SET 1: Avg across axis AND model]")
-    print(f"  Saved: {os.path.join(PLOTS_DIR, f'{dataset}_icc_estimation_comparison_avg_all.jpg')}")
+    print(f"\n[{metric_name} SET 1: Avg across axis AND model]")
+    print(f"  Saved: {os.path.join(PLOTS_DIR, f'{dataset}_{metric_lower}_estimation_comparison_avg_all.jpg')}")
 
     # =====================================
     # SET 2: Averaged across axis only (k model plots)
     # =====================================
     if results_by_axis is not None and len(results_by_axis) > 0:
-        print(f"\n[SET 2: Avg across axis only - {len(results['model'].unique())} model plots]")
+        print(f"\n[{metric_name} SET 2: Avg across axis only - {len(results['model'].unique())} model plots]")
         for model in results["model"].unique():
             # Collect data across all axes for this model
             model_data_across_axes = []
@@ -640,19 +823,19 @@ def plot_results(results, results_by_axis=None, icc_metadata_all=None, icc_metad
             # Compute bootstrap CIs using the same function as SET 1 and SET 3
             avg_model_results = compute_model_cis(model_results)
 
-            # Compute average ICC across axes for this model
+            # Compute average metric across axes for this model
             legend_text = ""
-            if icc_metadata_by_axis is not None:
-                model_hm_iccs = [icc_metadata_by_axis[ax][model]["true_hm_icc"]
-                                for ax in icc_metadata_by_axis if model in icc_metadata_by_axis[ax]
-                                and np.isfinite(icc_metadata_by_axis[ax][model]["true_hm_icc"])]
-                model_im_iccs = [icc_metadata_by_axis[ax][model]["im_icc"]
-                                for ax in icc_metadata_by_axis if model in icc_metadata_by_axis[ax]
-                                and np.isfinite(icc_metadata_by_axis[ax][model]["im_icc"])]
-                if model_hm_iccs and model_im_iccs:
-                    avg_hm_icc = np.mean(model_hm_iccs)
-                    avg_im_icc = np.mean(model_im_iccs)
-                    legend_text = f"\nAxis: All | Avg HM-ICC: {avg_hm_icc:.3f} | Avg {'Pairwise' if COMPARISON_MODE == 'pairwise' else 'Aggregate'} IM-ICC: {avg_im_icc:.3f}"
+            if metadata_by_axis is not None:
+                model_hm_vals = [metadata_by_axis[ax][model][hm_key]
+                                for ax in metadata_by_axis if model in metadata_by_axis[ax]
+                                and np.isfinite(metadata_by_axis[ax][model][hm_key])]
+                model_im_vals = [metadata_by_axis[ax][model][im_key]
+                                for ax in metadata_by_axis if model in metadata_by_axis[ax]
+                                and np.isfinite(metadata_by_axis[ax][model][im_key])]
+                if model_hm_vals and model_im_vals:
+                    avg_hm = np.mean(model_hm_vals)
+                    avg_im = np.mean(model_im_vals)
+                    legend_text = f"\nAxis: All | Avg HM-{metric_name}: {avg_hm:.3f} | Avg {'Pairwise' if COMPARISON_MODE == 'pairwise' else 'Aggregate'} IM-{metric_name}: {avg_im:.3f}"
 
             plt.figure(figsize=(10, 6))
 
@@ -671,44 +854,44 @@ def plot_results(results, results_by_axis=None, icc_metadata_all=None, icc_metad
                     alpha=0.8
                 )
 
-            plt.ylabel("Absolute ICC Error (avg across axes)", fontsize=12)
+            plt.ylabel(f"Absolute {metric_name} Error (avg across axes)", fontsize=12)
             plt.xlabel("Human Annotation Budget", fontsize=12)
-            plt.title(f"{dataset} ICC Estimation: {model}{legend_text}\n(Averaged across axes with 95% CI)", fontsize=11)
+            plt.title(f"{dataset} {metric_name} Estimation: {model}{legend_text}\n(Averaged across axes with 95% CI)", fontsize=11)
             plt.legend(title="Method", fontsize=11)
             plt.grid(alpha=0.3)
             plt.tight_layout()
 
             # Clean model name for filename
             safe_model_name = model.replace("/", "-").replace("\\", "-")
-            plt.savefig(os.path.join(PLOTS_DIR, f"{dataset}_icc_estimation_by_model_{safe_model_name}.jpg"), dpi=300)
+            plt.savefig(os.path.join(PLOTS_DIR, f"{dataset}_{metric_lower}_estimation_by_model_{safe_model_name}.jpg"), dpi=300)
             plt.close()
 
-            print(f"  Saved: {os.path.join(PLOTS_DIR, f'{dataset}_icc_estimation_by_model_{safe_model_name}.jpg')}")
+            print(f"  Saved: {os.path.join(PLOTS_DIR, f'{dataset}_{metric_lower}_estimation_by_model_{safe_model_name}.jpg')}")
 
     # =====================================
     # SET 3: Averaged across model only (m axis plots)
     # =====================================
     if results_by_axis is not None and len(results_by_axis) > 0:
-        print(f"\n[SET 3: Avg across model only - {len(results_by_axis)} axis plots]")
+        print(f"\n[{metric_name} SET 3: Avg across model only - {len(results_by_axis)} axis plots]")
         for axis, axis_results in results_by_axis.items():
             if axis_results is None or len(axis_results) == 0:
                 continue
 
             avg_axis_results = compute_model_cis(axis_results)
 
-            # Compute average ICC across models for this axis
+            # Compute average metric across models for this axis
             legend_text = ""
-            if icc_metadata_by_axis is not None and axis in icc_metadata_by_axis:
-                axis_hm_iccs = [icc_metadata_by_axis[axis][model]["true_hm_icc"]
-                                for model in icc_metadata_by_axis[axis]
-                                if np.isfinite(icc_metadata_by_axis[axis][model]["true_hm_icc"])]
-                axis_im_iccs = [icc_metadata_by_axis[axis][model]["im_icc"]
-                                for model in icc_metadata_by_axis[axis]
-                                if np.isfinite(icc_metadata_by_axis[axis][model]["im_icc"])]
-                if axis_hm_iccs and axis_im_iccs:
-                    avg_hm_icc = np.mean(axis_hm_iccs)
-                    avg_im_icc = np.mean(axis_im_iccs)
-                    legend_text = f"\nAxis: {axis} | Avg HM-ICC: {avg_hm_icc:.3f} | Avg {'Pairwise' if COMPARISON_MODE == 'pairwise' else 'Aggregate'} IM-ICC: {avg_im_icc:.3f}"
+            if metadata_by_axis is not None and axis in metadata_by_axis:
+                axis_hm_vals = [metadata_by_axis[axis][model][hm_key]
+                                for model in metadata_by_axis[axis]
+                                if np.isfinite(metadata_by_axis[axis][model][hm_key])]
+                axis_im_vals = [metadata_by_axis[axis][model][im_key]
+                                for model in metadata_by_axis[axis]
+                                if np.isfinite(metadata_by_axis[axis][model][im_key])]
+                if axis_hm_vals and axis_im_vals:
+                    avg_hm = np.mean(axis_hm_vals)
+                    avg_im = np.mean(axis_im_vals)
+                    legend_text = f"\nAxis: {axis} | Avg HM-{metric_name}: {avg_hm:.3f} | Avg {'Pairwise' if COMPARISON_MODE == 'pairwise' else 'Aggregate'} IM-{metric_name}: {avg_im:.3f}"
 
             plt.figure(figsize=(10, 6))
 
@@ -727,25 +910,25 @@ def plot_results(results, results_by_axis=None, icc_metadata_all=None, icc_metad
                     alpha=0.8
                 )
 
-            plt.ylabel("Absolute ICC Error (avg across models)", fontsize=12)
+            plt.ylabel(f"Absolute {metric_name} Error (avg across models)", fontsize=12)
             plt.xlabel("Human Annotation Budget", fontsize=12)
-            plt.title(f"{dataset} ICC Estimation{legend_text}\n(Averaged across models with 95% CI)", fontsize=11)
+            plt.title(f"{dataset} {metric_name} Estimation{legend_text}\n(Averaged across models with 95% CI)", fontsize=11)
             plt.legend(title="Method", fontsize=11)
             plt.grid(alpha=0.3)
             plt.tight_layout()
 
             # Clean axis name for filename
             safe_axis_name = axis.replace("/", "-").replace("\\", "-").replace(" ", "_")
-            plt.savefig(os.path.join(PLOTS_DIR, f"{dataset}_icc_estimation_by_axis_{safe_axis_name}.jpg"), dpi=300)
+            plt.savefig(os.path.join(PLOTS_DIR, f"{dataset}_{metric_lower}_estimation_by_axis_{safe_axis_name}.jpg"), dpi=300)
             plt.close()
 
-            print(f"  Saved: {os.path.join(PLOTS_DIR, f'{dataset}_icc_estimation_by_axis_{safe_axis_name}.jpg')}")
+            print(f"  Saved: {os.path.join(PLOTS_DIR, f'{dataset}_{metric_lower}_estimation_by_axis_{safe_axis_name}.jpg')}")
 
     # =====================================
     # Summary table
     # =====================================
     print("\n" + "="*50)
-    print("Average ICC Estimation Error by Method and Budget (Mean with 95% CI)")
+    print(f"Average {metric_name} Estimation Error by Method and Budget (Mean with 95% CI)")
     print("(Averaged across all models and axes)")
     print("="*50)
 
@@ -759,5 +942,38 @@ def plot_results(results, results_by_axis=None, icc_metadata_all=None, icc_metad
         for _, row in method_data.iterrows():
             print(f"  Budget {int(row['budget']):2d}: {row['formatted']}")
 
+
+def plot_results(icc_results, alpha_results, icc_results_by_axis, alpha_results_by_axis,
+                 reliability_metadata_all, reliability_metadata_by_axis):
+    """Generate plots for both ICC and Krippendorff's Alpha estimation errors."""
+
+    print("\n" + "="*60)
+    print("PLOTTING ICC ESTIMATION ERROR RESULTS")
+    print("="*60)
+    plot_metric_results(
+        icc_results,
+        icc_results_by_axis,
+        reliability_metadata_all,
+        reliability_metadata_by_axis,
+        metric_name="ICC",
+        hm_key="true_hm_icc",
+        im_key="im_icc"
+    )
+
+    print("\n" + "="*60)
+    print("PLOTTING KRIPPENDORFF'S ALPHA ESTIMATION ERROR RESULTS")
+    print("="*60)
+    plot_metric_results(
+        alpha_results,
+        alpha_results_by_axis,
+        reliability_metadata_all,
+        reliability_metadata_by_axis,
+        metric_name="Alpha",
+        hm_key="true_hm_alpha",
+        im_key="im_alpha"
+    )
+
+
 if __name__ == "__main__":
-    plot_results(results, results_by_axis, icc_metadata_all, icc_metadata_by_axis)
+    plot_results(icc_results, alpha_results, icc_results_by_axis, alpha_results_by_axis,
+                 reliability_metadata_all, reliability_metadata_by_axis)
