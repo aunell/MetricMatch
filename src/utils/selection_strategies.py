@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 from sklearn.cluster import KMeans
 
 def random_selection(cheap_ratings, n_expensive, seed):
@@ -326,3 +327,85 @@ def variance_matching(cheap_ratings, n_expensive, seed, epsilon=0.1, k=10):
     # If no valid sample found after k attempts, return the last attempt
     print("VARIANCE MATCHING DIDNT WORK")
     return curr_selected
+
+
+def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse_target,
+                                   compute_ms_fn, seed=42, n_candidates=20):
+    """
+    Select subset that best matches target inter-model variance using MS components.
+
+    Tries multiple random subsets and picks the one with MSB/MSE closest to target.
+    Used for reliability estimation experiments where we want to match the variance
+    structure of inter-model comparisons.
+
+    Args:
+        text_ids: Array of text IDs to sample from
+        k: Number of items to select
+        im_full_df: DataFrame with inter-model data (text_id, model_name, evaluation_score)
+        im_msb_target: Target mean square between (MSB) value
+        im_mse_target: Target mean square error (MSE) value
+        compute_ms_fn: Function to compute MS components (returns msb_expand, msb, mse_expand, mse)
+        seed: Random seed for reproducibility
+        n_candidates: Number of candidate subsets to try (default: 20)
+
+    Returns:
+        Array of selected text_ids, or None if no valid subset found
+    """
+    rng = np.random.RandomState(seed)
+    best_ids = None
+    best_score = float('inf')
+
+    for _ in range(n_candidates):
+        candidate_ids = rng.choice(text_ids, size=min(k, len(text_ids)), replace=False)
+        im_candidate = im_full_df[im_full_df["text_id"].isin(candidate_ids)]
+
+        if len(im_candidate) == 0:
+            continue
+
+        _, cand_msb, _, cand_mse = compute_ms_fn(im_candidate)
+
+        if not (np.isfinite(cand_msb) and np.isfinite(cand_mse)):
+            continue
+
+        score = abs(cand_msb - im_msb_target) + abs(cand_mse - im_mse_target)
+        if score < best_score:
+            best_score = score
+            best_ids = candidate_ids
+
+    return best_ids
+
+
+def max_expand_selection(im_full_df, k, compute_ms_fn, alpha_weight=0.5):
+    """
+    Select most informative points based on MS component contributions.
+
+    Ranks text_ids by their combined contribution to MSB (between-subject variance)
+    and MSE (within-subject variance), then selects the top k items. This method
+    prioritizes items that contribute most to the variance structure.
+
+    Args:
+        im_full_df: DataFrame with inter-model data (text_id, model_name, evaluation_score)
+        k: Number of items to select
+        compute_ms_fn: Function to compute MS components (returns msb_expand, msb, mse_expand, mse)
+        alpha_weight: Weight for MSB contribution vs MSE (default: 0.5 for equal weighting)
+                      Higher values prioritize between-subject variance (more informative for ICC)
+
+    Returns:
+        List of selected text_ids, or None if computation fails
+    """
+    if len(im_full_df) == 0:
+        return None
+
+    try:
+        im_msb_expand, _, im_mse_expand, _ = compute_ms_fn(im_full_df)
+
+        if not isinstance(im_msb_expand, pd.Series) or len(im_msb_expand) == 0:
+            return None
+
+        # Linear combination of MSB and MSE contributions
+        combined_score = alpha_weight * im_msb_expand + (1 - alpha_weight) * im_mse_expand
+        sorted_text_ids = combined_score.sort_values(ascending=False).index.tolist()
+
+        return sorted_text_ids[:min(k, len(sorted_text_ids))]
+    except Exception:
+        return None

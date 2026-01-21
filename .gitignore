@@ -4,3 +4,5 @@ data/
 results/
 scripts/private.txt
 deprecated/
+smartsample.egg-info/
+pyproject.toml
