@@ -72,12 +72,16 @@ def compute_variance_alignment(df, model_names, mode="aggregate"):
 
     if mode == "aggregate":
         im_df = df[df["model_name"] != "original"]
-        msb_expand_global, im_msb_global, mse_expand_global, im_mse_global = compute_ms_components(im_df)
+        im_icc_obj = compute_ms_components(im_df)
+        msb_expand_global, im_msb_global, mse_expand_global, im_mse_global, icc_expand_global, im_icc_global = \
+            im_icc_obj.msb_expand, im_icc_obj.msb, im_icc_obj.mse_expand, im_icc_obj.mse, im_icc_obj.icc_expand, im_icc_obj.icc
 
         for m in model_names:
-            hm_msb_expand, hm_msb, hm_mse_expand, hm_mse = compute_ms_components(
+            hm_icc_obj = compute_ms_components(
                 df[df["model_name"].isin([m, "original"])]
             )
+            hm_msb_expand, hm_msb, hm_mse_expand, hm_mse, hm_icc_expand, hm_icc = \
+            hm_icc_obj.msb_expand, hm_icc_obj.msb, hm_icc_obj.mse_expand, hm_icc_obj.mse, hm_icc_obj.icc_expand, hm_icc_obj.icc
             per_model_variance[m] = {
                 "im_msb": im_msb_global,
                 "im_mse": im_mse_global,
@@ -127,7 +131,8 @@ def compute_variance_alignment(df, model_names, mode="aggregate"):
 
             im_pair_df = pd.DataFrame(im_avg_df)
             if len(im_pair_df) > 0:
-                im_msb_expand, im_msb, im_mse_expand, im_mse = compute_ms_components(im_pair_df)
+                im_icc_obj = compute_ms_components(im_pair_df)
+                im_msb_expand, im_msb, im_mse_expand, im_mse, im_icc_expand, im_icc = im_icc_obj.msb_expand, im_icc_obj.msb, im_icc_obj.mse_expand, im_icc_obj.mse, im_icc_obj.icc_expand, im_icc_obj.icc
                 im_msb_list.append(im_msb)
                 im_mse_list.append(im_mse)
             else:
@@ -136,9 +141,10 @@ def compute_variance_alignment(df, model_names, mode="aggregate"):
                 im_mse_list.append(im_mse)
 
             # Human-model: this model vs human
-            hm_msb_expand, hm_msb, hm_mse_expand, hm_mse = compute_ms_components(
+            hm_icc_obj = compute_ms_components(
                 df[df["model_name"].isin([m, "original"])]
             )
+            hm_msb_expand, hm_msb, hm_mse_expand, hm_mse, hm_icc_expand, hm_icc = hm_icc_obj.msb_expand, hm_icc_obj.msb, hm_icc_obj.mse_expand, hm_icc_obj.mse, hm_icc_obj.icc_expand, hm_icc_obj.icc
             hm_msb_list.append(hm_msb)
             hm_mse_list.append(hm_mse)
 

@@ -12,8 +12,10 @@ import pandas as pd
 import pingouin as pg
 import krippendorff
 
+from intraclass_corr import PointwiseICC
 
-def compute_ms_components(data):
+
+def compute_ms_components(data: pd.DataFrame, targets: str = "text_id", raters: str = "model_name", ratings: str = "evaluation_score"):
     """
     Compute MSB and MSE components for ICC calculation.
 
@@ -24,38 +26,27 @@ def compute_ms_components(data):
         data: DataFrame with columns: text_id, model_name, evaluation_score
 
     Returns:
-        Tuple of (msb_expand, msb, mse_expand, mse) where:
+        PointwiseICC object with the following attributes:
+            - data: formatted DataFrame with columns: text_id, model_name, evaluation_score
+            - n: number of unique targets (text_id) used in the calculations
+            - k: number of unique raters (model_name) used in the calculations
             - msb_expand: Per-text contributions to MSB (Series indexed by text_id)
             - msb: Scalar MSB value
             - mse_expand: Per-text contributions to MSE (Series indexed by text_id)
             - mse: Scalar MSE value
-        Returns (np.nan, np.nan, np.nan, np.nan) if computation fails
+            - icc_expand: Per-text contributions to ICC (Series indexed by text_id)
+            - icc: Scalar ICC value
+        Returns None if computation fails
     """
     k = data["model_name"].nunique()
     n = data["text_id"].nunique()
 
     if n <= 1 or k <= 1:
-        return np.nan, np.nan, np.nan, np.nan
+        return None
+    
+    icc_obj = PointwiseICC(n=n, k=k, data=data, normalize=True, targets=targets, raters=raters, ratings=ratings)
 
-    grouped_by_text = data.groupby("text_id")["evaluation_score"]
-    grouped_by_model = data.groupby("model_name")["evaluation_score"]
-
-    s = grouped_by_text.mean()
-    m = grouped_by_model.mean()
-    xbar = data["evaluation_score"].mean()
-
-    # For each text i, (S_i - x_tot)^2
-    msb_expand = (s - xbar) ** 2
-    msb = (k / (n - 1)) * msb_expand.sum()
-
-    # For each text i, (1 / k) sum_j=1^k (x_ij - M_j)^2
-    mse_partial_expand = data.groupby("text_id")[["model_name", "evaluation_score"]].apply(
-        lambda x: np.mean((x.set_index("model_name").squeeze() - m) ** 2)
-    )
-
-    mse = (1 / ((n - 1) * (k - 1))) * (mse_partial_expand.sum() - (k * msb_expand.sum()))
-
-    return msb_expand, msb, mse_partial_expand, mse
+    return icc_obj
 
 
 def compute_icc_pingouin(data, models=None):
