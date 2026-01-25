@@ -344,7 +344,7 @@ def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse
         im_full_df: DataFrame with inter-model data (text_id, model_name, evaluation_score)
         im_msb_target: Target mean square between (MSB) value
         im_mse_target: Target mean square error (MSE) value
-        compute_ms_fn: Function to compute MS components (returns msb_expand, msb, mse_expand, mse)
+        compute_ms_fn: Function to compute MS components (returns PointwiseICC object)
         seed: Random seed for reproducibility
         n_candidates: Number of candidate subsets to try (default: 20)
 
@@ -361,8 +361,11 @@ def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse
 
         if len(im_candidate) == 0:
             continue
-
-        _, cand_msb, _, cand_mse = compute_ms_fn(im_candidate)
+        
+        cand_obj = compute_ms_fn(im_candidate)
+        cand_msb, cand_mse, cand_icc = cand_obj.msb, cand_obj.mse, cand_obj.icc
+        if cand_obj.msb==None or cand_obj.mse==None:
+            continue
 
         if not (np.isfinite(cand_msb) and np.isfinite(cand_mse)):
             continue
@@ -386,7 +389,7 @@ def max_expand_selection(im_full_df, k, compute_ms_fn, alpha_weight=0.5):
     Args:
         im_full_df: DataFrame with inter-model data (text_id, model_name, evaluation_score)
         k: Number of items to select
-        compute_ms_fn: Function to compute MS components (returns msb_expand, msb, mse_expand, mse)
+        compute_ms_fn: Function to compute MS components (returns Pointwise ICC object)
         alpha_weight: Weight for MSB contribution vs MSE (default: 0.5 for equal weighting)
                       Higher values prioritize between-subject variance (more informative for ICC)
 
@@ -397,7 +400,8 @@ def max_expand_selection(im_full_df, k, compute_ms_fn, alpha_weight=0.5):
         return None
 
     try:
-        im_msb_expand, _, im_mse_expand, _ = compute_ms_fn(im_full_df)
+        im_obj = compute_ms_fn(im_full_df)
+        im_msb_expand, im_mse_expand, icc_expand = im_obj.msb_expand, im_obj.mse_expand, im_obj.icc_expand
 
         if not isinstance(im_msb_expand, pd.Series) or len(im_msb_expand) == 0:
             return None
