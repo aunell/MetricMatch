@@ -23,7 +23,6 @@ from src.utils.selection_strategies import (
     max_expand_selection,
 )
 from src.utils.plotting import plot_all_results
-
 # Set random seed for reproducibility
 np.random.seed(42)
 
@@ -41,12 +40,12 @@ EVALUATION_AXES = {
 }
 
 # Runtime configuration
-dataset = "hanna"
+dataset = "hanna" #"medval" 
 # model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "gpt-5", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
 # model_names = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
 model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5"]
 DATA_DIR = "data/judge_scores"
-PLOTS_DIR = "results/01_21_big"
+PLOTS_DIR = "results/01_25_big"
 COMPARISON_MODE = "pairwise"  # "pairwise" or "aggregate"
 
 os.makedirs(PLOTS_DIR, exist_ok=True)
@@ -107,29 +106,29 @@ def compute_variance_alignment(df, model_names, mode="aggregate"):
         im_grouped = im_subset.groupby("text_id")
 
         for m in model_names:
-            other_models = [x for x in model_names if x != m]
+            # other_models = [x for x in model_names if x != m]
 
-            # Inter-model: this model vs avg of other models
-            im_avg_df = []
-            for text_id, text_data in im_grouped:
-                model_score = text_data.loc[text_data["model_name"] == m, "evaluation_score"]
-                if len(model_score) > 0:
-                    im_avg_df.append({
-                        "text_id": text_id,
-                        "model_name": m,
-                        "evaluation_score": model_score.iloc[0]
-                    })
-                other_scores = text_data.loc[
-                    text_data["model_name"].isin(other_models), "evaluation_score"
-                ]
-                if len(other_scores) > 0:
-                    im_avg_df.append({
-                        "text_id": text_id,
-                        "model_name": "avg_other",
-                        "evaluation_score": other_scores.mean()
-                    })
-
-            im_pair_df = pd.DataFrame(im_avg_df)
+            # # Inter-model: this model vs avg of other models
+            # im_avg_df = []
+            # for text_id, text_data in im_grouped:
+            #     model_score = text_data.loc[text_data["model_name"] == m, "evaluation_score"]
+            #     if len(model_score) > 0:
+            #         im_avg_df.append({
+            #             "text_id": text_id,
+            #             "model_name": m,
+            #             "evaluation_score": model_score.iloc[0]
+            #         })
+            #     other_scores = text_data.loc[
+            #         text_data["model_name"].isin(other_models), "evaluation_score"
+            #     ]
+            #     if len(other_scores) > 0:
+            #         im_avg_df.append({
+            #             "text_id": text_id,
+            #             "model_name": "avg_other",
+            #             "evaluation_score": other_scores.mean()
+            #         })
+            im_pair_df = _build_im_pairwise_df(df, m, model_names)
+            # im_pair_df = pd.DataFrame(im_avg_df)
             if len(im_pair_df) > 0:
                 im_icc_obj = compute_ms_components(im_pair_df)
                 im_msb_expand, im_msb, im_mse_expand, im_mse, im_icc_expand, im_icc = im_icc_obj.msb_expand, im_icc_obj.msb, im_icc_obj.mse_expand, im_icc_obj.mse, im_icc_obj.icc_expand, im_icc_obj.icc
@@ -396,6 +395,24 @@ def main():
         print(f"{'=' * 50}")
 
         axis_df = df[df["evaluation_axis"] == axis]
+        # how many unique models
+        # number of models
+        num_models = axis_df["model_name"].nunique()
+
+        # count models per text_id
+        texts_per_model = (
+            axis_df.groupby("text_id")["model_name"]
+            .nunique()
+        )
+
+        # text_ids shared across all models
+        shared_text_ids = texts_per_model[texts_per_model == num_models].index
+
+        # keep only shared text_ids
+        axis_df = axis_df[axis_df["text_id"].isin(shared_text_ids)]
+
+        print(f"Remaining rows: {len(axis_df)}")
+        
 
         # Recompute variance components for this axis
         axis_per_model_variance, _ = compute_variance_alignment(

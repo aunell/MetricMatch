@@ -12,7 +12,8 @@ import pandas as pd
 import pingouin as pg
 import krippendorff
 
-from intraclass_corr import PointwiseICC
+# from intraclass_corr import PointwiseICC
+from src.utils.intraclass_corr import PointwiseICC
 
 
 def compute_ms_components(data: pd.DataFrame, targets: str = "text_id", raters: str = "model_name", ratings: str = "evaluation_score"):
@@ -179,7 +180,6 @@ def compute_krippendorff_alpha(data, models=None):
 
     # Check if there are multiple evaluation axes
     if "evaluation_axis" in data.columns and data["evaluation_axis"].nunique() > 1:
-        breakpoint()
         alphas = {}
         for axis in data["evaluation_axis"].unique():
             axis_data = data[data["evaluation_axis"] == axis]

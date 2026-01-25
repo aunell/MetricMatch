@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import json
 from functools import reduce
@@ -7,6 +8,7 @@ import pandas as pd
 
 import warnings
 from collections.abc import Iterable
+
 
 ## Util function for obtaining evaluation score with differing data organization 
 def get_deepest_key(d):
@@ -61,7 +63,6 @@ class PointwiseICC:
             fdata = grp_both.mean().reset_index()
             print("Dropped {} rows due to duplicate ratings by same rater on target.".format(self.n - fdata[targets].unique().size))
             self.n = fdata[targets].unique().size
-
         return fdata
 
     def _compute_pointwise_unnormalized_anova(self, data: pd.DataFrame, targets: str = "text_id", raters: str = "model_name", ratings: str = "evaluation_score"):
@@ -117,8 +118,15 @@ class PointwiseICC:
         self.unnormalized_msb_expand = None
 
         ## for each text i, (k / (n-1)) (S_i - x_tot)^2
-        self.msb_expand = msb_expand = (k / (n - 1)) * (s - x_tot) ** 2 # n x 1 each element in the array is contribution of text i to msb
-        self.msb = msb = msb_expand.sum()
+        try:
+            self.msb_expand = msb_expand = (k / (n - 1)) * (s - x_tot) ** 2 # n x 1 each element in the array is contribution of text i to msb
+            self.msb = msb = msb_expand.sum()
+        except:
+            self.msb_expand = msb_expand = pd.Series(np.zeros(n), index=data[targets].unique())
+            self.msb=None
+            self.mse=None
+            self.icc=None
+            return
         
         self.unnormalized_mse_partial_expand = unnormalized_mse_partial_expand = data.groupby(targets)[[raters, ratings]].apply(lambda x: np.sum((x.set_index(raters).squeeze() - m) ** 2))
 

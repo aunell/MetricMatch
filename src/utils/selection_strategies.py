@@ -364,6 +364,8 @@ def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse
         
         cand_obj = compute_ms_fn(im_candidate)
         cand_msb, cand_mse, cand_icc = cand_obj.msb, cand_obj.mse, cand_obj.icc
+        if cand_obj.msb==None or cand_obj.mse==None:
+            continue
 
         if not (np.isfinite(cand_msb) and np.isfinite(cand_mse)):
             continue
