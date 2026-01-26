@@ -31,6 +31,10 @@ np.random.seed(42)
 # -------------------------
 N_BOOTSTRAP_SAMPLES = 100
 N_CANDIDATE_SUBSETS = 20
+TOTAL_ANNOTATIONS = 300
+
+# Sampling strategies to compare (choose from: "random", "variance_matched", "max_expand")
+SAMPLING_STRATEGIES = ["random", "variance_matched"] #, "max_expand"]
 
 EVALUATION_AXES = {
     "hanna": ["Coherence", "Complexity", "Empathy", "Engagement", "Relevance", "Surprise"],
@@ -40,12 +44,12 @@ EVALUATION_AXES = {
 }
 
 # Runtime configuration
-dataset = "hanna" #"medval" 
+dataset = "summeval" #"medval" #mslr #hanna #summeval
 # model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "gpt-5", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
-# model_names = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
-model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5"]
+model_names = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
+# model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5"]
 DATA_DIR = "data/judge_scores"
-PLOTS_DIR = "results/01_25_big"
+PLOTS_DIR = "results/01_25_small"
 COMPARISON_MODE = "pairwise"  # "pairwise" or "aggregate"
 
 os.makedirs(PLOTS_DIR, exist_ok=True)
@@ -106,29 +110,8 @@ def compute_variance_alignment(df, model_names, mode="aggregate"):
         im_grouped = im_subset.groupby("text_id")
 
         for m in model_names:
-            # other_models = [x for x in model_names if x != m]
-
-            # # Inter-model: this model vs avg of other models
-            # im_avg_df = []
-            # for text_id, text_data in im_grouped:
-            #     model_score = text_data.loc[text_data["model_name"] == m, "evaluation_score"]
-            #     if len(model_score) > 0:
-            #         im_avg_df.append({
-            #             "text_id": text_id,
-            #             "model_name": m,
-            #             "evaluation_score": model_score.iloc[0]
-            #         })
-            #     other_scores = text_data.loc[
-            #         text_data["model_name"].isin(other_models), "evaluation_score"
-            #     ]
-            #     if len(other_scores) > 0:
-            #         im_avg_df.append({
-            #             "text_id": text_id,
-            #             "model_name": "avg_other",
-            #             "evaluation_score": other_scores.mean()
-            #         })
             im_pair_df = _build_im_pairwise_df(df, m, model_names)
-            # im_pair_df = pd.DataFrame(im_avg_df)
+
             if len(im_pair_df) > 0:
                 im_icc_obj = compute_ms_components(im_pair_df)
                 im_msb_expand, im_msb, im_mse_expand, im_mse, im_icc_expand, im_icc = im_icc_obj.msb_expand, im_icc_obj.msb, im_icc_obj.mse_expand, im_icc_obj.mse, im_icc_obj.icc_expand, im_icc_obj.icc
@@ -339,32 +322,35 @@ def evaluate_reliability_estimators(df, model_names, per_model_variance,
 
         for k in budgets:
             # Random baseline
-            random_icc, random_alpha = _run_random_trials(
-                text_ids, k, n_trials, hm_full_df, model, true_icc, true_alpha
-            )
-            for error in random_icc:
-                icc_results.append({"model": model, "budget": k, "method": "random", "estimation_error": error})
-            for error in random_alpha:
-                alpha_results.append({"model": model, "budget": k, "method": "random", "estimation_error": error})
+            if "random" in SAMPLING_STRATEGIES:
+                random_icc, random_alpha = _run_random_trials(
+                    text_ids, k, n_trials, hm_full_df, model, true_icc, true_alpha
+                )
+                for error in random_icc:
+                    icc_results.append({"model": model, "budget": k, "method": "random", "estimation_error": error})
+                for error in random_alpha:
+                    alpha_results.append({"model": model, "budget": k, "method": "random", "estimation_error": error})
 
             # Variance-matched
-            matched_icc, matched_alpha = _run_variance_matched_trials(
-                text_ids, k, n_trials, hm_full_df, im_full_df,
-                model, true_icc, true_alpha, im_msb_target, im_mse_target
-            )
-            for error in matched_icc:
-                icc_results.append({"model": model, "budget": k, "method": "variance_matched", "estimation_error": error})
-            for error in matched_alpha:
-                alpha_results.append({"model": model, "budget": k, "method": "variance_matched", "estimation_error": error})
+            if "variance_matched" in SAMPLING_STRATEGIES:
+                matched_icc, matched_alpha = _run_variance_matched_trials(
+                    text_ids, k, n_trials, hm_full_df, im_full_df,
+                    model, true_icc, true_alpha, im_msb_target, im_mse_target
+                )
+                for error in matched_icc:
+                    icc_results.append({"model": model, "budget": k, "method": "variance_matched", "estimation_error": error})
+                for error in matched_alpha:
+                    alpha_results.append({"model": model, "budget": k, "method": "variance_matched", "estimation_error": error})
 
             # Max-expand
-            max_icc, max_alpha = _run_max_expand_trial(
-                k, hm_full_df, im_full_df, model, true_icc, true_alpha
-            )
-            for error in max_icc:
-                icc_results.append({"model": model, "budget": k, "method": "max_expand", "estimation_error": error})
-            for error in max_alpha:
-                alpha_results.append({"model": model, "budget": k, "method": "max_expand", "estimation_error": error})
+            if "max_expand" in SAMPLING_STRATEGIES:
+                max_icc, max_alpha = _run_max_expand_trial(
+                    k, hm_full_df, im_full_df, model, true_icc, true_alpha
+                )
+                for error in max_icc:
+                    icc_results.append({"model": model, "budget": k, "method": "max_expand", "estimation_error": error})
+                for error in max_alpha:
+                    alpha_results.append({"model": model, "budget": k, "method": "max_expand", "estimation_error": error})
 
     return pd.DataFrame(icc_results), pd.DataFrame(alpha_results), reliability_metadata
 
@@ -408,7 +394,8 @@ def main():
         # text_ids shared across all models
         shared_text_ids = texts_per_model[texts_per_model == num_models].index
 
-        # keep only shared text_ids
+        # keep only TOTAL_ANNOTATIONS text_ids
+        shared_text_ids = shared_text_ids[:TOTAL_ANNOTATIONS]
         axis_df = axis_df[axis_df["text_id"].isin(shared_text_ids)]
 
         print(f"Remaining rows: {len(axis_df)}")
