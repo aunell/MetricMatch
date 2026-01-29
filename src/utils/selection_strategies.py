@@ -330,7 +330,7 @@ def variance_matching(cheap_ratings, n_expensive, seed, epsilon=0.1, k=10):
 
 
 def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse_target,
-                                   compute_ms_fn, seed=42, n_candidates=20):
+                                   compute_ms_fn, seed=42, n_candidates=20, score_method="combined"):
     """
     Select subset that best matches target inter-model variance using MS components.
 
@@ -347,6 +347,10 @@ def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse
         compute_ms_fn: Function to compute MS components (returns PointwiseICC object)
         seed: Random seed for reproducibility
         n_candidates: Number of candidate subsets to try (default: 20)
+        score_method: Method for computing score. Options:
+            - "msb_only": score = abs(cand_msb - im_msb_target)
+            - "mse_only": score = abs(cand_mse - im_mse_target)
+            - "combined": score = abs(cand_msb - im_msb_target) + abs(cand_mse - im_mse_target)
 
     Returns:
         Array of selected text_ids, or None if no valid subset found
@@ -361,7 +365,7 @@ def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse
 
         if len(im_candidate) == 0:
             continue
-        
+
         cand_obj = compute_ms_fn(im_candidate)
         cand_msb, cand_mse, cand_icc = cand_obj.msb, cand_obj.mse, cand_obj.icc
         if cand_obj.msb==None or cand_obj.mse==None:
@@ -370,7 +374,14 @@ def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse
         if not (np.isfinite(cand_msb) and np.isfinite(cand_mse)):
             continue
 
-        score = abs(cand_msb - im_msb_target) + abs(cand_mse - im_mse_target)
+        # Compute score based on selected method
+        if score_method == "msb_only":
+            score = abs(cand_msb - im_msb_target)
+        elif score_method == "mse_only":
+            score = abs(cand_mse - im_mse_target)
+        else:  # "combined" (default)
+            score = abs(cand_msb - im_msb_target) + abs(cand_mse - im_mse_target)
+
         if score < best_score:
             best_score = score
             best_ids = candidate_ids

@@ -9,6 +9,7 @@ Krippendorff's alpha with limited human annotation budgets. It compares:
 """
 
 import os
+import argparse
 import numpy as np
 import pandas as pd
 
@@ -27,14 +28,21 @@ from src.utils.plotting import plot_all_results
 np.random.seed(42)
 
 # -------------------------
-# CONFIGURATION
+# CONFIGURATION (defaults)
 # -------------------------
-N_BOOTSTRAP_SAMPLES = 100
-N_CANDIDATE_SUBSETS = 20
-TOTAL_ANNOTATIONS = 300
+DEFAULT_N_BOOTSTRAP_SAMPLES = 10
+DEFAULT_N_CANDIDATE_SUBSETS = 20
+DEFAULT_TOTAL_ANNOTATIONS = 300
+DEFAULT_DATASET = "hanna"
+DEFAULT_MODEL_NAMES = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
+# ["claude-3.5-sonnet", "gpt-4.1", "gpt-5"]
+DEFAULT_DATA_DIR = "data/judge_scores"
+DEFAULT_PLOTS_DIR = "results/01_26_small_1"
+DEFAULT_COMPARISON_MODE = "pairwise"
 
-# Sampling strategies to compare (choose from: "random", "variance_matched", "max_expand")
-SAMPLING_STRATEGIES = ["random", "variance_matched"] #, "max_expand"]
+# Sampling strategies to compare
+# Variance matching methods: "variance_matched_msb", "variance_matched_mse", "variance_matched_combined"
+SAMPLING_STRATEGIES = ["random", "variance_matched_msb", "variance_matched_mse", "variance_matched_combined"] #max_expand
 
 EVALUATION_AXES = {
     "hanna": ["Coherence", "Complexity", "Empathy", "Engagement", "Relevance", "Surprise"],
@@ -43,14 +51,61 @@ EVALUATION_AXES = {
     "summeval": ["coherence", "consistency", "fluency", "relevance"]
 }
 
-# Runtime configuration
-dataset = "summeval" #"medval" #mslr #hanna #summeval
-# model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "gpt-5", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
-model_names = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
-# model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5"]
-DATA_DIR = "data/judge_scores"
-PLOTS_DIR = "results/01_25_small"
-COMPARISON_MODE = "pairwise"  # "pairwise" or "aggregate"
+
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Variance Selection Analysis for Reliability Estimation"
+    )
+    parser.add_argument(
+        "--dataset", type=str, default=DEFAULT_DATASET,
+        choices=list(EVALUATION_AXES.keys()),
+        help=f"Dataset to use (default: {DEFAULT_DATASET})"
+    )
+    parser.add_argument(
+        "--model-names", type=str, nargs="+", default=DEFAULT_MODEL_NAMES,
+        help="List of model names to evaluate"
+    )
+    parser.add_argument(
+        "--data-dir", type=str, default=DEFAULT_DATA_DIR,
+        help=f"Directory containing judge scores (default: {DEFAULT_DATA_DIR})"
+    )
+    parser.add_argument(
+        "--plots-dir", type=str, default=DEFAULT_PLOTS_DIR,
+        help=f"Directory to save plots (default: {DEFAULT_PLOTS_DIR})"
+    )
+    parser.add_argument(
+        "--comparison-mode", type=str, default=DEFAULT_COMPARISON_MODE,
+        choices=["pairwise", "aggregate"],
+        help=f"Comparison mode (default: {DEFAULT_COMPARISON_MODE})"
+    )
+    parser.add_argument(
+        "--n-bootstrap", type=int, default=DEFAULT_N_BOOTSTRAP_SAMPLES,
+        help=f"Number of bootstrap samples (default: {DEFAULT_N_BOOTSTRAP_SAMPLES})"
+    )
+    parser.add_argument(
+        "--n-candidates", type=int, default=DEFAULT_N_CANDIDATE_SUBSETS,
+        help=f"Number of candidate subsets for variance matching (default: {DEFAULT_N_CANDIDATE_SUBSETS})"
+    )
+    parser.add_argument(
+        "--total-annotations", type=int, default=DEFAULT_TOTAL_ANNOTATIONS,
+        help=f"Total annotations budget (default: {DEFAULT_TOTAL_ANNOTATIONS})"
+    )
+    return parser.parse_args()
+
+
+# Parse arguments (will use defaults if run without args)
+args = parse_args()
+
+# Set config from args
+N_BOOTSTRAP_SAMPLES = args.n_bootstrap
+N_CANDIDATE_SUBSETS = args.n_candidates
+TOTAL_ANNOTATIONS = args.total_annotations
+dataset = args.dataset
+model_names = args.model_names
+DATA_DIR = args.data_dir
+PLOTS_DIR = args.plots_dir
+COMPARISON_MODE = args.comparison_mode
 
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
@@ -215,15 +270,24 @@ def _run_random_trials(text_ids, k, n_trials, hm_full_df, model, true_icc, true_
 
 
 def _run_variance_matched_trials(text_ids, k, n_trials, hm_full_df, im_full_df,
-                                  model, true_icc, true_alpha, im_msb_target, im_mse_target):
-    """Run variance-matched sampling trials and collect estimation errors."""
+                                  model, true_icc, true_alpha, im_msb_target, im_mse_target,
+                                  score_method="combined"):
+    """Run variance-matched sampling trials and collect estimation errors.
+
+    Args:
+        score_method: Method for computing score. Options:
+            - "msb_only": score = abs(cand_msb - im_msb_target)
+            - "mse_only": score = abs(cand_mse - im_mse_target)
+            - "combined": score = abs(cand_msb - im_msb_target) + abs(cand_mse - im_mse_target)
+    """
     icc_errors = []
     alpha_errors = []
 
     for trial_idx in range(n_trials):
         best_ids = variance_matched_selection_ms(
             text_ids, k, im_full_df, im_msb_target, im_mse_target,
-            compute_ms_components, seed=42 + trial_idx, n_candidates=N_CANDIDATE_SUBSETS
+            compute_ms_components, seed=42 + trial_idx, n_candidates=N_CANDIDATE_SUBSETS,
+            score_method=score_method
         )
 
         if best_ids is not None:
@@ -331,16 +395,41 @@ def evaluate_reliability_estimators(df, model_names, per_model_variance,
                 for error in random_alpha:
                     alpha_results.append({"model": model, "budget": k, "method": "random", "estimation_error": error})
 
-            # Variance-matched
-            if "variance_matched" in SAMPLING_STRATEGIES:
+            # Variance-matched (MSB only)
+            if "variance_matched_msb" in SAMPLING_STRATEGIES:
                 matched_icc, matched_alpha = _run_variance_matched_trials(
                     text_ids, k, n_trials, hm_full_df, im_full_df,
-                    model, true_icc, true_alpha, im_msb_target, im_mse_target
+                    model, true_icc, true_alpha, im_msb_target, im_mse_target,
+                    score_method="msb_only"
                 )
                 for error in matched_icc:
-                    icc_results.append({"model": model, "budget": k, "method": "variance_matched", "estimation_error": error})
+                    icc_results.append({"model": model, "budget": k, "method": "variance_matched_msb", "estimation_error": error})
                 for error in matched_alpha:
-                    alpha_results.append({"model": model, "budget": k, "method": "variance_matched", "estimation_error": error})
+                    alpha_results.append({"model": model, "budget": k, "method": "variance_matched_msb", "estimation_error": error})
+
+            # Variance-matched (MSE only)
+            if "variance_matched_mse" in SAMPLING_STRATEGIES:
+                matched_icc, matched_alpha = _run_variance_matched_trials(
+                    text_ids, k, n_trials, hm_full_df, im_full_df,
+                    model, true_icc, true_alpha, im_msb_target, im_mse_target,
+                    score_method="mse_only"
+                )
+                for error in matched_icc:
+                    icc_results.append({"model": model, "budget": k, "method": "variance_matched_mse", "estimation_error": error})
+                for error in matched_alpha:
+                    alpha_results.append({"model": model, "budget": k, "method": "variance_matched_mse", "estimation_error": error})
+
+            # Variance-matched (combined MSB + MSE)
+            if "variance_matched_combined" in SAMPLING_STRATEGIES:
+                matched_icc, matched_alpha = _run_variance_matched_trials(
+                    text_ids, k, n_trials, hm_full_df, im_full_df,
+                    model, true_icc, true_alpha, im_msb_target, im_mse_target,
+                    score_method="combined"
+                )
+                for error in matched_icc:
+                    icc_results.append({"model": model, "budget": k, "method": "variance_matched_combined", "estimation_error": error})
+                for error in matched_alpha:
+                    alpha_results.append({"model": model, "budget": k, "method": "variance_matched_combined", "estimation_error": error})
 
             # Max-expand
             if "max_expand" in SAMPLING_STRATEGIES:
