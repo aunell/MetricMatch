@@ -389,6 +389,66 @@ def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse
     return best_ids
 
 
+def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metric,
+                              compute_ms_fn, compute_icc_fn, compute_alpha_fn,
+                              seed=42, n_candidates=20, im_models=None):
+    """
+    Select subset whose inter-model metric best matches a target value.
+
+    Analogous to variance_matched_selection_ms but matches on a scalar reliability
+    metric (ICC, Krippendorff's alpha, or MSE) rather than MSB/MSE components.
+
+    Args:
+        text_ids: Array of text IDs to sample from
+        k: Number of items to select
+        im_full_df: DataFrame with inter-model data (text_id, model_name, evaluation_score)
+        target_value: Target metric value to match (e.g. full-dataset IM ICC)
+        target_metric: Which metric to match — "icc", "alpha", or "mse"
+        compute_ms_fn: Function that returns a PointwiseICC object (for MSE)
+        compute_icc_fn: Function to compute ICC given a DataFrame and models kwarg
+        compute_alpha_fn: Function to compute Krippendorff's alpha given a DataFrame and models kwarg
+        seed: Base random seed
+        n_candidates: Number of candidate subsets to evaluate
+        im_models: Model names to pass to the metric functions
+
+    Returns:
+        Array of selected text_ids, or None if no valid subset found
+    """
+    if not np.isfinite(target_value):
+        return None
+
+    rng = np.random.RandomState(seed)
+    best_ids = None
+    best_score = float('inf')
+
+    for _ in range(n_candidates):
+        candidate_ids = rng.choice(text_ids, size=min(k, len(text_ids)), replace=False)
+        im_candidate = im_full_df[im_full_df["text_id"].isin(candidate_ids)]
+
+        if len(im_candidate) == 0:
+            continue
+
+        if target_metric == "icc":
+            cand_value = compute_icc_fn(im_candidate, models=im_models)
+        elif target_metric == "alpha":
+            cand_value = compute_alpha_fn(im_candidate, models=im_models)
+        elif target_metric == "mse":
+            ms_obj = compute_ms_fn(im_candidate)
+            cand_value = ms_obj.mse if ms_obj is not None else np.nan
+        else:
+            continue
+
+        if not np.isfinite(cand_value):
+            continue
+
+        score = abs(cand_value - target_value)
+        if score < best_score:
+            best_score = score
+            best_ids = candidate_ids
+
+    return best_ids
+
+
 def max_expand_selection(im_full_df, k, compute_ms_fn, alpha_weight=0.5):
     """
     Select most informative points based on MS component contributions.

@@ -1,5 +1,13 @@
 #!/bin/bash
 #
+#SBATCH --job-name=smartsample_pipeline
+#SBATCH --partition=nigam-h100
+#SBATCH --nodelist=secure-gpu-14
+#SBATCH --gres=gpu:1
+#SBATCH --mem=100G
+#SBATCH --time=24:00:00
+#SBATCH --ntasks=1
+#
 # Run variance selection analysis across all datasets
 #
 # Usage:
@@ -27,14 +35,18 @@
 
 # set -e  # Exit on error
 
+source $CONDA_DIR/etc/profile.d/conda.sh
+conda activate pac_judge
+cd SmartSample_local
+
 # Default values
-N_BOOTSTRAP=10
+N_BOOTSTRAP=100
 N_CANDIDATES=20
 TOTAL_ANNOTATIONS=300
-PLOTS_DIR="results/01_26_big"
+PLOTS_DIR="results/02_19"
 DATA_DIR="data/judge_scores"
 COMPARISON_MODE="pairwise"
-DATASETS=("hanna" "medval" "mslr" "summeval")
+DATASETS=("medval" "summeval" "mslr" "hanna")
 #("hanna" "medval" "mslr" "summeval")
 MODEL_NAMES=("claude-3.5-sonnet" "gpt-4.1" "gpt-5")
 # MODEL_NAMES=("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")

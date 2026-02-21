@@ -263,17 +263,20 @@ def plot_metric_results(results, results_by_axis, metadata_all, metadata_by_axis
             print(f"  Budget {int(row['budget']):2d}: {row['formatted']}")
 
 
-def plot_all_results(icc_results, alpha_results, icc_results_by_axis, alpha_results_by_axis,
+def plot_all_results(icc_results, alpha_results, mse_results,
+                     icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
                      reliability_metadata_all, reliability_metadata_by_axis,
                      dataset, plots_dir, comparison_mode):
     """
-    Generate plots for both ICC and Krippendorff's Alpha estimation errors.
+    Generate plots for ICC, Krippendorff's Alpha, and MSE estimation errors.
 
     Args:
         icc_results: DataFrame with ICC estimation errors
         alpha_results: DataFrame with Alpha estimation errors
+        mse_results: DataFrame with MSE estimation errors
         icc_results_by_axis: Dict mapping axis -> ICC results DataFrame
         alpha_results_by_axis: Dict mapping axis -> Alpha results DataFrame
+        mse_results_by_axis: Dict mapping axis -> MSE results DataFrame
         reliability_metadata_all: Dict mapping model -> aggregated metadata
         reliability_metadata_by_axis: Dict mapping axis -> model -> metadata
         dataset: Dataset name
@@ -310,4 +313,20 @@ def plot_all_results(icc_results, alpha_results, icc_results_by_axis, alpha_resu
         metric_name="Alpha",
         hm_key="true_hm_alpha",
         im_key="im_alpha"
+    )
+
+    print("\n" + "=" * 60)
+    print("PLOTTING MSE ESTIMATION ERROR RESULTS")
+    print("=" * 60)
+    plot_metric_results(
+        mse_results,
+        mse_results_by_axis,
+        reliability_metadata_all,
+        reliability_metadata_by_axis,
+        dataset,
+        plots_dir,
+        comparison_mode,
+        metric_name="MSE",
+        hm_key="true_hm_mse",
+        im_key="im_mse"
     )

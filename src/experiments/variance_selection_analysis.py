@@ -18,9 +18,11 @@ from src.utils.reliability_metrics import (
     compute_ms_components,
     compute_icc_pingouin,
     compute_krippendorff_alpha,
+    compute_reliability_ppi_corrected,
 )
 from src.utils.selection_strategies import (
     variance_matched_selection_ms,
+    metric_matched_selection,
     max_expand_selection,
 )
 from src.utils.plotting import plot_all_results
@@ -37,12 +39,26 @@ DEFAULT_DATASET = "hanna"
 DEFAULT_MODEL_NAMES = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
 # ["claude-3.5-sonnet", "gpt-4.1", "gpt-5"]
 DEFAULT_DATA_DIR = "data/judge_scores"
-DEFAULT_PLOTS_DIR = "results/01_26_small_1"
+DEFAULT_PLOTS_DIR = "results/02_18_large"
 DEFAULT_COMPARISON_MODE = "pairwise"
 
 # Sampling strategies to compare
 # Variance matching methods: "variance_matched_msb", "variance_matched_mse", "variance_matched_combined"
-SAMPLING_STRATEGIES = ["random", "variance_matched_msb", "variance_matched_mse", "variance_matched_combined"] #max_expand
+# Append "_imc" to any strategy name to apply inter-model control variate correction.
+# Append "_tc"  to any variance-matched strategy name to apply adaptive bias correction to
+#               the MSB/MSE selection targets (target = orig + mean(IM_obs) - mean(HM_obs)).
+#               "_tc" and "_imc" can be combined (e.g. "variance_matched_combined_tc_imc").
+SAMPLING_STRATEGIES = [
+    "random",
+    "random_imc",
+    "variance_matched_combined",
+    # "variance_matched_combined_imc",
+    "variance_matched_combined_tc",
+    # "variance_matched_combined_tc_imc",
+    "metric_matched_icc",
+    "metric_matched_alpha",
+    "metric_matched_mse",
+]
 
 EVALUATION_AXES = {
     "hanna": ["Coherence", "Complexity", "Empathy", "Engagement", "Relevance", "Surprise"],
@@ -245,88 +261,241 @@ def _build_im_pairwise_df(df, model, model_names):
     return pd.DataFrame(im_full_df)
 
 
-def _run_random_trials(text_ids, k, n_trials, hm_full_df, model, true_icc, true_alpha):
-    """Run random sampling trials and collect estimation errors."""
-    icc_errors = []
-    alpha_errors = []
+def _parse_strategy(strategy_name):
+    """Parse strategy name into (base_name, im_correct).
 
-    for trial_idx in range(n_trials):
-        np.random.seed(42 + trial_idx)
-        sampled_ids = np.random.choice(text_ids, size=min(k, len(text_ids)), replace=False)
+    Suffixes:
+        _imc – inter-model control variate correction (uses IM ICC as reference)
+    """
+    base = strategy_name
+    im_correct = "_imc" in base
+    base = base.replace("_imc", "")
+    return base, im_correct
+
+
+_SCORE_METHOD_MAP = {
+    "variance_matched_msb": "msb_only",
+    "variance_matched_mse": "mse_only",
+    "variance_matched_combined": "combined",
+    "variance_matched_combined_tc": "combined",   # same method; targets are bias-corrected
+}
+
+# Base strategy names that apply adaptive bias correction to the MSB/MSE selection
+# targets.  "_tc" is intentionally NOT stripped by _parse_strategy so it stays in the
+# base name and forms its own sampling group, separate from the non-corrected variants.
+_TARGET_BC_BASES = {"variance_matched_combined_tc"}
+
+# Maps metric-matched base strategy names to the single metric they should report errors for.
+# Strategies not in this map report errors for all metrics.
+_METRIC_MATCH_TARGET = {
+    "metric_matched_icc": "icc",
+    "metric_matched_alpha": "alpha",
+    "metric_matched_mse": "mse",
+}
+
+
+def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials,
+                          hm_full_df, im_full_df, model, true_icc, true_alpha, true_mse,
+                          im_msb_target=None, im_mse_target=None,
+                          im_models=None, true_im_icc=None, true_im_alpha=None,
+                          past_im_msb_obs=None, past_im_mse_obs=None,
+                          past_hm_msb_obs=None, past_hm_mse_obs=None):
+    """Run trials for all strategy variants that share the same base sampling method.
+
+    Samples text_ids once per trial, then computes every required correction
+    on that single subsample. The _imc suffix uses the PPI correction:
+
+        corrected = true_im + (hm_subset - im_subset)
+
+    max_expand is deterministic, so it is evaluated only once regardless of
+    n_trials.
+
+    Bias-corrected selection targets:
+        Before each trial the variance-matching targets are adjusted using the
+        average discrepancy between IM and HM MS components observed on past
+        subsets (from earlier trials in this call and from prior budget levels):
+
+            effective_msb_target = im_msb_target + mean(past_im_msb) - mean(past_hm_msb)
+            effective_mse_target = im_mse_target + mean(past_im_mse) - mean(past_hm_mse)
+
+        Intuitively: if past subsets show IM MSB > HM MSB on average, we raise
+        the selection target so chosen subsets better reflect the human-model
+        variance structure.  With no past observations the original targets are
+        used unchanged.
+
+    After every trial the observed IM/HM MS components are accumulated and
+    returned so the caller can thread them across budget levels.
+
+    Returns:
+        tuple: (
+            results          – dict mapping strategy name -> {"icc_errors", "alpha_errors"},
+            new_im_msb_obs   – IM MSB values observed in this call's trials,
+            new_im_mse_obs   – IM MSE values observed in this call's trials,
+            new_hm_msb_obs   – HM MSB values observed in this call's trials,
+            new_hm_mse_obs   – HM MSE values observed in this call's trials,
+        )
+    """
+    if past_im_msb_obs is None:
+        past_im_msb_obs = []
+    if past_im_mse_obs is None:
+        past_im_mse_obs = []
+    if past_hm_msb_obs is None:
+        past_hm_msb_obs = []
+    if past_hm_mse_obs is None:
+        past_hm_mse_obs = []
+
+    needs_ppi = any(imc for _, imc in [_parse_strategy(s) for s in strategy_variants])
+    needs_plain = any(not imc for _, imc in [_parse_strategy(s) for s in strategy_variants])
+
+    results = {s: {"icc_errors": [], "alpha_errors": [], "mse_errors": []} for s in strategy_variants}
+
+    actual_trials = 1 if base_strategy == "max_expand" else n_trials
+
+    # Observations accumulated within this call; returned to caller so they can
+    # be threaded across successive budget levels.
+    new_im_msb_obs = []
+    new_im_mse_obs = []
+    new_hm_msb_obs = []
+    new_hm_mse_obs = []
+
+    for trial_idx in range(actual_trials):
+        seed = 42 + trial_idx
+
+        # ── Compute effective selection targets ────────────────────────────────
+        # For _tc (target-corrected) strategies: adjust targets using the mean
+        # IM-minus-HM MSB/MSE discrepancy observed on past subsets.
+        # For all other strategies: use the original targets unchanged.
+        if base_strategy in _TARGET_BC_BASES:
+            all_im_msb_obs = past_im_msb_obs + new_im_msb_obs
+            all_im_mse_obs = past_im_mse_obs + new_im_mse_obs
+            all_hm_msb_obs = past_hm_msb_obs + new_hm_msb_obs
+            all_hm_mse_obs = past_hm_mse_obs + new_hm_mse_obs
+
+            if (im_msb_target is not None
+                    and all_im_msb_obs and all_hm_msb_obs
+                    and len(all_im_msb_obs) == len(all_hm_msb_obs)):
+                effective_msb_target = (
+                    im_msb_target + np.mean(all_im_msb_obs) - np.mean(all_hm_msb_obs)
+                )
+            else:
+                effective_msb_target = im_msb_target
+
+            if (im_mse_target is not None
+                    and all_im_mse_obs and all_hm_mse_obs
+                    and len(all_im_mse_obs) == len(all_hm_mse_obs)):
+                effective_mse_target = (
+                    im_mse_target + np.mean(all_im_mse_obs) - np.mean(all_hm_mse_obs)
+                )
+            else:
+                effective_mse_target = im_mse_target
+        else:
+            effective_msb_target = im_msb_target
+            effective_mse_target = im_mse_target
+
+        # ── Sample once ────────────────────────────────────────────────────────
+        if base_strategy == "random":
+            np.random.seed(seed)
+            sampled_ids = np.random.choice(text_ids, size=min(k, len(text_ids)), replace=False)
+        elif base_strategy in _SCORE_METHOD_MAP:
+            sampled_ids = variance_matched_selection_ms(
+                text_ids, k, im_full_df, effective_msb_target, effective_mse_target,
+                compute_ms_components, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
+                score_method=_SCORE_METHOD_MAP[base_strategy]
+            )
+            if sampled_ids is None:
+                continue
+        elif base_strategy == "metric_matched_icc":
+            sampled_ids = metric_matched_selection(
+                text_ids, k, im_full_df, true_im_icc, "icc",
+                compute_ms_components, compute_icc_pingouin, compute_krippendorff_alpha,
+                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models
+            )
+            if sampled_ids is None:
+                continue
+        elif base_strategy == "metric_matched_alpha":
+            sampled_ids = metric_matched_selection(
+                text_ids, k, im_full_df, true_im_alpha, "alpha",
+                compute_ms_components, compute_icc_pingouin, compute_krippendorff_alpha,
+                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models
+            )
+            if sampled_ids is None:
+                continue
+        elif base_strategy == "metric_matched_mse":
+            sampled_ids = metric_matched_selection(
+                text_ids, k, im_full_df, im_mse_target, "mse",
+                compute_ms_components, compute_icc_pingouin, compute_krippendorff_alpha,
+                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models
+            )
+            if sampled_ids is None:
+                continue
+        elif base_strategy == "max_expand":
+            sampled_ids = max_expand_selection(im_full_df, k, compute_ms_components)
+            if sampled_ids is None:
+                continue
+        else:
+            continue
+
         hm_sample = hm_full_df[hm_full_df["text_id"].isin(sampled_ids)]
 
+        # ── Observe IM and HM MS components on this subset ───────────────────
+        im_sample = im_full_df[im_full_df["text_id"].isin(sampled_ids)]
+        im_ms = compute_ms_components(im_sample)
+        if im_ms is not None:
+            new_im_msb_obs.append(im_ms.msb)
+            new_im_mse_obs.append(im_ms.mse)
+
+        hm_ms = compute_ms_components(hm_sample)
+        if hm_ms is not None:
+            new_hm_msb_obs.append(hm_ms.msb)
+            new_hm_mse_obs.append(hm_ms.mse)
+
+        # ── Compute each correction type exactly once ───────────────────────
+        plain_icc = plain_alpha = None
+        ppi_icc = ppi_alpha = None
+
         try:
-            est_icc = compute_icc_pingouin(hm_sample, models=[model, "original"])
-            if np.isfinite(est_icc):
-                icc_errors.append(min(2, abs(est_icc - true_icc)))
+            if needs_plain:
+                plain_icc = compute_icc_pingouin(hm_sample, models=[model, "original"])
+                plain_alpha = compute_krippendorff_alpha(hm_sample, models=[model, "original"])
 
-            est_alpha = compute_krippendorff_alpha(hm_sample, models=[model, "original"])
-            if np.isfinite(est_alpha):
-                alpha_errors.append(min(2, abs(est_alpha - true_alpha)))
+            if needs_ppi:
+                ppi_icc, ppi_alpha = compute_reliability_ppi_corrected(
+                    hm_sample, im_full_df, true_im_icc, true_im_alpha,
+                    hm_models=[model, "original"], im_models=im_models
+                )
         except Exception:
-            pass
+            continue
 
-    return icc_errors, alpha_errors
+        # ── MSE (plain and PPI-corrected) ────────────────────────────────────
+        plain_mse = hm_ms.mse if hm_ms is not None else None
+        ppi_mse = None
+        if (im_mse_target is not None and hm_ms is not None and im_ms is not None
+                and np.isfinite(im_mse_target) and np.isfinite(hm_ms.mse) and np.isfinite(im_ms.mse)):
+            ppi_mse = im_mse_target + (hm_ms.mse - im_ms.mse)
 
+        # ── Record errors for each strategy variant ─────────────────────────
+        for strategy in strategy_variants:
+            base, imc = _parse_strategy(strategy)
+            matched_metric = _METRIC_MATCH_TARGET.get(base)  # None means report all metrics
 
-def _run_variance_matched_trials(text_ids, k, n_trials, hm_full_df, im_full_df,
-                                  model, true_icc, true_alpha, im_msb_target, im_mse_target,
-                                  score_method="combined"):
-    """Run variance-matched sampling trials and collect estimation errors.
+            if imc:
+                est_icc, est_alpha = ppi_icc, ppi_alpha
+                est_mse = ppi_mse
+            else:
+                est_icc, est_alpha = plain_icc, plain_alpha
+                est_mse = plain_mse
 
-    Args:
-        score_method: Method for computing score. Options:
-            - "msb_only": score = abs(cand_msb - im_msb_target)
-            - "mse_only": score = abs(cand_mse - im_mse_target)
-            - "combined": score = abs(cand_msb - im_msb_target) + abs(cand_mse - im_mse_target)
-    """
-    icc_errors = []
-    alpha_errors = []
+            if matched_metric in (None, "icc"):
+                if est_icc is not None and np.isfinite(est_icc):
+                    results[strategy]["icc_errors"].append(min(2, abs(est_icc - true_icc)))
+            if matched_metric in (None, "alpha"):
+                if est_alpha is not None and np.isfinite(est_alpha):
+                    results[strategy]["alpha_errors"].append(min(2, abs(est_alpha - true_alpha)))
+            if matched_metric in (None, "mse"):
+                if est_mse is not None and np.isfinite(est_mse) and true_mse is not None and np.isfinite(true_mse):
+                    results[strategy]["mse_errors"].append(abs(est_mse - true_mse))
 
-    for trial_idx in range(n_trials):
-        best_ids = variance_matched_selection_ms(
-            text_ids, k, im_full_df, im_msb_target, im_mse_target,
-            compute_ms_components, seed=42 + trial_idx, n_candidates=N_CANDIDATE_SUBSETS,
-            score_method=score_method
-        )
-
-        if best_ids is not None:
-            hm_sample = hm_full_df[hm_full_df["text_id"].isin(best_ids)]
-            try:
-                est_icc = compute_icc_pingouin(hm_sample, models=[model, "original"])
-                if np.isfinite(est_icc):
-                    icc_errors.append(min(2, abs(est_icc - true_icc)))
-
-                est_alpha = compute_krippendorff_alpha(hm_sample, models=[model, "original"])
-                if np.isfinite(est_alpha):
-                    alpha_errors.append(min(2, abs(est_alpha - true_alpha)))
-            except Exception:
-                pass
-
-    return icc_errors, alpha_errors
-
-
-def _run_max_expand_trial(k, hm_full_df, im_full_df, model, true_icc, true_alpha):
-    """Run max-expand sampling (deterministic, single trial)."""
-    icc_errors = []
-    alpha_errors = []
-
-    best_ids = max_expand_selection(im_full_df, k, compute_ms_components)
-
-    if best_ids is not None:
-        hm_sample = hm_full_df[hm_full_df["text_id"].isin(best_ids)]
-        try:
-            est_icc = compute_icc_pingouin(hm_sample, models=[model, "original"])
-            if np.isfinite(est_icc):
-                icc_errors.append(min(2, abs(est_icc - true_icc)))
-
-            est_alpha = compute_krippendorff_alpha(hm_sample, models=[model, "original"])
-            if np.isfinite(est_alpha):
-                alpha_errors.append(min(2, abs(est_alpha - true_alpha)))
-        except Exception:
-            pass
-
-    return icc_errors, alpha_errors
+    return results, new_im_msb_obs, new_im_mse_obs, new_hm_msb_obs, new_hm_mse_obs
 
 
 def evaluate_reliability_estimators(df, model_names, per_model_variance,
@@ -348,10 +517,17 @@ def evaluate_reliability_estimators(df, model_names, per_model_variance,
     """
     icc_results = []
     alpha_results = []
+    mse_results = []
     reliability_metadata = {}
 
     if n_trials is None:
         n_trials = N_BOOTSTRAP_SAMPLES
+
+    # Group strategies by base sampling method once — shared across all models/budgets
+    strategies_by_base = {}
+    for strategy in SAMPLING_STRATEGIES:
+        base, _ = _parse_strategy(strategy)
+        strategies_by_base.setdefault(base, []).append(strategy)
 
     for model in model_names:
         im_msb_target = per_model_variance[model]["im_msb"]
@@ -363,85 +539,68 @@ def evaluate_reliability_estimators(df, model_names, per_model_variance,
         true_icc = compute_icc_pingouin(hm_full_df, models=[model, "original"])
         print(f"\nComputing true Krippendorff's alpha for model: {model}")
         true_alpha = compute_krippendorff_alpha(hm_full_df, models=[model, "original"])
-        print(f"{model}: ICC={true_icc:.4f}, Alpha={true_alpha:.4f}")
+        hm_ms_full = compute_ms_components(hm_full_df[hm_full_df["model_name"].isin([model, "original"])])
+        true_mse = hm_ms_full.mse if hm_ms_full is not None else np.nan
+        print(f"{model}: ICC={true_icc:.4f}, Alpha={true_alpha:.4f}, MSE={true_mse:.4f}")
 
         # Build inter-model DataFrame
         if COMPARISON_MODE == "pairwise":
             im_full_df = _build_im_pairwise_df(df, model, model_names)
-            im_icc = compute_icc_pingouin(im_full_df, models=[model, "avg_other"])
-            im_alpha = compute_krippendorff_alpha(im_full_df, models=[model, "avg_other"])
+            im_models = [model, "avg_other"]
+            im_icc = compute_icc_pingouin(im_full_df, models=im_models)
+            im_alpha = compute_krippendorff_alpha(im_full_df, models=im_models)
         else:
             im_full_df = df[df["model_name"] != "original"]
-            im_icc = compute_icc_pingouin(im_full_df, models=model_names)
-            im_alpha = compute_krippendorff_alpha(im_full_df, models=model_names)
+            im_models = model_names
+            im_icc = compute_icc_pingouin(im_full_df, models=im_models)
+            im_alpha = compute_krippendorff_alpha(im_full_df, models=im_models)
 
         reliability_metadata[model] = {
             "true_hm_icc": true_icc,
             "true_hm_alpha": true_alpha,
+            "true_hm_mse": true_mse,
             "im_icc": im_icc,
-            "im_alpha": im_alpha
+            "im_alpha": im_alpha,
+            "im_mse": im_mse_target,
         }
 
         text_ids = hm_full_df["text_id"].unique()
 
-        for k in budgets:
-            # Random baseline
-            if "random" in SAMPLING_STRATEGIES:
-                random_icc, random_alpha = _run_random_trials(
-                    text_ids, k, n_trials, hm_full_df, model, true_icc, true_alpha
-                )
-                for error in random_icc:
-                    icc_results.append({"model": model, "budget": k, "method": "random", "estimation_error": error})
-                for error in random_alpha:
-                    alpha_results.append({"model": model, "budget": k, "method": "random", "estimation_error": error})
+        # Outer loop over strategies so each base strategy accumulates its own
+        # observation history across budget levels for bias-corrected targeting.
+        for base_strategy, strategy_variants in strategies_by_base.items():
+            past_im_msb_obs = []
+            past_im_mse_obs = []
+            past_hm_msb_obs = []
+            past_hm_mse_obs = []
 
-            # Variance-matched (MSB only)
-            if "variance_matched_msb" in SAMPLING_STRATEGIES:
-                matched_icc, matched_alpha = _run_variance_matched_trials(
-                    text_ids, k, n_trials, hm_full_df, im_full_df,
-                    model, true_icc, true_alpha, im_msb_target, im_mse_target,
-                    score_method="msb_only"
+            for k in budgets:
+                trial_results, new_im_msb, new_im_mse, new_hm_msb, new_hm_mse = (
+                    _run_trials_for_base(
+                        base_strategy, strategy_variants, text_ids, k, n_trials,
+                        hm_full_df, im_full_df, model, true_icc, true_alpha, true_mse,
+                        im_msb_target=im_msb_target, im_mse_target=im_mse_target,
+                        im_models=im_models, true_im_icc=im_icc, true_im_alpha=im_alpha,
+                        past_im_msb_obs=past_im_msb_obs, past_im_mse_obs=past_im_mse_obs,
+                        past_hm_msb_obs=past_hm_msb_obs, past_hm_mse_obs=past_hm_mse_obs,
+                    )
                 )
-                for error in matched_icc:
-                    icc_results.append({"model": model, "budget": k, "method": "variance_matched_msb", "estimation_error": error})
-                for error in matched_alpha:
-                    alpha_results.append({"model": model, "budget": k, "method": "variance_matched_msb", "estimation_error": error})
+                # Extend history with this budget level's observations so the
+                # next budget level benefits from all prior data.
+                past_im_msb_obs.extend(new_im_msb)
+                past_im_mse_obs.extend(new_im_mse)
+                past_hm_msb_obs.extend(new_hm_msb)
+                past_hm_mse_obs.extend(new_hm_mse)
 
-            # Variance-matched (MSE only)
-            if "variance_matched_mse" in SAMPLING_STRATEGIES:
-                matched_icc, matched_alpha = _run_variance_matched_trials(
-                    text_ids, k, n_trials, hm_full_df, im_full_df,
-                    model, true_icc, true_alpha, im_msb_target, im_mse_target,
-                    score_method="mse_only"
-                )
-                for error in matched_icc:
-                    icc_results.append({"model": model, "budget": k, "method": "variance_matched_mse", "estimation_error": error})
-                for error in matched_alpha:
-                    alpha_results.append({"model": model, "budget": k, "method": "variance_matched_mse", "estimation_error": error})
+                for strategy, errors in trial_results.items():
+                    for error in errors["icc_errors"]:
+                        icc_results.append({"model": model, "budget": k, "method": strategy, "estimation_error": error})
+                    for error in errors["alpha_errors"]:
+                        alpha_results.append({"model": model, "budget": k, "method": strategy, "estimation_error": error})
+                    for error in errors["mse_errors"]:
+                        mse_results.append({"model": model, "budget": k, "method": strategy, "estimation_error": error})
 
-            # Variance-matched (combined MSB + MSE)
-            if "variance_matched_combined" in SAMPLING_STRATEGIES:
-                matched_icc, matched_alpha = _run_variance_matched_trials(
-                    text_ids, k, n_trials, hm_full_df, im_full_df,
-                    model, true_icc, true_alpha, im_msb_target, im_mse_target,
-                    score_method="combined"
-                )
-                for error in matched_icc:
-                    icc_results.append({"model": model, "budget": k, "method": "variance_matched_combined", "estimation_error": error})
-                for error in matched_alpha:
-                    alpha_results.append({"model": model, "budget": k, "method": "variance_matched_combined", "estimation_error": error})
-
-            # Max-expand
-            if "max_expand" in SAMPLING_STRATEGIES:
-                max_icc, max_alpha = _run_max_expand_trial(
-                    k, hm_full_df, im_full_df, model, true_icc, true_alpha
-                )
-                for error in max_icc:
-                    icc_results.append({"model": model, "budget": k, "method": "max_expand", "estimation_error": error})
-                for error in max_alpha:
-                    alpha_results.append({"model": model, "budget": k, "method": "max_expand", "estimation_error": error})
-
-    return pd.DataFrame(icc_results), pd.DataFrame(alpha_results), reliability_metadata
+    return pd.DataFrame(icc_results), pd.DataFrame(alpha_results), pd.DataFrame(mse_results), reliability_metadata
 
 
 # -------------------------
@@ -462,6 +621,7 @@ def main():
     # Run experiment for each axis separately
     icc_results_by_axis = {}
     alpha_results_by_axis = {}
+    mse_results_by_axis = {}
     reliability_metadata_by_axis = {}
 
     for axis in EVALUATION_AXES[dataset]:
@@ -470,8 +630,6 @@ def main():
         print(f"{'=' * 50}")
 
         axis_df = df[df["evaluation_axis"] == axis]
-        # how many unique models
-        # number of models
         num_models = axis_df["model_name"].nunique()
 
         # count models per text_id
@@ -496,17 +654,19 @@ def main():
         )
 
         # Run evaluation
-        axis_icc, axis_alpha, axis_metadata = evaluate_reliability_estimators(
+        axis_icc, axis_alpha, axis_mse, axis_metadata = evaluate_reliability_estimators(
             axis_df, model_names, axis_per_model_variance
         )
         icc_results_by_axis[axis] = axis_icc
         alpha_results_by_axis[axis] = axis_alpha
+        mse_results_by_axis[axis] = axis_mse
         reliability_metadata_by_axis[axis] = axis_metadata
-        print(f"Collected {len(axis_icc)} ICC results and {len(axis_alpha)} Alpha results for {axis}")
+        print(f"Collected {len(axis_icc)} ICC, {len(axis_alpha)} Alpha, {len(axis_mse)} MSE results for {axis}")
 
     # Combine per-axis results
     all_icc_results = []
     all_alpha_results = []
+    all_mse_results = []
     for axis in EVALUATION_AXES[dataset]:
         if axis in icc_results_by_axis and len(icc_results_by_axis[axis]) > 0:
             axis_icc = icc_results_by_axis[axis].copy()
@@ -516,9 +676,14 @@ def main():
             axis_alpha = alpha_results_by_axis[axis].copy()
             axis_alpha["axis"] = axis
             all_alpha_results.append(axis_alpha)
+        if axis in mse_results_by_axis and len(mse_results_by_axis[axis]) > 0:
+            axis_mse = mse_results_by_axis[axis].copy()
+            axis_mse["axis"] = axis
+            all_mse_results.append(axis_mse)
 
     icc_results = pd.concat(all_icc_results, ignore_index=True) if all_icc_results else pd.DataFrame()
     alpha_results = pd.concat(all_alpha_results, ignore_index=True) if all_alpha_results else pd.DataFrame()
+    mse_results = pd.concat(all_mse_results, ignore_index=True) if all_mse_results else pd.DataFrame()
 
     # Compute aggregate reliability metadata
     reliability_metadata_all = {}
@@ -535,6 +700,12 @@ def main():
             if model in reliability_metadata_by_axis[ax]
             and np.isfinite(reliability_metadata_by_axis[ax][model]["true_hm_alpha"])
         ]
+        hm_mse_vals = [
+            reliability_metadata_by_axis[ax][model]["true_hm_mse"]
+            for ax in reliability_metadata_by_axis
+            if model in reliability_metadata_by_axis[ax]
+            and np.isfinite(reliability_metadata_by_axis[ax][model]["true_hm_mse"])
+        ]
         im_icc_vals = [
             reliability_metadata_by_axis[ax][model]["im_icc"]
             for ax in reliability_metadata_by_axis
@@ -547,12 +718,20 @@ def main():
             if model in reliability_metadata_by_axis[ax]
             and np.isfinite(reliability_metadata_by_axis[ax][model]["im_alpha"])
         ]
+        im_mse_vals = [
+            reliability_metadata_by_axis[ax][model]["im_mse"]
+            for ax in reliability_metadata_by_axis
+            if model in reliability_metadata_by_axis[ax]
+            and np.isfinite(reliability_metadata_by_axis[ax][model]["im_mse"])
+        ]
 
         reliability_metadata_all[model] = {
             "true_hm_icc": np.mean(hm_icc_vals) if hm_icc_vals else np.nan,
             "true_hm_alpha": np.mean(hm_alpha_vals) if hm_alpha_vals else np.nan,
+            "true_hm_mse": np.mean(hm_mse_vals) if hm_mse_vals else np.nan,
             "im_icc": np.mean(im_icc_vals) if im_icc_vals else np.nan,
             "im_alpha": np.mean(im_alpha_vals) if im_alpha_vals else np.nan,
+            "im_mse": np.mean(im_mse_vals) if im_mse_vals else np.nan,
         }
 
     print(f"\n{'=' * 50}")
@@ -560,6 +739,7 @@ def main():
     print(f"{'=' * 50}")
     print(f"Total ICC results collected: {len(icc_results)}")
     print(f"Total Alpha results collected: {len(alpha_results)}")
+    print(f"Total MSE results collected: {len(mse_results)}")
 
     if len(icc_results) > 0:
         print(f"ICC Results by method:")
@@ -567,17 +747,19 @@ def main():
             count = len(icc_results[icc_results["method"] == method])
             print(f"  {method}: {count}")
 
-    return (icc_results, alpha_results, icc_results_by_axis, alpha_results_by_axis,
+    return (icc_results, alpha_results, mse_results,
+            icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
             reliability_metadata_all, reliability_metadata_by_axis)
 
 
 if __name__ == "__main__":
-    (icc_results, alpha_results, icc_results_by_axis, alpha_results_by_axis,
+    (icc_results, alpha_results, mse_results,
+     icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
      reliability_metadata_all, reliability_metadata_by_axis) = main()
 
     plot_all_results(
-        icc_results, alpha_results,
-        icc_results_by_axis, alpha_results_by_axis,
+        icc_results, alpha_results, mse_results,
+        icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
         reliability_metadata_all, reliability_metadata_by_axis,
         dataset, PLOTS_DIR, COMPARISON_MODE
     )
