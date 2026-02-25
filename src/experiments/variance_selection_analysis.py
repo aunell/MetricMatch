@@ -38,6 +38,8 @@ DEFAULT_TOTAL_ANNOTATIONS = 300
 DEFAULT_DATASET = "hanna"
 DEFAULT_MODEL_NAMES = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
 # ["claude-3.5-sonnet", "gpt-4.1", "gpt-5"]
+DEFAULT_TARGET_MODELS = None   # None → same as model_names
+DEFAULT_ENSEMBLE_MODELS = None  # None → same as model_names
 DEFAULT_DATA_DIR = "data/judge_scores"
 DEFAULT_PLOTS_DIR = "results/02_18_large"
 DEFAULT_COMPARISON_MODE = "pairwise"
@@ -80,7 +82,16 @@ def parse_args():
     )
     parser.add_argument(
         "--model-names", type=str, nargs="+", default=DEFAULT_MODEL_NAMES,
-        help="List of model names to evaluate"
+        help="List of model names to load (default target + ensemble if not set)"
+    )
+    parser.add_argument(
+        "--target-models", type=str, nargs="+", default=DEFAULT_TARGET_MODELS,
+        help="Models to evaluate independently (default: same as --model-names)"
+    )
+    parser.add_argument(
+        "--ensemble-models", type=str, nargs="+", default=DEFAULT_ENSEMBLE_MODELS,
+        help="Models used for inter-model variance matching and IMC correction "
+             "(default: same as --model-names). Each target is excluded from its own ensemble."
     )
     parser.add_argument(
         "--data-dir", type=str, default=DEFAULT_DATA_DIR,
@@ -119,6 +130,11 @@ N_CANDIDATE_SUBSETS = args.n_candidates
 TOTAL_ANNOTATIONS = args.total_annotations
 dataset = args.dataset
 model_names = args.model_names
+target_models = args.target_models if args.target_models is not None else model_names
+ensemble_models = args.ensemble_models if args.ensemble_models is not None else model_names
+# All models that need data loaded (union of target + ensemble, preserving order)
+_seen = set()
+models_to_load = [m for m in (target_models + ensemble_models) if not (m in _seen or _seen.add(m))]
 DATA_DIR = args.data_dir
 PLOTS_DIR = args.plots_dir
 COMPARISON_MODE = args.comparison_mode
@@ -129,75 +145,97 @@ os.makedirs(PLOTS_DIR, exist_ok=True)
 # -------------------------
 # VARIANCE ALIGNMENT
 # -------------------------
-def compute_variance_alignment(df, model_names, mode="aggregate"):
+def compute_variance_alignment(df, target_models, ensemble_models, mode="aggregate"):
     """
     Compute inter-model and human-model variance components.
 
+    For each target model t, the inter-model (IM) comparison uses t together
+    with the ensemble models (excluding t itself so a model never compares
+    against itself).  Only text_ids shared by all models in the IM set are used
+    for IM computation.  The human-model (HM) comparison is always t vs "original".
+
     Args:
         df: DataFrame with text_id, model_name, evaluation_score
-        model_names: List of model names (excluding "original")
+        target_models: List of target model names to evaluate
+        ensemble_models: List of ensemble model names for inter-model comparison
         mode: "aggregate" or "pairwise"
 
     Returns:
-        per_model_variance: dict mapping model_name to {im_msb, im_mse, hm_msb, hm_mse}
+        per_model_variance: dict mapping target model name to {im_msb, im_mse, hm_msb, hm_mse}
         aggregate_stats: dict with overall statistics
     """
     per_model_variance = {}
+    im_msb_list, im_mse_list = [], []
+    hm_msb_list, hm_mse_list = [], []
 
     if mode == "aggregate":
-        im_df = df[df["model_name"] != "original"]
-        im_icc_obj = compute_ms_components(im_df)
-        msb_expand_global, im_msb_global, mse_expand_global, im_mse_global, icc_expand_global, im_icc_global = \
-            im_icc_obj.msb_expand, im_icc_obj.msb, im_icc_obj.mse_expand, im_icc_obj.mse, im_icc_obj.icc_expand, im_icc_obj.icc
+        for m in target_models:
+            # Exclude the target itself from its own ensemble
+            eff_ensemble = [e for e in ensemble_models if e != m]
+            im_model_set = [m] + eff_ensemble
 
-        for m in model_names:
+            # Filter to text_ids shared by all models in the IM set
+            im_subset = df[df["model_name"].isin(im_model_set)]
+            im_grouped = im_subset.groupby("text_id")["model_name"].nunique()
+            shared_im_ids = im_grouped[im_grouped == len(im_model_set)].index
+            im_df = im_subset[im_subset["text_id"].isin(shared_im_ids)]
+
+            im_icc_obj = compute_ms_components(im_df)
+            im_msb = im_icc_obj.msb
+            im_mse = im_icc_obj.mse
+            im_msb_list.append(im_msb)
+            im_mse_list.append(im_mse)
+
             hm_icc_obj = compute_ms_components(
                 df[df["model_name"].isin([m, "original"])]
             )
-            hm_msb_expand, hm_msb, hm_mse_expand, hm_mse, hm_icc_expand, hm_icc = \
-            hm_icc_obj.msb_expand, hm_icc_obj.msb, hm_icc_obj.mse_expand, hm_icc_obj.mse, hm_icc_obj.icc_expand, hm_icc_obj.icc
+            hm_msb = hm_icc_obj.msb
+            hm_mse = hm_icc_obj.mse
+            hm_msb_list.append(hm_msb)
+            hm_mse_list.append(hm_mse)
+
             per_model_variance[m] = {
-                "im_msb": im_msb_global,
-                "im_mse": im_mse_global,
+                "im_msb": im_msb,
+                "im_mse": im_mse,
                 "hm_msb": hm_msb,
                 "hm_mse": hm_mse
             }
 
-        print(f"\nMode: AGGREGATE (k=4 for IM, k=2 for HM)")
-        print(f"Inter-model (all 4 models): MSB={im_msb_global:.4f}, MSE={im_mse_global:.4f}")
+        k_im = 1 + len([e for e in ensemble_models if e != target_models[0]]) if target_models else 0
+        print(f"\nMode: AGGREGATE (k={k_im} for IM, k=2 for HM)")
+        im_msb_mean = np.nanmean(im_msb_list) if im_msb_list else np.nan
+        im_mse_mean = np.nanmean(im_mse_list) if im_mse_list else np.nan
+        print(f"Inter-model (target + ensemble): MSB mean={im_msb_mean:.4f}, MSE mean={im_mse_mean:.4f}")
 
         aggregate_stats = {
-            "im_msb": im_msb_global,
-            "im_mse": im_mse_global,
-            "hm_msb_list": [per_model_variance[m]["hm_msb"] for m in model_names],
-            "hm_mse_list": [per_model_variance[m]["hm_mse"] for m in model_names]
+            "im_msb": im_msb_mean,
+            "im_mse": im_mse_mean,
+            "hm_msb_list": hm_msb_list,
+            "hm_mse_list": hm_mse_list
         }
 
     elif mode == "pairwise":
-        im_msb_list, im_mse_list = [], []
-        hm_msb_list, hm_mse_list = [], []
-
-        im_subset = df[df["model_name"].isin(model_names)].copy()
-        im_grouped = im_subset.groupby("text_id")
-
-        for m in model_names:
-            im_pair_df = _build_im_pairwise_df(df, m, model_names)
+        for m in target_models:
+            # Exclude the target itself from its own ensemble
+            eff_ensemble = [e for e in ensemble_models if e != m]
+            im_model_set = [m] + eff_ensemble
+            im_pair_df = _build_im_pairwise_df(df, m, im_model_set)
 
             if len(im_pair_df) > 0:
                 im_icc_obj = compute_ms_components(im_pair_df)
-                im_msb_expand, im_msb, im_mse_expand, im_mse, im_icc_expand, im_icc = im_icc_obj.msb_expand, im_icc_obj.msb, im_icc_obj.mse_expand, im_icc_obj.mse, im_icc_obj.icc_expand, im_icc_obj.icc
-                im_msb_list.append(im_msb)
-                im_mse_list.append(im_mse)
+                im_msb = im_icc_obj.msb
+                im_mse = im_icc_obj.mse
             else:
                 im_msb, im_mse = np.nan, np.nan
-                im_msb_list.append(im_msb)
-                im_mse_list.append(im_mse)
+            im_msb_list.append(im_msb)
+            im_mse_list.append(im_mse)
 
             # Human-model: this model vs human
             hm_icc_obj = compute_ms_components(
                 df[df["model_name"].isin([m, "original"])]
             )
-            hm_msb_expand, hm_msb, hm_mse_expand, hm_mse, hm_icc_expand, hm_icc = hm_icc_obj.msb_expand, hm_icc_obj.msb, hm_icc_obj.mse_expand, hm_icc_obj.mse, hm_icc_obj.icc_expand, hm_icc_obj.icc
+            hm_msb = hm_icc_obj.msb
+            hm_mse = hm_icc_obj.mse
             hm_msb_list.append(hm_msb)
             hm_mse_list.append(hm_mse)
 
@@ -209,10 +247,10 @@ def compute_variance_alignment(df, model_names, mode="aggregate"):
             }
 
         print(f"\nMode: PAIRWISE (k=2 for both IM and HM)")
-        print(f"Inter-model MSBs (each model vs avg of others): {[f'{x:.4f}' for x in im_msb_list]}")
+        print(f"Inter-model MSBs (each target vs avg of ensemble): {[f'{x:.4f}' for x in im_msb_list]}")
         print(f"Inter-model MSEs: {[f'{x:.4f}' for x in im_mse_list]}")
-        im_msb_mean = np.mean(im_msb_list)
-        im_mse_mean = np.mean(im_mse_list)
+        im_msb_mean = np.nanmean(im_msb_list) if im_msb_list else np.nan
+        im_mse_mean = np.nanmean(im_mse_list) if im_mse_list else np.nan
         print(f"Inter-model mean: MSB={im_msb_mean:.4f}, MSE={im_mse_mean:.4f}")
 
         aggregate_stats = {
@@ -226,8 +264,8 @@ def compute_variance_alignment(df, model_names, mode="aggregate"):
     print(f"Human-model MSEs: {[f'{x:.4f}' for x in aggregate_stats['hm_mse_list']]}")
 
     if len(aggregate_stats['hm_msb_list']) > 1:
-        print(f"\nMSB: IM={aggregate_stats['im_msb']:.4f}, HM mean={np.mean(aggregate_stats['hm_msb_list']):.4f}")
-        print(f"MSE: IM={aggregate_stats['im_mse']:.4f}, HM mean={np.mean(aggregate_stats['hm_mse_list']):.4f}")
+        print(f"\nMSB: IM={aggregate_stats['im_msb']:.4f}, HM mean={np.nanmean(aggregate_stats['hm_msb_list']):.4f}")
+        print(f"MSE: IM={aggregate_stats['im_mse']:.4f}, HM mean={np.nanmean(aggregate_stats['hm_mse_list']):.4f}")
 
     return per_model_variance, aggregate_stats
 
@@ -498,14 +536,18 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
     return results, new_im_msb_obs, new_im_mse_obs, new_hm_msb_obs, new_hm_mse_obs
 
 
-def evaluate_reliability_estimators(df, model_names, per_model_variance,
+def evaluate_reliability_estimators(df, target_models, ensemble_models, per_model_variance,
                                      budgets=range(5, 55, 5), n_trials=None):
     """
     Evaluate ICC and Krippendorff's alpha estimators with different sampling strategies.
 
+    For each target model, the inter-model DataFrame is built from that target
+    plus the ensemble models (excluding the target from its own ensemble).
+
     Args:
         df: DataFrame with text_id, model_name, evaluation_score, evaluation_axis
-        model_names: List of model names
+        target_models: List of target model names to evaluate independently
+        ensemble_models: List of ensemble model names for variance matching / IMC
         per_model_variance: Dict from compute_variance_alignment
         budgets: Range of annotation budgets to test
         n_trials: Number of bootstrap trials (defaults to N_BOOTSTRAP_SAMPLES)
@@ -529,7 +571,7 @@ def evaluate_reliability_estimators(df, model_names, per_model_variance,
         base, _ = _parse_strategy(strategy)
         strategies_by_base.setdefault(base, []).append(strategy)
 
-    for model in model_names:
+    for model in target_models:
         im_msb_target = per_model_variance[model]["im_msb"]
         im_mse_target = per_model_variance[model]["im_mse"]
 
@@ -543,15 +585,20 @@ def evaluate_reliability_estimators(df, model_names, per_model_variance,
         true_mse = hm_ms_full.mse if hm_ms_full is not None else np.nan
         print(f"{model}: ICC={true_icc:.4f}, Alpha={true_alpha:.4f}, MSE={true_mse:.4f}")
 
-        # Build inter-model DataFrame
+        # Build inter-model DataFrame using the target + ensemble (excluding target from its own ensemble)
+        eff_ensemble = [e for e in ensemble_models if e != model]
+        im_model_set = [model] + eff_ensemble
         if COMPARISON_MODE == "pairwise":
-            im_full_df = _build_im_pairwise_df(df, model, model_names)
+            im_full_df = _build_im_pairwise_df(df, model, im_model_set)
             im_models = [model, "avg_other"]
             im_icc = compute_icc_pingouin(im_full_df, models=im_models)
             im_alpha = compute_krippendorff_alpha(im_full_df, models=im_models)
         else:
-            im_full_df = df[df["model_name"] != "original"]
-            im_models = model_names
+            im_subset = df[df["model_name"].isin(im_model_set)]
+            im_grouped = im_subset.groupby("text_id")["model_name"].nunique()
+            shared_im_ids = im_grouped[im_grouped == len(im_model_set)].index
+            im_full_df = im_subset[im_subset["text_id"].isin(shared_im_ids)]
+            im_models = im_model_set
             im_icc = compute_icc_pingouin(im_full_df, models=im_models)
             im_alpha = compute_krippendorff_alpha(im_full_df, models=im_models)
 
@@ -612,7 +659,7 @@ def main():
     print("Loading data...")
     print("=" * 50)
 
-    df = load_judge_scores(dataset, model_names, DATA_DIR, EVALUATION_AXES)
+    df = load_judge_scores(dataset, models_to_load, DATA_DIR, EVALUATION_AXES)
 
     print("\n" + "=" * 50)
     print("Running ICC and Krippendorff's Alpha estimation experiment...")
@@ -650,12 +697,12 @@ def main():
 
         # Recompute variance components for this axis
         axis_per_model_variance, _ = compute_variance_alignment(
-            axis_df, model_names, mode=COMPARISON_MODE
+            axis_df, target_models, ensemble_models, mode=COMPARISON_MODE
         )
 
         # Run evaluation
         axis_icc, axis_alpha, axis_mse, axis_metadata = evaluate_reliability_estimators(
-            axis_df, model_names, axis_per_model_variance
+            axis_df, target_models, ensemble_models, axis_per_model_variance
         )
         icc_results_by_axis[axis] = axis_icc
         alpha_results_by_axis[axis] = axis_alpha
@@ -687,7 +734,7 @@ def main():
 
     # Compute aggregate reliability metadata
     reliability_metadata_all = {}
-    for model in model_names:
+    for model in target_models:
         hm_icc_vals = [
             reliability_metadata_by_axis[ax][model]["true_hm_icc"]
             for ax in reliability_metadata_by_axis

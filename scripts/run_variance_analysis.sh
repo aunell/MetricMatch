@@ -5,7 +5,7 @@
 #SBATCH --nodelist=secure-gpu-14
 #SBATCH --gres=gpu:1
 #SBATCH --mem=100G
-#SBATCH --time=24:00:00
+#SBATCH --time=20:00:00
 #SBATCH --ntasks=1
 #
 # Run variance selection analysis across all datasets
@@ -21,7 +21,10 @@
 #   --data-dir DIR        Directory containing judge scores (default: data/judge_scores)
 #   --comparison-mode M   Comparison mode: pairwise or aggregate (default: pairwise)
 #   --datasets D1 D2 ...  Datasets to run (default: all - hanna medval mslr summeval)
-#   --model-names M1 M2   Model names to evaluate (default: gpt-4o-mini meta-llama-Llama-3.1-8B-Instruct google-gemma-3-1b-it Qwen-Qwen2.5-7B-Instruct)
+#   --model-names M1 M2   All model names to load (default: gpt-4o-mini ...)
+#   --target-models M1 M2 Models to evaluate independently (default: same as --model-names)
+#   --ensemble-models E1  Models used for variance matching / IMC (default: same as --model-names;
+#                         each target is automatically excluded from its own ensemble)
 #
 # Examples:
 #   # Run with all defaults on all datasets
@@ -46,10 +49,12 @@ TOTAL_ANNOTATIONS=300
 PLOTS_DIR="results/02_19"
 DATA_DIR="data/judge_scores"
 COMPARISON_MODE="pairwise"
-DATASETS=("medval" "summeval" "mslr" "hanna")
+DATASETS=("hanna") #("medval" "summeval" "mslr" "hanna")
 #("hanna" "medval" "mslr" "summeval")
 MODEL_NAMES=("claude-3.5-sonnet" "gpt-4.1" "gpt-5")
 # MODEL_NAMES=("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")
+TARGET_MODELS=() #("claude-3.5-sonnet" "gpt-4.1" "gpt-5")   # empty = use MODEL_NAMES
+ENSEMBLE_MODELS=() #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct") # empty = use MODEL_NAMES
 
 # Parse command-line arguments
 while [[ $# -gt 0 ]]; do
@@ -94,6 +99,22 @@ while [[ $# -gt 0 ]]; do
                 shift
             done
             ;;
+        --target-models)
+            TARGET_MODELS=()
+            shift
+            while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do
+                TARGET_MODELS+=("$1")
+                shift
+            done
+            ;;
+        --ensemble-models)
+            ENSEMBLE_MODELS=()
+            shift
+            while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do
+                ENSEMBLE_MODELS+=("$1")
+                shift
+            done
+            ;;
         -h|--help)
             head -30 "$0" | tail -28
             exit 0
@@ -117,6 +138,8 @@ echo "DATA_DIR:          $DATA_DIR"
 echo "COMPARISON_MODE:   $COMPARISON_MODE"
 echo "DATASETS:          ${DATASETS[*]}"
 echo "MODEL_NAMES:       ${MODEL_NAMES[*]}"
+echo "TARGET_MODELS:     ${TARGET_MODELS[*]:-<same as MODEL_NAMES>}"
+echo "ENSEMBLE_MODELS:   ${ENSEMBLE_MODELS[*]:-<same as MODEL_NAMES>}"
 echo "=============================================="
 echo
 
@@ -131,6 +154,14 @@ for dataset in "${DATASETS[@]}"; do
     echo "############################################"
     echo ""
 
+    EXTRA_ARGS=()
+    if [ ${#TARGET_MODELS[@]} -gt 0 ]; then
+        EXTRA_ARGS+=(--target-models "${TARGET_MODELS[@]}")
+    fi
+    if [ ${#ENSEMBLE_MODELS[@]} -gt 0 ]; then
+        EXTRA_ARGS+=(--ensemble-models "${ENSEMBLE_MODELS[@]}")
+    fi
+
     python -m src.experiments.variance_selection_analysis \
         --dataset "$dataset" \
         --model-names "${MODEL_NAMES[@]}" \
@@ -139,7 +170,8 @@ for dataset in "${DATASETS[@]}"; do
         --comparison-mode "$COMPARISON_MODE" \
         --n-bootstrap "$N_BOOTSTRAP" \
         --n-candidates "$N_CANDIDATES" \
-        --total-annotations "$TOTAL_ANNOTATIONS"
+        --total-annotations "$TOTAL_ANNOTATIONS" \
+        "${EXTRA_ARGS[@]}"
 
     echo ""
     echo "Completed: $dataset"
