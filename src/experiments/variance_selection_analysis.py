@@ -25,7 +25,7 @@ from src.utils.selection_strategies import (
     metric_matched_selection,
     max_expand_selection,
 )
-from src.utils.plotting import plot_all_results
+from src.utils.plotting import plot_all_results, load_results_dataframes
 # Set random seed for reproducibility
 np.random.seed(42)
 
@@ -43,6 +43,12 @@ DEFAULT_ENSEMBLE_MODELS = None  # None → same as model_names
 DEFAULT_DATA_DIR = "data/judge_scores"
 DEFAULT_PLOTS_DIR = "results/02_18_large"
 DEFAULT_COMPARISON_MODE = "pairwise"
+# ONLINE_ACQUISITION=True  → cumulative/incremental selection: IDs chosen at budget k are
+#                            locked in and carried forward to budget k+n (simulates a real
+#                            annotation session where labels already collected are reused).
+# ONLINE_ACQUISITION=False → batch selection: each budget level independently samples k
+#                            items from scratch without any carryover.
+DEFAULT_ONLINE_ACQUISITION = True
 
 # Sampling strategies to compare
 # Variance matching methods: "variance_matched_msb", "variance_matched_mse", "variance_matched_combined"
@@ -118,6 +124,18 @@ def parse_args():
         "--total-annotations", type=int, default=DEFAULT_TOTAL_ANNOTATIONS,
         help=f"Total annotations budget (default: {DEFAULT_TOTAL_ANNOTATIONS})"
     )
+    parser.add_argument(
+        "--results-dir", type=str, default=None,
+        help="Path to a previously saved results directory (plots_dir from a prior run). "
+             "If provided, skips computation and loads saved DataFrames to regenerate plots."
+    )
+    parser.add_argument(
+        "--online-acquisition", action=argparse.BooleanOptionalAction,
+        default=DEFAULT_ONLINE_ACQUISITION,
+        help="If True (default), IDs selected at budget k are locked in and carried forward "
+             "to larger budgets (online/incremental). If False, each budget level independently "
+             "samples k items from scratch (batch selection)."
+    )
     return parser.parse_args()
 
 
@@ -138,6 +156,7 @@ models_to_load = [m for m in (target_models + ensemble_models) if not (m in _see
 DATA_DIR = args.data_dir
 PLOTS_DIR = args.plots_dir
 COMPARISON_MODE = args.comparison_mode
+ONLINE_ACQUISITION = args.online_acquisition
 
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
@@ -337,7 +356,9 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                           im_msb_target=None, im_mse_target=None,
                           im_models=None, true_im_icc=None, true_im_alpha=None,
                           past_im_msb_obs=None, past_im_mse_obs=None,
-                          past_hm_msb_obs=None, past_hm_mse_obs=None):
+                          past_hm_msb_obs=None, past_hm_mse_obs=None,
+                          prev_selected_per_trial=None,
+                          online_acquisition=True):
     """Run trials for all strategy variants that share the same base sampling method.
 
     Samples text_ids once per trial, then computes every required correction
@@ -347,6 +368,15 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
 
     max_expand is deterministic, so it is evaluated only once regardless of
     n_trials.
+
+    Cumulative vs batch selection (controlled by online_acquisition):
+        online_acquisition=True  → IDs selected at a prior budget level are passed in via
+            prev_selected_per_trial (a dict mapping trial_idx -> previously selected ID
+            array). Each trial only samples the incremental IDs needed to reach k from
+            the remaining pool, so the final selected set always includes every ID chosen
+            at earlier budget levels.
+        online_acquisition=False → each budget level independently samples k items from
+            the full pool; prev_selected_per_trial is ignored and never updated.
 
     Bias-corrected selection targets:
         Before each trial the variance-matching targets are adjusted using the
@@ -366,11 +396,12 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
 
     Returns:
         tuple: (
-            results          – dict mapping strategy name -> {"icc_errors", "alpha_errors"},
-            new_im_msb_obs   – IM MSB values observed in this call's trials,
-            new_im_mse_obs   – IM MSE values observed in this call's trials,
-            new_hm_msb_obs   – HM MSB values observed in this call's trials,
-            new_hm_mse_obs   – HM MSE values observed in this call's trials,
+            results                   – dict mapping strategy name -> {"icc_errors", "alpha_errors"},
+            new_im_msb_obs            – IM MSB values observed in this call's trials,
+            new_im_mse_obs            – IM MSE values observed in this call's trials,
+            new_hm_msb_obs            – HM MSB values observed in this call's trials,
+            new_hm_mse_obs            – HM MSE values observed in this call's trials,
+            updated_selected_per_trial – updated dict mapping trial_idx -> selected IDs,
         )
     """
     if past_im_msb_obs is None:
@@ -381,6 +412,8 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
         past_hm_msb_obs = []
     if past_hm_mse_obs is None:
         past_hm_mse_obs = []
+    if prev_selected_per_trial is None:
+        prev_selected_per_trial = {}
 
     needs_ppi = any(imc for _, imc in [_parse_strategy(s) for s in strategy_variants])
     needs_plain = any(not imc for _, imc in [_parse_strategy(s) for s in strategy_variants])
@@ -396,8 +429,17 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
     new_hm_msb_obs = []
     new_hm_mse_obs = []
 
+    # Copy so we can update and return without mutating the caller's dict.
+    updated_selected_per_trial = dict(prev_selected_per_trial)
+
     for trial_idx in range(actual_trials):
         seed = 42 + trial_idx
+
+        # IDs locked in from prior budget levels for this trial (online mode only).
+        if online_acquisition:
+            forced_ids = updated_selected_per_trial.get(trial_idx, np.array([], dtype=text_ids.dtype))
+        else:
+            forced_ids = np.array([], dtype=text_ids.dtype)
 
         # ── Compute effective selection targets ────────────────────────────────
         # For _tc (target-corrected) strategies: adjust targets using the mean
@@ -430,15 +472,21 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             effective_msb_target = im_msb_target
             effective_mse_target = im_mse_target
 
-        # ── Sample once ────────────────────────────────────────────────────────
+        # ── Sample once (only incremental IDs beyond forced_ids) ───────────────
         if base_strategy == "random":
             np.random.seed(seed)
-            sampled_ids = np.random.choice(text_ids, size=min(k, len(text_ids)), replace=False)
+            available = np.setdiff1d(text_ids, forced_ids)
+            n_new = min(k - len(forced_ids), len(available))
+            if n_new > 0:
+                new_ids = np.random.choice(available, size=n_new, replace=False)
+                sampled_ids = np.concatenate([forced_ids, new_ids]) if len(forced_ids) > 0 else new_ids
+            else:
+                sampled_ids = forced_ids[:k]
         elif base_strategy in _SCORE_METHOD_MAP:
             sampled_ids = variance_matched_selection_ms(
                 text_ids, k, im_full_df, effective_msb_target, effective_mse_target,
                 compute_ms_components, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
-                score_method=_SCORE_METHOD_MAP[base_strategy]
+                score_method=_SCORE_METHOD_MAP[base_strategy], forced_ids=forced_ids
             )
             if sampled_ids is None:
                 continue
@@ -446,7 +494,8 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             sampled_ids = metric_matched_selection(
                 text_ids, k, im_full_df, true_im_icc, "icc",
                 compute_ms_components, compute_icc_pingouin, compute_krippendorff_alpha,
-                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models
+                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                forced_ids=forced_ids
             )
             if sampled_ids is None:
                 continue
@@ -454,7 +503,8 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             sampled_ids = metric_matched_selection(
                 text_ids, k, im_full_df, true_im_alpha, "alpha",
                 compute_ms_components, compute_icc_pingouin, compute_krippendorff_alpha,
-                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models
+                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                forced_ids=forced_ids
             )
             if sampled_ids is None:
                 continue
@@ -462,16 +512,22 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             sampled_ids = metric_matched_selection(
                 text_ids, k, im_full_df, im_mse_target, "mse",
                 compute_ms_components, compute_icc_pingouin, compute_krippendorff_alpha,
-                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models
+                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                forced_ids=forced_ids
             )
             if sampled_ids is None:
                 continue
         elif base_strategy == "max_expand":
-            sampled_ids = max_expand_selection(im_full_df, k, compute_ms_components)
+            sampled_ids = max_expand_selection(im_full_df, k, compute_ms_components,
+                                               forced_ids=forced_ids)
             if sampled_ids is None:
                 continue
         else:
             continue
+
+        # Record this trial's selected IDs for the next budget level (online mode only).
+        if online_acquisition:
+            updated_selected_per_trial[trial_idx] = np.asarray(sampled_ids)
 
         hm_sample = hm_full_df[hm_full_df["text_id"].isin(sampled_ids)]
 
@@ -533,11 +589,12 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                 if est_mse is not None and np.isfinite(est_mse) and true_mse is not None and np.isfinite(true_mse):
                     results[strategy]["mse_errors"].append(abs(est_mse - true_mse))
 
-    return results, new_im_msb_obs, new_im_mse_obs, new_hm_msb_obs, new_hm_mse_obs
+    return results, new_im_msb_obs, new_im_mse_obs, new_hm_msb_obs, new_hm_mse_obs, updated_selected_per_trial
 
 
 def evaluate_reliability_estimators(df, target_models, ensemble_models, per_model_variance,
-                                     budgets=range(5, 55, 5), n_trials=None):
+                                     budgets=range(5, 55, 5), n_trials=None,
+                                     online_acquisition=True):
     """
     Evaluate ICC and Krippendorff's alpha estimators with different sampling strategies.
 
@@ -551,6 +608,8 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
         per_model_variance: Dict from compute_variance_alignment
         budgets: Range of annotation budgets to test
         n_trials: Number of bootstrap trials (defaults to N_BOOTSTRAP_SAMPLES)
+        online_acquisition: If True (default), selected IDs carry forward across budget
+            levels. If False, each budget level samples k items independently (batch).
 
     Returns:
         icc_results: DataFrame with ICC estimation errors
@@ -614,15 +673,18 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
         text_ids = hm_full_df["text_id"].unique()
 
         # Outer loop over strategies so each base strategy accumulates its own
-        # observation history across budget levels for bias-corrected targeting.
+        # observation history across budget levels for bias-corrected targeting,
+        # and so that each trial's selected IDs are carried forward to the next
+        # budget level (cumulative selection).
         for base_strategy, strategy_variants in strategies_by_base.items():
             past_im_msb_obs = []
             past_im_mse_obs = []
             past_hm_msb_obs = []
             past_hm_mse_obs = []
+            prev_selected_per_trial = {}  # trial_idx -> array of IDs selected so far
 
             for k in budgets:
-                trial_results, new_im_msb, new_im_mse, new_hm_msb, new_hm_mse = (
+                trial_results, new_im_msb, new_im_mse, new_hm_msb, new_hm_mse, prev_selected_per_trial = (
                     _run_trials_for_base(
                         base_strategy, strategy_variants, text_ids, k, n_trials,
                         hm_full_df, im_full_df, model, true_icc, true_alpha, true_mse,
@@ -630,6 +692,8 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
                         im_models=im_models, true_im_icc=im_icc, true_im_alpha=im_alpha,
                         past_im_msb_obs=past_im_msb_obs, past_im_mse_obs=past_im_mse_obs,
                         past_hm_msb_obs=past_hm_msb_obs, past_hm_mse_obs=past_hm_mse_obs,
+                        prev_selected_per_trial=prev_selected_per_trial,
+                        online_acquisition=online_acquisition,
                     )
                 )
                 # Extend history with this budget level's observations so the
@@ -702,7 +766,8 @@ def main():
 
         # Run evaluation
         axis_icc, axis_alpha, axis_mse, axis_metadata = evaluate_reliability_estimators(
-            axis_df, target_models, ensemble_models, axis_per_model_variance
+            axis_df, target_models, ensemble_models, axis_per_model_variance,
+            online_acquisition=ONLINE_ACQUISITION
         )
         icc_results_by_axis[axis] = axis_icc
         alpha_results_by_axis[axis] = axis_alpha
@@ -800,9 +865,15 @@ def main():
 
 
 if __name__ == "__main__":
-    (icc_results, alpha_results, mse_results,
-     icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
-     reliability_metadata_all, reliability_metadata_by_axis) = main()
+    if args.results_dir is not None:
+        print(f"\nLoading saved results from: {args.results_dir} (dataset={dataset})")
+        (icc_results, alpha_results, mse_results,
+         icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
+         reliability_metadata_all, reliability_metadata_by_axis) = load_results_dataframes(args.results_dir, dataset)
+    else:
+        (icc_results, alpha_results, mse_results,
+         icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
+         reliability_metadata_all, reliability_metadata_by_axis) = main()
 
     plot_all_results(
         icc_results, alpha_results, mse_results,

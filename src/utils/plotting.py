@@ -5,9 +5,125 @@ Contains functions for creating estimation error plots with confidence intervals
 """
 
 import os
+import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
+
+class _NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
+def save_results_dataframes(plots_dir, icc_results, alpha_results, mse_results,
+                             icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
+                             reliability_metadata_all, reliability_metadata_by_axis,
+                             dataset=None):
+    """
+    Save all result DataFrames and metadata dicts to disk for later reloading.
+
+    Saves into a 'dataframes/{dataset}/' subdirectory within plots_dir so that
+    concurrent runs on different datasets do not overwrite each other's files.
+
+    Args:
+        plots_dir: Directory where plots are saved (dataframes go in plots_dir/dataframes/{dataset}/)
+        icc_results: Combined ICC results DataFrame
+        alpha_results: Combined Alpha results DataFrame
+        mse_results: Combined MSE results DataFrame
+        icc_results_by_axis: Dict mapping axis -> ICC results DataFrame
+        alpha_results_by_axis: Dict mapping axis -> Alpha results DataFrame
+        mse_results_by_axis: Dict mapping axis -> MSE results DataFrame
+        reliability_metadata_all: Dict mapping model -> aggregated metadata
+        reliability_metadata_by_axis: Dict mapping axis -> model -> metadata
+        dataset: Dataset name used to namespace the output subdirectory (e.g. "hanna")
+    """
+    df_dir = os.path.join(plots_dir, "dataframes", dataset) if dataset else os.path.join(plots_dir, "dataframes")
+    os.makedirs(df_dir, exist_ok=True)
+
+    icc_results.to_csv(os.path.join(df_dir, "icc_results.csv"), index=False)
+    alpha_results.to_csv(os.path.join(df_dir, "alpha_results.csv"), index=False)
+    mse_results.to_csv(os.path.join(df_dir, "mse_results.csv"), index=False)
+
+    axes = list(icc_results_by_axis.keys())
+    with open(os.path.join(df_dir, "axes.json"), "w") as f:
+        json.dump(axes, f)
+
+    for axis, df in icc_results_by_axis.items():
+        safe_axis = axis.replace("/", "-").replace("\\", "-").replace(" ", "_")
+        if df is not None and len(df) > 0:
+            df.to_csv(os.path.join(df_dir, f"icc_by_axis_{safe_axis}.csv"), index=False)
+    for axis, df in alpha_results_by_axis.items():
+        safe_axis = axis.replace("/", "-").replace("\\", "-").replace(" ", "_")
+        if df is not None and len(df) > 0:
+            df.to_csv(os.path.join(df_dir, f"alpha_by_axis_{safe_axis}.csv"), index=False)
+    for axis, df in mse_results_by_axis.items():
+        safe_axis = axis.replace("/", "-").replace("\\", "-").replace(" ", "_")
+        if df is not None and len(df) > 0:
+            df.to_csv(os.path.join(df_dir, f"mse_by_axis_{safe_axis}.csv"), index=False)
+
+    with open(os.path.join(df_dir, "reliability_metadata_all.json"), "w") as f:
+        json.dump(reliability_metadata_all, f, cls=_NumpyEncoder)
+    with open(os.path.join(df_dir, "reliability_metadata_by_axis.json"), "w") as f:
+        json.dump(reliability_metadata_by_axis, f, cls=_NumpyEncoder)
+
+    print(f"\nDataframes saved to: {df_dir}")
+
+
+def load_results_dataframes(results_dir, dataset=None):
+    """
+    Load previously saved result DataFrames and metadata from disk.
+
+    Expects data in a 'dataframes/{dataset}/' subdirectory within results_dir
+    (i.e., the same directory that was passed as plots_dir when the results were
+    saved, with the same dataset name).
+
+    Args:
+        results_dir: Directory containing the 'dataframes/' subdirectory
+        dataset: Dataset name used when saving (e.g. "hanna"); must match the
+                 value passed to save_results_dataframes
+
+    Returns:
+        Tuple of (icc_results, alpha_results, mse_results,
+                  icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
+                  reliability_metadata_all, reliability_metadata_by_axis)
+    """
+    df_dir = os.path.join(results_dir, "dataframes", dataset) if dataset else os.path.join(results_dir, "dataframes")
+
+    icc_results = pd.read_csv(os.path.join(df_dir, "icc_results.csv"))
+    alpha_results = pd.read_csv(os.path.join(df_dir, "alpha_results.csv"))
+    mse_results = pd.read_csv(os.path.join(df_dir, "mse_results.csv"))
+
+    with open(os.path.join(df_dir, "axes.json")) as f:
+        axes = json.load(f)
+
+    icc_results_by_axis = {}
+    alpha_results_by_axis = {}
+    mse_results_by_axis = {}
+    for axis in axes:
+        safe_axis = axis.replace("/", "-").replace("\\", "-").replace(" ", "_")
+        icc_path = os.path.join(df_dir, f"icc_by_axis_{safe_axis}.csv")
+        alpha_path = os.path.join(df_dir, f"alpha_by_axis_{safe_axis}.csv")
+        mse_path = os.path.join(df_dir, f"mse_by_axis_{safe_axis}.csv")
+        icc_results_by_axis[axis] = pd.read_csv(icc_path) if os.path.exists(icc_path) else pd.DataFrame()
+        alpha_results_by_axis[axis] = pd.read_csv(alpha_path) if os.path.exists(alpha_path) else pd.DataFrame()
+        mse_results_by_axis[axis] = pd.read_csv(mse_path) if os.path.exists(mse_path) else pd.DataFrame()
+
+    with open(os.path.join(df_dir, "reliability_metadata_all.json")) as f:
+        reliability_metadata_all = json.load(f)
+    with open(os.path.join(df_dir, "reliability_metadata_by_axis.json")) as f:
+        reliability_metadata_by_axis = json.load(f)
+
+    print(f"Dataframes loaded from: {df_dir}")
+    return (icc_results, alpha_results, mse_results,
+            icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
+            reliability_metadata_all, reliability_metadata_by_axis)
 
 
 def compute_bootstrap_cis(results_df, n_bootstrap=1000):
@@ -269,6 +385,7 @@ def plot_all_results(icc_results, alpha_results, mse_results,
                      dataset, plots_dir, comparison_mode):
     """
     Generate plots for ICC, Krippendorff's Alpha, and MSE estimation errors.
+    Also saves all DataFrames and metadata to plots_dir/dataframes/ for later reuse.
 
     Args:
         icc_results: DataFrame with ICC estimation errors
@@ -283,6 +400,12 @@ def plot_all_results(icc_results, alpha_results, mse_results,
         plots_dir: Directory to save plots
         comparison_mode: "pairwise" or "aggregate"
     """
+    save_results_dataframes(
+        plots_dir, icc_results, alpha_results, mse_results,
+        icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
+        reliability_metadata_all, reliability_metadata_by_axis,
+        dataset=dataset
+    )
     print("\n" + "=" * 60)
     print("PLOTTING ICC ESTIMATION ERROR RESULTS")
     print("=" * 60)

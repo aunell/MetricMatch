@@ -46,10 +46,11 @@ cd SmartSample_local
 N_BOOTSTRAP=100
 N_CANDIDATES=20
 TOTAL_ANNOTATIONS=300
-PLOTS_DIR="results/02_19"
+PLOTS_DIR="results/02_25"
 DATA_DIR="data/judge_scores"
 COMPARISON_MODE="pairwise"
-DATASETS=("hanna") #("medval" "summeval" "mslr" "hanna")
+ONLINE_ACQUISITION=true   # true → cumulative/incremental selection; false → batch selection
+DATASETS=("mslr") #("medval" "summeval" "mslr" "hanna")
 #("hanna" "medval" "mslr" "summeval")
 MODEL_NAMES=("claude-3.5-sonnet" "gpt-4.1" "gpt-5")
 # MODEL_NAMES=("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")
@@ -82,6 +83,14 @@ while [[ $# -gt 0 ]]; do
         --comparison-mode)
             COMPARISON_MODE="$2"
             shift 2
+            ;;
+        --online-acquisition)
+            ONLINE_ACQUISITION=true
+            shift
+            ;;
+        --no-online-acquisition)
+            ONLINE_ACQUISITION=false
+            shift
             ;;
         --datasets)
             DATASETS=()
@@ -136,6 +145,7 @@ echo "TOTAL_ANNOTATIONS: $TOTAL_ANNOTATIONS"
 echo "PLOTS_DIR:         $PLOTS_DIR"
 echo "DATA_DIR:          $DATA_DIR"
 echo "COMPARISON_MODE:   $COMPARISON_MODE"
+echo "ONLINE_ACQUISITION: $ONLINE_ACQUISITION"
 echo "DATASETS:          ${DATASETS[*]}"
 echo "MODEL_NAMES:       ${MODEL_NAMES[*]}"
 echo "TARGET_MODELS:     ${TARGET_MODELS[*]:-<same as MODEL_NAMES>}"
@@ -161,12 +171,17 @@ for dataset in "${DATASETS[@]}"; do
     if [ ${#ENSEMBLE_MODELS[@]} -gt 0 ]; then
         EXTRA_ARGS+=(--ensemble-models "${ENSEMBLE_MODELS[@]}")
     fi
+    if [ "$ONLINE_ACQUISITION" = "true" ]; then
+        EXTRA_ARGS+=(--online-acquisition)
+    else
+        EXTRA_ARGS+=(--no-online-acquisition)
+    fi
 
     python -m src.experiments.variance_selection_analysis \
         --dataset "$dataset" \
         --model-names "${MODEL_NAMES[@]}" \
         --data-dir "$DATA_DIR" \
-        --plots-dir "$PLOTS_DIR" \
+        --plots-dir "$PLOTS_DIR/$dataset" \
         --comparison-mode "$COMPARISON_MODE" \
         --n-bootstrap "$N_BOOTSTRAP" \
         --n-candidates "$N_CANDIDATES" \
@@ -180,5 +195,5 @@ done
 
 echo "=============================================="
 echo "All datasets completed!"
-echo "Results saved to: $PLOTS_DIR"
+echo "Results saved to: $PLOTS_DIR/<dataset>/ (one subdirectory per dataset)"
 echo "=============================================="

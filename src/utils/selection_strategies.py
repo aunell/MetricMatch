@@ -330,7 +330,8 @@ def variance_matching(cheap_ratings, n_expensive, seed, epsilon=0.1, k=10):
 
 
 def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse_target,
-                                   compute_ms_fn, seed=42, n_candidates=20, score_method="combined"):
+                                   compute_ms_fn, seed=42, n_candidates=20, score_method="combined",
+                                   forced_ids=None):
     """
     Select subset that best matches target inter-model variance using MS components.
 
@@ -351,6 +352,11 @@ def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse
             - "msb_only": score = abs(cand_msb - im_msb_target)
             - "mse_only": score = abs(cand_mse - im_mse_target)
             - "combined": score = abs(cand_msb - im_msb_target) + abs(cand_mse - im_mse_target)
+        forced_ids: IDs that must be included in the selection (ONLINE_ACQUISITION mode only —
+                    these are IDs already annotated at a prior budget level). Only the
+                    incremental IDs needed to reach k are sampled from the remaining pool.
+                    The score is computed on the full combined set (forced + new).
+                    Pass None or an empty array for batch/independent selection.
 
     Returns:
         Array of selected text_ids, or None if no valid subset found
@@ -359,17 +365,25 @@ def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse
     best_ids = None
     best_score = float('inf')
 
+    forced_ids = np.asarray(forced_ids) if forced_ids is not None and len(forced_ids) > 0 else np.array([], dtype=text_ids.dtype)
+    available_ids = np.setdiff1d(text_ids, forced_ids)
+    n_new = min(k - len(forced_ids), len(available_ids))
+
+    if n_new <= 0:
+        return forced_ids[:k]
+
     for _ in range(n_candidates):
-        candidate_ids = rng.choice(text_ids, size=min(k, len(text_ids)), replace=False)
+        new_ids = rng.choice(available_ids, size=n_new, replace=False)
+        candidate_ids = np.concatenate([forced_ids, new_ids]) if len(forced_ids) > 0 else new_ids
         im_candidate = im_full_df[im_full_df["text_id"].isin(candidate_ids)]
 
         if len(im_candidate) == 0:
             continue
 
         cand_obj = compute_ms_fn(im_candidate)
-        cand_msb, cand_mse, cand_icc = cand_obj.msb, cand_obj.mse, cand_obj.icc
-        if cand_obj.msb==None or cand_obj.mse==None:
+        if cand_obj is None or cand_obj.msb is None or cand_obj.mse is None:
             continue
+        cand_msb, cand_mse = cand_obj.msb, cand_obj.mse
 
         if not (np.isfinite(cand_msb) and np.isfinite(cand_mse)):
             continue
@@ -391,7 +405,8 @@ def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse
 
 def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metric,
                               compute_ms_fn, compute_icc_fn, compute_alpha_fn,
-                              seed=42, n_candidates=20, im_models=None):
+                              seed=42, n_candidates=20, im_models=None,
+                              forced_ids=None):
     """
     Select subset whose inter-model metric best matches a target value.
 
@@ -410,6 +425,11 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
         seed: Base random seed
         n_candidates: Number of candidate subsets to evaluate
         im_models: Model names to pass to the metric functions
+        forced_ids: IDs that must be included in the selection (ONLINE_ACQUISITION mode only —
+                    these are IDs already annotated at a prior budget level). Only the
+                    incremental IDs needed to reach k are sampled from the remaining pool.
+                    The score is computed on the full combined set (forced + new).
+                    Pass None or an empty array for batch/independent selection.
 
     Returns:
         Array of selected text_ids, or None if no valid subset found
@@ -421,8 +441,16 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
     best_ids = None
     best_score = float('inf')
 
+    forced_ids = np.asarray(forced_ids) if forced_ids is not None and len(forced_ids) > 0 else np.array([], dtype=text_ids.dtype)
+    available_ids = np.setdiff1d(text_ids, forced_ids)
+    n_new = min(k - len(forced_ids), len(available_ids))
+
+    if n_new <= 0:
+        return forced_ids[:k]
+
     for _ in range(n_candidates):
-        candidate_ids = rng.choice(text_ids, size=min(k, len(text_ids)), replace=False)
+        new_ids = rng.choice(available_ids, size=n_new, replace=False)
+        candidate_ids = np.concatenate([forced_ids, new_ids]) if len(forced_ids) > 0 else new_ids
         im_candidate = im_full_df[im_full_df["text_id"].isin(candidate_ids)]
 
         if len(im_candidate) == 0:
@@ -449,7 +477,7 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
     return best_ids
 
 
-def max_expand_selection(im_full_df, k, compute_ms_fn, alpha_weight=0.5):
+def max_expand_selection(im_full_df, k, compute_ms_fn, alpha_weight=0.5, forced_ids=None):
     """
     Select most informative points based on MS component contributions.
 
@@ -463,6 +491,10 @@ def max_expand_selection(im_full_df, k, compute_ms_fn, alpha_weight=0.5):
         compute_ms_fn: Function to compute MS components (returns Pointwise ICC object)
         alpha_weight: Weight for MSB contribution vs MSE (default: 0.5 for equal weighting)
                       Higher values prioritize between-subject variance (more informative for ICC)
+        forced_ids: IDs that must be included in the selection (ONLINE_ACQUISITION mode only —
+                    these are IDs already annotated at a prior budget level). The remaining
+                    slots are filled from the top of the score-ranked list, excluding forced_ids.
+                    Pass None or an empty array for batch/independent selection.
 
     Returns:
         List of selected text_ids, or None if computation fails
@@ -480,6 +512,12 @@ def max_expand_selection(im_full_df, k, compute_ms_fn, alpha_weight=0.5):
         # Linear combination of MSB and MSE contributions
         combined_score = alpha_weight * im_msb_expand + (1 - alpha_weight) * im_mse_expand
         sorted_text_ids = combined_score.sort_values(ascending=False).index.tolist()
+
+        if forced_ids is not None and len(forced_ids) > 0:
+            forced_set = set(forced_ids)
+            n_new = k - len(forced_ids)
+            additional = [tid for tid in sorted_text_ids if tid not in forced_set][:n_new]
+            return list(forced_ids) + additional
 
         return sorted_text_ids[:min(k, len(sorted_text_ids))]
     except Exception:
