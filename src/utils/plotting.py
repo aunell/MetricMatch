@@ -126,6 +126,32 @@ def load_results_dataframes(results_dir, dataset=None):
             reliability_metadata_all, reliability_metadata_by_axis)
 
 
+def compute_variance_by_method(results_df):
+    """
+    Compute variance of estimation errors by method and budget.
+
+    Args:
+        results_df: DataFrame with columns: method, budget, estimation_error
+
+    Returns:
+        DataFrame with columns: method, budget, variance
+    """
+    var_data = []
+    for method in results_df["method"].unique():
+        for budget in sorted(results_df["budget"].unique()):
+            subset = results_df[
+                (results_df["method"] == method) &
+                (results_df["budget"] == budget)
+            ]
+            if len(subset) > 0:
+                var_data.append({
+                    "method": method,
+                    "budget": budget,
+                    "variance": subset["estimation_error"].var(),
+                })
+    return pd.DataFrame(var_data)
+
+
 def compute_bootstrap_cis(results_df, n_bootstrap=1000):
     """
     Compute 95% bootstrap CI for estimation errors by method and budget.
@@ -220,6 +246,94 @@ def create_estimation_error_plot(avg_results, title, ylabel, filename, legend_te
     return filename
 
 
+def create_variance_plot(var_results, title, ylabel, filename):
+    """
+    Create a variance-vs-budget plot, one line per method.
+
+    Args:
+        var_results: DataFrame from compute_variance_by_method with method, budget, variance
+        title: Plot title
+        ylabel: Y-axis label
+        filename: Full path to save the plot
+
+    Returns:
+        Path to saved file
+    """
+    plt.figure(figsize=(10, 6))
+
+    for method in var_results["method"].unique():
+        method_data = var_results[var_results["method"] == method].sort_values("budget")
+        plt.plot(
+            method_data["budget"],
+            method_data["variance"],
+            marker='o',
+            linewidth=2.5,
+            label=method,
+            alpha=0.8
+        )
+
+    plt.ylabel(ylabel, fontsize=12)
+    plt.xlabel("Human Annotation Budget", fontsize=12)
+    plt.title(title, fontsize=11)
+    plt.legend(title="Method", fontsize=11)
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(filename, dpi=300)
+    plt.close()
+
+    return filename
+
+
+def create_log_abs_error_plot(avg_results, title, ylabel, filename):
+    """
+    Create a log-scale absolute error vs budget plot with confidence intervals.
+
+    Identical to create_estimation_error_plot but with a log y-axis so small
+    differences between methods are easier to see.
+
+    Args:
+        avg_results: DataFrame from compute_bootstrap_cis with method, budget,
+                     mean, ci_lower, ci_upper, ci_half_width
+        title: Plot title
+        ylabel: Y-axis label
+        filename: Full path to save the plot
+
+    Returns:
+        Path to saved file
+    """
+    plt.figure(figsize=(10, 6))
+
+    for method in avg_results["method"].unique():
+        method_data = avg_results[avg_results["method"] == method].sort_values("budget")
+        means = method_data["mean"].values
+        # Clip CI bounds to be non-negative so log scale doesn't break
+        yerr_lower = np.clip(means - method_data["ci_lower"].values, 0, None)
+        yerr_upper = np.clip(method_data["ci_upper"].values - means, 0, None)
+        plt.errorbar(
+            method_data["budget"],
+            means,
+            yerr=[yerr_lower, yerr_upper],
+            marker='o',
+            linewidth=2.5,
+            capsize=5,
+            capthick=2,
+            label=method,
+            alpha=0.8
+        )
+
+    plt.yscale('log')
+    plt.ylabel(ylabel, fontsize=12)
+    plt.xlabel("Human Annotation Budget", fontsize=12)
+    plt.title(title, fontsize=11)
+    plt.legend(title="Method", fontsize=11)
+    plt.grid(alpha=0.3, which='both')
+    plt.tight_layout()
+    plt.savefig(filename, dpi=300)
+    plt.close()
+
+    return filename
+
+
 def plot_metric_results(results, results_by_axis, metadata_all, metadata_by_axis,
                         dataset, plots_dir, comparison_mode,
                         metric_name="ICC", hm_key="true_hm_icc", im_key="im_icc"):
@@ -274,6 +388,20 @@ def plot_metric_results(results, results_by_axis, metadata_all, metadata_by_axis
     print(f"\n[{metric_name} SET 1: Avg across axis AND model]")
     print(f"  Saved: {filename}")
 
+    var_results_all = compute_variance_by_method(results)
+    create_variance_plot(
+        var_results_all,
+        title=f"{dataset} {metric_name} Estimation Error Variance (avg across models & axes)",
+        ylabel=f"Variance of {metric_name} Estimation Error",
+        filename=os.path.join(plots_dir, f"{dataset}_{metric_lower}_variance_avg_all.jpg")
+    )
+    create_log_abs_error_plot(
+        avg_results,
+        title=f"{dataset} {metric_name} Absolute Error - Log Scale (avg across models & axes)",
+        ylabel=f"Absolute {metric_name} Error - log scale",
+        filename=os.path.join(plots_dir, f"{dataset}_{metric_lower}_log_abs_error_avg_all.jpg")
+    )
+
     # =====================================
     # SET 2: Averaged across axis only (per-model plots)
     # =====================================
@@ -321,6 +449,20 @@ def plot_metric_results(results, results_by_axis, metadata_all, metadata_by_axis
             )
             print(f"  Saved: {filename}")
 
+            var_model_results = compute_variance_by_method(model_results)
+            create_variance_plot(
+                var_model_results,
+                title=f"{dataset} {metric_name} Error Variance: {model} (avg across axes)",
+                ylabel=f"Variance of {metric_name} Estimation Error",
+                filename=os.path.join(plots_dir, f"{dataset}_{metric_lower}_variance_by_model_{safe_model_name}.jpg")
+            )
+            create_log_abs_error_plot(
+                avg_model_results,
+                title=f"{dataset} {metric_name} Abs Error - Log Scale: {model} (avg across axes)",
+                ylabel=f"Absolute {metric_name} Error - log scale",
+                filename=os.path.join(plots_dir, f"{dataset}_{metric_lower}_log_abs_error_by_model_{safe_model_name}.jpg")
+            )
+
     # =====================================
     # SET 3: Averaged across model only (per-axis plots)
     # =====================================
@@ -359,6 +501,20 @@ def plot_metric_results(results, results_by_axis, metadata_all, metadata_by_axis
                 legend_text=f"{legend_text}\n(Averaged across models with 95% CI)"
             )
             print(f"  Saved: {filename}")
+
+            var_axis_results = compute_variance_by_method(axis_results)
+            create_variance_plot(
+                var_axis_results,
+                title=f"{dataset} {metric_name} Error Variance: {axis} (avg across models)",
+                ylabel=f"Variance of {metric_name} Estimation Error",
+                filename=os.path.join(plots_dir, f"{dataset}_{metric_lower}_variance_by_axis_{safe_axis_name}.jpg")
+            )
+            create_log_abs_error_plot(
+                avg_axis_results,
+                title=f"{dataset} {metric_name} Abs Error - Log Scale: {axis} (avg across models)",
+                ylabel=f"Absolute {metric_name} Error - log scale",
+                filename=os.path.join(plots_dir, f"{dataset}_{metric_lower}_log_abs_error_by_axis_{safe_axis_name}.jpg")
+            )
 
     # =====================================
     # Summary table
