@@ -10,6 +10,8 @@ Krippendorff's alpha with limited human annotation budgets. It compares:
 
 import os
 import argparse
+import multiprocessing as mp
+from functools import partial
 import numpy as np
 import pandas as pd
 
@@ -295,27 +297,27 @@ def compute_variance_alignment(df, target_models, ensemble_models, mode="aggrega
 def _build_im_pairwise_df(df, model, model_names):
     """Build inter-model DataFrame for pairwise mode (model vs avg of others)."""
     other_models = [x for x in model_names if x != model]
-    im_subset = df[df["model_name"].isin(model_names)].copy()
-    im_grouped = im_subset.groupby("text_id")
+    im_subset = df[df["model_name"].isin(model_names)]
 
-    im_full_df = []
-    for text_id, text_data in im_grouped:
-        model_score = text_data.loc[text_data["model_name"] == model, "evaluation_score"]
-        if len(model_score) > 0:
-            im_full_df.append({
-                "text_id": text_id,
-                "model_name": model,
-                "evaluation_score": model_score.iloc[0]
-            })
-        other_scores = text_data.loc[text_data["model_name"].isin(other_models), "evaluation_score"]
-        if len(other_scores) > 0:
-            im_full_df.append({
-                "text_id": text_id,
-                "model_name": "avg_other",
-                "evaluation_score": other_scores.mean()
-            })
+    model_rows = (
+        im_subset[im_subset["model_name"] == model][["text_id", "evaluation_score"]]
+        .copy()
+    )
+    model_rows["model_name"] = model
 
-    return pd.DataFrame(im_full_df)
+    avg_rows = (
+        im_subset[im_subset["model_name"].isin(other_models)]
+        .groupby("text_id")["evaluation_score"]
+        .mean()
+        .reset_index()
+    )
+    avg_rows["model_name"] = "avg_other"
+
+    return pd.concat(
+        [model_rows[["text_id", "model_name", "evaluation_score"]],
+         avg_rows[["text_id", "model_name", "evaluation_score"]]],
+        ignore_index=True
+    )
 
 
 def _parse_strategy(strategy_name):
@@ -358,7 +360,8 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                           past_im_msb_obs=None, past_im_mse_obs=None,
                           past_hm_msb_obs=None, past_hm_mse_obs=None,
                           prev_selected_per_trial=None,
-                          online_acquisition=True):
+                          online_acquisition=True,
+                          fast_ms_fn=None):
     """Run trials for all strategy variants that share the same base sampling method.
 
     Samples text_ids once per trial, then computes every required correction
@@ -414,6 +417,9 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
         past_hm_mse_obs = []
     if prev_selected_per_trial is None:
         prev_selected_per_trial = {}
+    # fast_ms_fn skips expensive pivot_table validation on clean candidate subsets.
+    if fast_ms_fn is None:
+        fast_ms_fn = compute_ms_components
 
     needs_ppi = any(imc for _, imc in [_parse_strategy(s) for s in strategy_variants])
     needs_plain = any(not imc for _, imc in [_parse_strategy(s) for s in strategy_variants])
@@ -485,7 +491,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
         elif base_strategy in _SCORE_METHOD_MAP:
             sampled_ids = variance_matched_selection_ms(
                 text_ids, k, im_full_df, effective_msb_target, effective_mse_target,
-                compute_ms_components, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
+                fast_ms_fn, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
                 score_method=_SCORE_METHOD_MAP[base_strategy], forced_ids=forced_ids
             )
             if sampled_ids is None:
@@ -493,7 +499,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
         elif base_strategy == "metric_matched_icc":
             sampled_ids = metric_matched_selection(
                 text_ids, k, im_full_df, true_im_icc, "icc",
-                compute_ms_components, compute_icc_pingouin, compute_krippendorff_alpha,
+                fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
                 seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
                 forced_ids=forced_ids
             )
@@ -502,7 +508,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
         elif base_strategy == "metric_matched_alpha":
             sampled_ids = metric_matched_selection(
                 text_ids, k, im_full_df, true_im_alpha, "alpha",
-                compute_ms_components, compute_icc_pingouin, compute_krippendorff_alpha,
+                fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
                 seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
                 forced_ids=forced_ids
             )
@@ -511,7 +517,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
         elif base_strategy == "metric_matched_mse":
             sampled_ids = metric_matched_selection(
                 text_ids, k, im_full_df, im_mse_target, "mse",
-                compute_ms_components, compute_icc_pingouin, compute_krippendorff_alpha,
+                fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
                 seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
                 forced_ids=forced_ids
             )
@@ -533,12 +539,12 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
 
         # ── Observe IM and HM MS components on this subset ───────────────────
         im_sample = im_full_df[im_full_df["text_id"].isin(sampled_ids)]
-        im_ms = compute_ms_components(im_sample)
+        im_ms = fast_ms_fn(im_sample)
         if im_ms is not None:
             new_im_msb_obs.append(im_ms.msb)
             new_im_mse_obs.append(im_ms.mse)
 
-        hm_ms = compute_ms_components(hm_sample)
+        hm_ms = fast_ms_fn(hm_sample)
         if hm_ms is not None:
             new_hm_msb_obs.append(hm_ms.msb)
             new_hm_mse_obs.append(hm_ms.mse)
@@ -630,6 +636,10 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
         base, _ = _parse_strategy(strategy)
         strategies_by_base.setdefault(base, []).append(strategy)
 
+    # Reusable fast MS function that skips expensive pivot_table validation.
+    # Safe because all candidate subsets are drawn from pre-filtered shared text_ids.
+    _fast_ms = partial(compute_ms_components, validate=False)
+
     for model in target_models:
         im_msb_target = per_model_variance[model]["im_msb"]
         im_mse_target = per_model_variance[model]["im_mse"]
@@ -694,6 +704,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
                         past_hm_msb_obs=past_hm_msb_obs, past_hm_mse_obs=past_hm_mse_obs,
                         prev_selected_per_trial=prev_selected_per_trial,
                         online_acquisition=online_acquisition,
+                        fast_ms_fn=_fast_ms,
                     )
                 )
                 # Extend history with this budget level's observations so the
@@ -715,6 +726,22 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
 
 
 # -------------------------
+# PER-AXIS WORKER  (module-level so multiprocessing can pickle it)
+# -------------------------
+def _run_axis_worker(args):
+    """Process a single evaluation axis. Runs in a worker process via multiprocessing."""
+    axis, axis_df = args
+    axis_per_model_variance, _ = compute_variance_alignment(
+        axis_df, target_models, ensemble_models, mode=COMPARISON_MODE
+    )
+    axis_icc, axis_alpha, axis_mse, axis_metadata = evaluate_reliability_estimators(
+        axis_df, target_models, ensemble_models, axis_per_model_variance,
+        online_acquisition=ONLINE_ACQUISITION
+    )
+    return axis, axis_icc, axis_alpha, axis_mse, axis_metadata
+
+
+# -------------------------
 # MAIN
 # -------------------------
 def main():
@@ -729,46 +756,36 @@ def main():
     print("Running ICC and Krippendorff's Alpha estimation experiment...")
     print("=" * 50)
 
-    # Run experiment for each axis separately
+    # Pre-filter each axis DataFrame to shared text_ids, then run axes in parallel.
+    # Each axis is fully independent, so we can parallelize freely.
+    axes = EVALUATION_AXES[dataset]
+    axis_jobs = []
+    for axis in axes:
+        axis_df = df[df["evaluation_axis"] == axis]
+        num_models = axis_df["model_name"].nunique()
+        texts_per_model = axis_df.groupby("text_id")["model_name"].nunique()
+        shared_text_ids = texts_per_model[texts_per_model == num_models].index[:TOTAL_ANNOTATIONS]
+        axis_df = axis_df[axis_df["text_id"].isin(shared_text_ids)]
+        print(f"Axis '{axis}': {len(axis_df)} rows after filtering to {len(shared_text_ids)} shared text_ids")
+        axis_jobs.append((axis, axis_df))
+
+    n_workers = min(len(axis_jobs), os.cpu_count() or 1)
+    print(f"\nRunning {len(axis_jobs)} axes across {n_workers} parallel workers...")
+
+    if n_workers > 1:
+        # Use fork-based pool so worker processes inherit all module-level globals
+        # (COMPARISON_MODE, ONLINE_ACQUISITION, N_BOOTSTRAP_SAMPLES, etc.).
+        ctx = mp.get_context("fork")
+        with ctx.Pool(processes=n_workers) as pool:
+            axis_results = pool.map(_run_axis_worker, axis_jobs)
+    else:
+        axis_results = [_run_axis_worker(job) for job in axis_jobs]
+
     icc_results_by_axis = {}
     alpha_results_by_axis = {}
     mse_results_by_axis = {}
     reliability_metadata_by_axis = {}
-
-    for axis in EVALUATION_AXES[dataset]:
-        print(f"\n{'=' * 50}")
-        print(f"Running for axis: {axis}")
-        print(f"{'=' * 50}")
-
-        axis_df = df[df["evaluation_axis"] == axis]
-        num_models = axis_df["model_name"].nunique()
-
-        # count models per text_id
-        texts_per_model = (
-            axis_df.groupby("text_id")["model_name"]
-            .nunique()
-        )
-
-        # text_ids shared across all models
-        shared_text_ids = texts_per_model[texts_per_model == num_models].index
-
-        # keep only TOTAL_ANNOTATIONS text_ids
-        shared_text_ids = shared_text_ids[:TOTAL_ANNOTATIONS]
-        axis_df = axis_df[axis_df["text_id"].isin(shared_text_ids)]
-
-        print(f"Remaining rows: {len(axis_df)}")
-        
-
-        # Recompute variance components for this axis
-        axis_per_model_variance, _ = compute_variance_alignment(
-            axis_df, target_models, ensemble_models, mode=COMPARISON_MODE
-        )
-
-        # Run evaluation
-        axis_icc, axis_alpha, axis_mse, axis_metadata = evaluate_reliability_estimators(
-            axis_df, target_models, ensemble_models, axis_per_model_variance,
-            online_acquisition=ONLINE_ACQUISITION
-        )
+    for axis, axis_icc, axis_alpha, axis_mse, axis_metadata in axis_results:
         icc_results_by_axis[axis] = axis_icc
         alpha_results_by_axis[axis] = axis_alpha
         mse_results_by_axis[axis] = axis_mse

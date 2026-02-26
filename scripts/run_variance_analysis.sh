@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-#SBATCH --job-name=smartsample_pipeline
+#SBATCH --job-name=ahanna
 #SBATCH --partition=nigam-h100
 #SBATCH --nodelist=secure-gpu-14
 #SBATCH --gres=gpu:1
@@ -46,11 +46,11 @@ cd SmartSample_local
 N_BOOTSTRAP=100
 N_CANDIDATES=20
 TOTAL_ANNOTATIONS=300
-PLOTS_DIR="results/02_25"
+PLOTS_DIR="results/02_26_aggregate"
 DATA_DIR="data/judge_scores"
-COMPARISON_MODE="pairwise"
+COMPARISON_MODE="aggregate"
 ONLINE_ACQUISITION=true   # true → cumulative/incremental selection; false → batch selection
-DATASETS=("mslr") #("medval" "summeval" "mslr" "hanna")
+DATASETS=("hanna") #("medval" "summeval" "mslr" "hanna")
 #("hanna" "medval" "mslr" "summeval")
 MODEL_NAMES=("claude-3.5-sonnet" "gpt-4.1" "gpt-5")
 # MODEL_NAMES=("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")

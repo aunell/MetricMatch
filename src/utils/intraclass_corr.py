@@ -26,11 +26,11 @@ def get_deepest_key(d):
         return value
     
 class PointwiseICC:
-    def __init__(self, n: int, k: int, data: pd.DataFrame = None, normalize: bool = True, targets: str = "text_id", raters: str = "model_name", ratings: str = "evaluation_score"):
+    def __init__(self, n: int, k: int, data: pd.DataFrame = None, normalize: bool = True, validate: bool = True, targets: str = "text_id", raters: str = "model_name", ratings: str = "evaluation_score"):
         self.n = n
         self.k = k
 
-        self.data = data = self._format_data(data, targets, raters, ratings)
+        self.data = data = self._format_data(data, targets, raters, ratings, validate=validate)
         self.normalize = normalize
         self.targets = targets
         self.raters = raters
@@ -41,10 +41,15 @@ class PointwiseICC:
         elif not normalize and self.data is not None:
             self._compute_pointwise_unnormalized_anova(data, targets, raters, ratings)
 
-    def _format_data(self, data: pd.DataFrame, targets: str = "text_id", raters: str = "model_name", ratings: str = "evaluation_score"):
+    def _format_data(self, data: pd.DataFrame, targets: str = "text_id", raters: str = "model_name", ratings: str = "evaluation_score", validate: bool = True):
         if data is None:
             return data
-        
+
+        # Fast path for clean candidate subsets: skip expensive pivot_table validation.
+        # Safe when data is pre-filtered to shared text_ids (no missing raters, no duplicates).
+        if not validate:
+            return data
+
         ## If there are targets that do not include ratings from all raters, drop them
         pivoted_table = data.pivot_table(values = ratings, index = targets, columns = raters)
         nan_targets = pivoted_table[pivoted_table.isna().any(axis=1)].index.tolist()
@@ -128,7 +133,12 @@ class PointwiseICC:
             self.icc=None
             return
         
-        self.unnormalized_mse_partial_expand = unnormalized_mse_partial_expand = data.groupby(targets)[[raters, ratings]].apply(lambda x: np.sum((x.set_index(raters).squeeze() - m) ** 2))
+        # Vectorized MSE: map each row's rater to its mean, compute (score - rater_mean)^2,
+        # then sum per target — equivalent to the original apply+lambda but much faster.
+        rater_means = data[raters].map(m)
+        sq_diff = (data[ratings] - rater_means) ** 2
+        unnormalized_mse_partial_expand = sq_diff.groupby(data[targets]).sum()
+        self.unnormalized_mse_partial_expand = unnormalized_mse_partial_expand
 
         ## for each text i, sum_j=1^k (x_ij - M_j)^2
         # n x 1 each element in the array is contribution of text i to mse

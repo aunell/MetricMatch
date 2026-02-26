@@ -16,7 +16,7 @@ import krippendorff
 from src.utils.intraclass_corr import PointwiseICC
 
 
-def compute_ms_components(data: pd.DataFrame, targets: str = "text_id", raters: str = "model_name", ratings: str = "evaluation_score"):
+def compute_ms_components(data: pd.DataFrame, targets: str = "text_id", raters: str = "model_name", ratings: str = "evaluation_score", validate: bool = True):
     """
     Compute MSB and MSE components for ICC calculation.
 
@@ -25,6 +25,9 @@ def compute_ms_components(data: pd.DataFrame, targets: str = "text_id", raters: 
 
     Args:
         data: DataFrame with columns: text_id, model_name, evaluation_score
+        validate: If True (default), validate and clean the data before computation
+                  (drops text_ids with missing raters and deduplicates). Set to False
+                  for candidate subsets pre-filtered to shared text_ids for a speedup.
 
     Returns:
         PointwiseICC object with the following attributes:
@@ -44,8 +47,8 @@ def compute_ms_components(data: pd.DataFrame, targets: str = "text_id", raters: 
 
     if n <= 1 or k <= 1:
         return None
-    
-    icc_obj = PointwiseICC(n=n, k=k, data=data, normalize=True, targets=targets, raters=raters, ratings=ratings)
+
+    icc_obj = PointwiseICC(n=n, k=k, data=data, normalize=True, validate=validate, targets=targets, raters=raters, ratings=ratings)
 
     return icc_obj
 
@@ -80,10 +83,9 @@ def compute_icc_pingouin(data, models=None):
         return np.nan
 
     # Filter to only include text_ids that have all required raters
-    data_filtered = (
-        data.groupby('text_id')
-            .filter(lambda x: x['model_name'].nunique() == n_raters)
-    )
+    counts = data.groupby('text_id')['model_name'].nunique()
+    valid_ids = counts[counts == n_raters].index
+    data_filtered = data[data['text_id'].isin(valid_ids)]
 
     if len(data_filtered) == 0:
         return np.nan
@@ -125,10 +127,9 @@ def _compute_single_krippendorff_alpha(data):
         return np.nan
 
     # Filter to only include text_ids that have all required raters
-    data_filtered = (
-        data.groupby('text_id')
-            .filter(lambda x: x['model_name'].nunique() == n_raters)
-    )
+    counts = data.groupby('text_id')['model_name'].nunique()
+    valid_ids = counts[counts == n_raters].index
+    data_filtered = data[data['text_id'].isin(valid_ids)]
 
     if len(data_filtered) == 0:
         return np.nan

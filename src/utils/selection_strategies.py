@@ -457,7 +457,10 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
             continue
 
         if target_metric == "icc":
-            cand_value = compute_icc_fn(im_candidate, models=im_models)
+            # Use MS components instead of pingouin to avoid ANOVA overhead.
+            # ICC3k = (MSB - MSE) / MSB, identical to compute_icc_pingouin's ICC3k formula.
+            ms_obj = compute_ms_fn(im_candidate)
+            cand_value = ms_obj.icc if (ms_obj is not None and ms_obj.icc is not None) else np.nan
         elif target_metric == "alpha":
             cand_value = compute_alpha_fn(im_candidate, models=im_models)
         elif target_metric == "mse":
