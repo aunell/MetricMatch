@@ -44,7 +44,7 @@ DEFAULT_TARGET_MODELS = None   # None → same as model_names
 DEFAULT_ENSEMBLE_MODELS = None  # None → same as model_names
 DEFAULT_DATA_DIR = "data/judge_scores"
 DEFAULT_PLOTS_DIR = "results/02_18_large"
-DEFAULT_COMPARISON_MODE = "pairwise"
+DEFAULT_COMPARISON_MODE = "average_pairwise"
 # ONLINE_ACQUISITION=True  → cumulative/incremental selection: IDs chosen at budget k are
 #                            locked in and carried forward to budget k+n (simulates a real
 #                            annotation session where labels already collected are reused).
@@ -111,7 +111,7 @@ def parse_args():
     )
     parser.add_argument(
         "--comparison-mode", type=str, default=DEFAULT_COMPARISON_MODE,
-        choices=["pairwise", "aggregate"],
+        choices=["average_pairwise", "pairwise_average", "aggregate"],
         help=f"Comparison mode (default: {DEFAULT_COMPARISON_MODE})"
     )
     parser.add_argument(
@@ -179,7 +179,7 @@ def compute_variance_alignment(df, target_models, ensemble_models, mode="aggrega
         df: DataFrame with text_id, model_name, evaluation_score
         target_models: List of target model names to evaluate
         ensemble_models: List of ensemble model names for inter-model comparison
-        mode: "aggregate" or "pairwise"
+        mode: "aggregate", "average_pairwise", or "pairwise_average"
 
     Returns:
         per_model_variance: dict mapping target model name to {im_msb, im_mse, hm_msb, hm_mse}
@@ -235,7 +235,7 @@ def compute_variance_alignment(df, target_models, ensemble_models, mode="aggrega
             "hm_mse_list": hm_mse_list
         }
 
-    elif mode == "pairwise":
+    elif mode == "average_pairwise":
         for m in target_models:
             # Exclude the target itself from its own ensemble
             eff_ensemble = [e for e in ensemble_models if e != m]
@@ -267,8 +267,59 @@ def compute_variance_alignment(df, target_models, ensemble_models, mode="aggrega
                 "hm_mse": hm_mse
             }
 
-        print(f"\nMode: PAIRWISE (k=2 for both IM and HM)")
+        print(f"\nMode: AVERAGE_PAIRWISE (k=2 for both IM and HM; ensemble averaged before computing metrics)")
         print(f"Inter-model MSBs (each target vs avg of ensemble): {[f'{x:.4f}' for x in im_msb_list]}")
+        print(f"Inter-model MSEs: {[f'{x:.4f}' for x in im_mse_list]}")
+        im_msb_mean = np.nanmean(im_msb_list) if im_msb_list else np.nan
+        im_mse_mean = np.nanmean(im_mse_list) if im_mse_list else np.nan
+        print(f"Inter-model mean: MSB={im_msb_mean:.4f}, MSE={im_mse_mean:.4f}")
+
+        aggregate_stats = {
+            "im_msb": im_msb_mean,
+            "im_mse": im_mse_mean,
+            "hm_msb_list": hm_msb_list,
+            "hm_mse_list": hm_mse_list
+        }
+
+    elif mode == "pairwise_average":
+        for m in target_models:
+            # Exclude the target itself from its own ensemble
+            eff_ensemble = [e for e in ensemble_models if e != m]
+
+            # Compute pairwise MSB/MSE for each (target, ensemble_model) pair, then average
+            pair_msb_list, pair_mse_list = [], []
+            for e in eff_ensemble:
+                pair_df = df[df["model_name"].isin([m, e])]
+                if len(pair_df) == 0:
+                    continue
+                pair_icc_obj = compute_ms_components(pair_df)
+                if pair_icc_obj is not None:
+                    pair_msb_list.append(pair_icc_obj.msb)
+                    pair_mse_list.append(pair_icc_obj.mse)
+
+            im_msb = np.nanmean(pair_msb_list) if pair_msb_list else np.nan
+            im_mse = np.nanmean(pair_mse_list) if pair_mse_list else np.nan
+            im_msb_list.append(im_msb)
+            im_mse_list.append(im_mse)
+
+            # Human-model: this model vs human
+            hm_icc_obj = compute_ms_components(
+                df[df["model_name"].isin([m, "original"])]
+            )
+            hm_msb = hm_icc_obj.msb
+            hm_mse = hm_icc_obj.mse
+            hm_msb_list.append(hm_msb)
+            hm_mse_list.append(hm_mse)
+
+            per_model_variance[m] = {
+                "im_msb": im_msb,
+                "im_mse": im_mse,
+                "hm_msb": hm_msb,
+                "hm_mse": hm_mse
+            }
+
+        print(f"\nMode: PAIRWISE_AVERAGE (k=2 per pair; MSB/MSE averaged across pairs)")
+        print(f"Inter-model MSBs (averaged across target-ensemble pairs): {[f'{x:.4f}' for x in im_msb_list]}")
         print(f"Inter-model MSEs: {[f'{x:.4f}' for x in im_mse_list]}")
         im_msb_mean = np.nanmean(im_msb_list) if im_msb_list else np.nan
         im_mse_mean = np.nanmean(im_mse_list) if im_mse_list else np.nan
@@ -295,7 +346,7 @@ def compute_variance_alignment(df, target_models, ensemble_models, mode="aggrega
 # RELIABILITY ESTIMATION EXPERIMENT
 # -------------------------
 def _build_im_pairwise_df(df, model, model_names):
-    """Build inter-model DataFrame for pairwise mode (model vs avg of others)."""
+    """Build inter-model DataFrame for average_pairwise mode (model vs avg of others)."""
     other_models = [x for x in model_names if x != model]
     im_subset = df[df["model_name"].isin(model_names)]
 
@@ -657,11 +708,27 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
         # Build inter-model DataFrame using the target + ensemble (excluding target from its own ensemble)
         eff_ensemble = [e for e in ensemble_models if e != model]
         im_model_set = [model] + eff_ensemble
-        if COMPARISON_MODE == "pairwise":
+        if COMPARISON_MODE == "average_pairwise":
             im_full_df = _build_im_pairwise_df(df, model, im_model_set)
             im_models = [model, "avg_other"]
             im_icc = compute_icc_pingouin(im_full_df, models=im_models)
             im_alpha = compute_krippendorff_alpha(im_full_df, models=im_models)
+        elif COMPARISON_MODE == "pairwise_average":
+            # Compute ICC and alpha for each (target, ensemble_model) pair, then average
+            pair_icc_list, pair_alpha_list = [], []
+            for e in eff_ensemble:
+                pair_df = df[df["model_name"].isin([model, e])]
+                pair_icc = compute_icc_pingouin(pair_df, models=[model, e])
+                pair_alpha = compute_krippendorff_alpha(pair_df, models=[model, e])
+                if np.isfinite(pair_icc):
+                    pair_icc_list.append(pair_icc)
+                if np.isfinite(pair_alpha):
+                    pair_alpha_list.append(pair_alpha)
+            im_icc = np.nanmean(pair_icc_list) if pair_icc_list else np.nan
+            im_alpha = np.nanmean(pair_alpha_list) if pair_alpha_list else np.nan
+            # Use average_pairwise df for selection strategies (candidate subset evaluation)
+            im_full_df = _build_im_pairwise_df(df, model, im_model_set)
+            im_models = [model, "avg_other"]
         else:
             im_subset = df[df["model_name"].isin(im_model_set)]
             im_grouped = im_subset.groupby("text_id")["model_name"].nunique()

@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-#SBATCH --job-name=ahanna
+#SBATCH --job-name=hanna
 #SBATCH --partition=nigam-h100
 #SBATCH --nodelist=secure-gpu-14
 #SBATCH --gres=gpu:1
@@ -19,7 +19,7 @@
 #   --total-annotations N Total annotations budget (default: 300)
 #   --plots-dir DIR       Directory to save plots (default: results/01_26_small)
 #   --data-dir DIR        Directory containing judge scores (default: data/judge_scores)
-#   --comparison-mode M   Comparison mode: pairwise or aggregate (default: pairwise)
+#   --comparison-mode M   Comparison mode: average_pairwise, pairwise_average, or aggregate (default: average_pairwise)
 #   --datasets D1 D2 ...  Datasets to run (default: all - hanna medval mslr summeval)
 #   --model-names M1 M2   All model names to load (default: gpt-4o-mini ...)
 #   --target-models M1 M2 Models to evaluate independently (default: same as --model-names)
@@ -46,9 +46,9 @@ cd SmartSample_local
 N_BOOTSTRAP=100
 N_CANDIDATES=20
 TOTAL_ANNOTATIONS=300
-PLOTS_DIR="results/02_26_aggregate"
+PLOTS_DIR="results/02_26_pairwise_avg"
 DATA_DIR="data/judge_scores"
-COMPARISON_MODE="aggregate"
+COMPARISON_MODE="pairwise_average"
 ONLINE_ACQUISITION=true   # true → cumulative/incremental selection; false → batch selection
 DATASETS=("hanna") #("medval" "summeval" "mslr" "hanna")
 #("hanna" "medval" "mslr" "summeval")
