@@ -14,7 +14,7 @@ structure approximates human-model (HM) variance structure for a given
                    locally across different sub-populations of items.
 
 These predictors are used as y-axes for scatter plots where the x-axis is the
-ICC error gap between a selection method and random sampling.
+error gap (vs random) for ICC, Krippendorff's Alpha, or MSE.
 """
 
 import numpy as np
@@ -27,18 +27,23 @@ PREDICTOR_COMPARISON_METHODS = [
     "variance_matched_combined",
     "variance_matched_combined_imc",
     "variance_matched_combined_tc_imc",
+    "variance_matched_msb",
+    "variance_matched_msb_imc",
+    "variance_matched_msb_tc",
+    "variance_matched_msb_tc_imc",
 ]
 
 
 def compute_correlation_predictor(im_full_df, hm_full_df,
-                                   n_samples=500, sample_size=10, seed=123):
+                                   n_samples=500, sample_size=10, seed=123,
+                                   components="combined"):
     """
-    Pearson correlation between IM and HM MS-component sums across bootstrap samples.
+    Pearson correlation between IM and HM MS components across bootstrap samples.
 
     For each of *n_samples* independent draws of *sample_size* text_ids (drawn
     without replacement within each draw; items can recur across draws):
-        im_val = im_msb_sample + im_mse_sample
-        hm_val = hm_msb_sample + hm_mse_sample
+        components="combined": im_val = im_msb + im_mse, hm_val = hm_msb + hm_mse
+        components="msb_only": im_val = im_msb,           hm_val = hm_msb
 
     Returns Pearson r across the n_samples pairs, or np.nan if data are insufficient.
 
@@ -48,6 +53,8 @@ def compute_correlation_predictor(im_full_df, hm_full_df,
         n_samples: Number of bootstrap draws (default 500).
         sample_size: Text IDs per draw (default 10).
         seed: Random seed.
+        components: Which MS components to correlate. "combined" uses msb+mse;
+                    "msb_only" uses msb alone (default: "combined").
 
     Returns:
         float: Pearson correlation coefficient, or np.nan.
@@ -70,12 +77,17 @@ def compute_correlation_predictor(im_full_df, hm_full_df,
         hm_ms = fast_ms(hm_full_df[hm_full_df["text_id"].isin(sample_ids)])
 
         if (im_ms is None or hm_ms is None
-                or not np.isfinite(im_ms.msb) or not np.isfinite(im_ms.mse)
-                or not np.isfinite(hm_ms.msb) or not np.isfinite(hm_ms.mse)):
+                or not np.isfinite(im_ms.msb) or not np.isfinite(hm_ms.msb)):
             continue
 
-        im_vals.append(im_ms.msb + im_ms.mse)
-        hm_vals.append(hm_ms.msb + hm_ms.mse)
+        if components == "msb_only":
+            im_vals.append(im_ms.msb)
+            hm_vals.append(hm_ms.msb)
+        else:  # "combined"
+            if not np.isfinite(im_ms.mse) or not np.isfinite(hm_ms.mse):
+                continue
+            im_vals.append(im_ms.msb + im_ms.mse)
+            hm_vals.append(hm_ms.msb + hm_ms.mse)
 
     if len(im_vals) < 5:
         return np.nan
@@ -116,6 +128,15 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
     Returns:
         List[dict]: One record per (axis, model) pair.
     """
+    # Discover all non-random methods present across all axes
+    all_methods: set = set()
+    for axis, _ in axis_jobs:
+        axis_icc_tmp = icc_results_by_axis.get(axis)
+        if axis_icc_tmp is not None and len(axis_icc_tmp) > 0:
+            all_methods.update(axis_icc_tmp["method"].unique())
+    all_methods.discard("random")
+    comparison_methods = sorted(all_methods)
+
     records = []
 
     for axis, axis_df in axis_jobs:
@@ -141,7 +162,13 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
             hm_full_df = axis_df[axis_df["model_name"].isin([model, "original"])]
             corr = compute_correlation_predictor(
                 im_full_df, hm_full_df,
-                n_samples=n_samples, sample_size=sample_size
+                n_samples=n_samples, sample_size=sample_size,
+                components="combined"
+            )
+            corr_msb = compute_correlation_predictor(
+                im_full_df, hm_full_df,
+                n_samples=n_samples, sample_size=sample_size,
+                components="msb_only"
             )
 
             model_icc = axis_icc[axis_icc["model"] == model]
@@ -153,9 +180,10 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
                 "model": model,
                 "mean_shift": float(mean_shift) if np.isfinite(mean_shift) else np.nan,
                 "correlation": corr,
+                "correlation_msb": corr_msb,
             }
 
-            for method in PREDICTOR_COMPARISON_METHODS:
+            for method in comparison_methods:
                 method_errors = model_icc[model_icc["method"] == method]["estimation_error"]
                 if len(method_errors) == 0 or not np.isfinite(random_mean):
                     record[f"icc_gap_{method}"] = np.nan

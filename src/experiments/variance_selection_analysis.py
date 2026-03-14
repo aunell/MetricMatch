@@ -65,6 +65,10 @@ SAMPLING_STRATEGIES = [
     "variance_matched_combined_imc",
     "variance_matched_combined_tc",
     "variance_matched_combined_tc_imc",
+    "variance_matched_msb",
+    "variance_matched_msb_imc",
+    "variance_matched_msb_tc",
+    "variance_matched_msb_tc_imc",
     "oracle",
     "oracle_imc",
     "metric_matched_icc",
@@ -387,6 +391,7 @@ def _parse_strategy(strategy_name):
 
 _SCORE_METHOD_MAP = {
     "variance_matched_msb": "msb_only",
+    "variance_matched_msb_tc": "msb_only",        # same method; targets are bias-corrected
     "variance_matched_mse": "mse_only",
     "variance_matched_combined": "combined",
     "variance_matched_combined_tc": "combined",   # same method; targets are bias-corrected
@@ -400,7 +405,7 @@ _ORACLE_BASES = {"oracle"}
 # Base strategy names that apply adaptive bias correction to the MSB/MSE selection
 # targets.  "_tc" is intentionally NOT stripped by _parse_strategy so it stays in the
 # base name and forms its own sampling group, separate from the non-corrected variants.
-_TARGET_BC_BASES = {"variance_matched_combined_tc"}
+_TARGET_BC_BASES = {"variance_matched_combined_tc", "variance_matched_msb_tc"}
 
 # Maps metric-matched base strategy names to the single metric they should report errors for.
 # Strategies not in this map report errors for all metrics.
@@ -583,12 +588,13 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             if sampled_ids is None:
                 continue
         elif base_strategy in _ORACLE_BASES:
-            # Oracle: variance matching against the true HM MSB/MSE targets using hm_full_df.
-            # This is the upper bound — it assumes access to the full human-model variance
-            # structure (hm_msb_target, hm_mse_target) and selects subsets of human
-            # annotations that best reproduce that structure.
+            # Oracle: variance matching using IM scores (same pipeline as regular methods)
+            # but targeting the true HM MSB/MSE instead of IM MSB/MSE.
+            # This isolates whether target misspecification is the bottleneck —
+            # it asks "how much better would variance matching be if you knew the
+            # true HM variance targets?" while still being constrained to IM scores.
             sampled_ids = variance_matched_selection_ms(
-                text_ids, k, hm_full_df, hm_msb_target, hm_mse_target,
+                text_ids, k, im_full_df, hm_msb_target, hm_mse_target,
                 fast_ms_fn, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
                 score_method="combined", forced_ids=forced_ids
             )

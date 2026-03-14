@@ -38,7 +38,7 @@ set -e  # Exit on error
 N_BOOTSTRAP=100
 N_CANDIDATES=20
 TOTAL_ANNOTATIONS=300
-PLOTS_DIR="results/03_13_old_version_corr_analysis"
+PLOTS_DIR="results/03_14_msb_analysis"
 DATA_DIR="data/judge_scores"
 COMPARISON_MODE="pairwise_average"
 ONLINE_ACQUISITION=true  # true → cumulative/incremental selection; false → batch selection
@@ -169,7 +169,7 @@ for dataset in "${DATASETS[@]}"; do
   mkdir -p "$PLOTS_DIR/$dataset"
 
   sbatch \
-    --job-name="hanna_${dataset}" \
+    --job-name="${dataset}" \
     --partition=nigam-h100 \
     --nodelist=secure-gpu-14 \
     --gres=gpu:1 \

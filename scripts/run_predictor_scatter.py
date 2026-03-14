@@ -75,14 +75,31 @@ def _build_im_df(axis_df, model, ensemble_models, comparison_mode):
 def _plot_predictor_scatter(df, output_dir):
     """Generate scatter plots with points coloured by dataset and shaped by model."""
     method_labels = {
-        "variance_matched_combined":        "VM",
+        "variance_matched_combined":        "VM (combined)",
         "variance_matched_combined_imc":    "VM+IMC",
+        "variance_matched_combined_tc":     "VM+TC",
         "variance_matched_combined_tc_imc": "VM+TC+IMC",
+        "variance_matched_msb":             "VM (MSB)",
+        "variance_matched_msb_imc":         "VM MSB+IMC",
+        "variance_matched_msb_tc":          "VM MSB+TC",
+        "variance_matched_msb_tc_imc":      "VM MSB+TC+IMC",
+        "oracle":                           "Oracle",
+        "oracle_imc":                       "Oracle+IMC",
+        "random_imc":                       "Random+IMC",
+        "metric_matched_icc":               "Metric (ICC)",
+        "metric_matched_alpha":             "Metric (Alpha)",
+        "metric_matched_mse":               "Metric (MSE)",
     }
     predictors = [
-        ("mean_shift",  "Mean Shift\n(im_msb+im_mse) − (hm_msb+hm_mse)"),
-        ("correlation", "Correlation\nr(im_ms, hm_ms) across bootstrap samples"),
+        ("mean_shift",       "Mean Shift\n(im_msb+im_mse) − (hm_msb+hm_mse)"),
+        ("correlation",      "Correlation\nr(im_ms, hm_ms) across bootstrap samples"),
+        ("correlation_msb",  "MSB Correlation\nr(im_msb, hm_msb) across bootstrap samples"),
     ]
+
+    # Discover methods from icc_gap_* columns in the DataFrame
+    comparison_methods = sorted(
+        col[len("icc_gap_"):] for col in df.columns if col.startswith("icc_gap_")
+    )
 
     datasets = sorted(df["dataset"].unique())
     models = sorted(df["model"].unique())
@@ -91,18 +108,23 @@ def _plot_predictor_scatter(df, output_dir):
     color_map = {d: colors[i % len(colors)] for i, d in enumerate(datasets)}
     marker_map = {m: markers[i % len(markers)] for i, m in enumerate(models)}
 
+    n_methods = len(comparison_methods)
+    n_cols = min(n_methods, 4)
+    n_rows = int(np.ceil(n_methods / n_cols))
+
     print(f"\n[Predictor scatter plots] {len(df)} total (axis, model) records "
-          f"across {len(datasets)} dataset(s)")
+          f"across {len(datasets)} dataset(s), {n_methods} methods ({n_rows}×{n_cols} grid)")
 
     for predictor_col, predictor_label in predictors:
-        n_methods = len(PREDICTOR_COMPARISON_METHODS)
-        fig, axes_list = plt.subplots(1, n_methods,
-                                      figsize=(5 * n_methods, 4),
-                                      sharey=True)
-        if n_methods == 1:
-            axes_list = [axes_list]
+        fig, axes_grid = plt.subplots(n_rows, n_cols,
+                                      figsize=(5 * n_cols, 4 * n_rows),
+                                      sharey=True, squeeze=False)
+        ax_flat = [axes_grid[r][c] for r in range(n_rows) for c in range(n_cols)]
+        for ax in ax_flat[n_methods:]:
+            ax.set_visible(False)
+        axes_list = ax_flat  # alias for legend code below
 
-        for ax, method in zip(axes_list, PREDICTOR_COMPARISON_METHODS):
+        for ax, method in zip(ax_flat, comparison_methods):
             gap_col = f"icc_gap_{method}"
             plot_df = df[[predictor_col, gap_col, "dataset", "model"]].dropna()
 
@@ -146,8 +168,10 @@ def _plot_predictor_scatter(df, output_dir):
                           markersize=6, label=m)
             for m in models
         ]
-        axes_list[0].set_ylabel(predictor_label, fontsize=9)
-        axes_list[-1].legend(
+        # Set y-label on leftmost axis of each row
+        for r in range(n_rows):
+            axes_grid[r][0].set_ylabel(predictor_label, fontsize=9)
+        ax_flat[n_methods - 1].legend(
             handles=dataset_handles + [mlines.Line2D([], [], linestyle="None")] + model_handles,
             labels=[d for d in datasets] + [""] + [m for m in models],
             title="Dataset / Model", fontsize=7, loc="upper left",

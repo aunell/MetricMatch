@@ -11,6 +11,25 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
+METHOD_COLORS = {
+    "random":                           "#888888",
+    "random_imc":                       "#444444",
+    "variance_matched_combined":        "#1f77b4",
+    "variance_matched_combined_imc":    "#aec7e8",
+    "variance_matched_combined_tc":     "#0a3d62",
+    "variance_matched_combined_tc_imc": "#17becf",
+    "variance_matched_msb":             "#2ca02c",
+    "variance_matched_msb_imc":         "#98df8a",
+    "variance_matched_msb_tc":          "#005500",
+    "variance_matched_msb_tc_imc":      "#3dcf8e",
+    "oracle":                           "#9467bd",
+    "oracle_imc":                       "#c5b0d5",
+    "metric_matched_icc":               "#d62728",
+    "metric_matched_alpha":             "#ff7f0e",
+    "metric_matched_mse":               "#bcbd22",
+}
+
+
 class _NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, np.floating):
@@ -231,6 +250,7 @@ def create_estimation_error_plot(avg_results, title, ylabel, filename, legend_te
             capsize=5,
             capthick=2,
             label=method,
+            color=METHOD_COLORS.get(method),
             alpha=0.8
         )
 
@@ -269,6 +289,7 @@ def create_variance_plot(var_results, title, ylabel, filename):
             marker='o',
             linewidth=2.5,
             label=method,
+            color=METHOD_COLORS.get(method),
             alpha=0.8
         )
 
@@ -318,6 +339,7 @@ def create_log_abs_error_plot(avg_results, title, ylabel, filename):
             capsize=5,
             capthick=2,
             label=method,
+            color=METHOD_COLORS.get(method),
             alpha=0.8
         )
 
@@ -688,20 +710,20 @@ def load_predictor_inputs(results_dir, dataset):
 
 def plot_predictor_scatter(predictor_records, dataset, plots_dir):
     """
-    Create 6 scatter plots: 2 predictors × 3 selection methods vs random.
+    Create scatter plots: 3 predictors × N selection methods vs random.
 
     Each point represents one (axis, model) pair.
         x-axis: mean_ICC_error(method) − mean_ICC_error(random), averaged across
                 all budgets/trials.  Negative = method beats random.
-        y-axis (plot type A): mean_shift  = (im_msb+im_mse) − (hm_msb+hm_mse)
+        y-axis (plot type A): mean_shift      = (im_msb+im_mse) − (hm_msb+hm_mse)
                                on the full dataset.
-        y-axis (plot type B): correlation = Pearson r between im_ms and hm_ms
-                               across 500 bootstrap samples of 10 text_ids.
+        y-axis (plot type B): correlation     = Pearson r between (im_msb+im_mse) and
+                               (hm_msb+hm_mse) across bootstrap samples of text_ids.
+        y-axis (plot type C): correlation_msb = Pearson r between im_msb and hm_msb
+                               across bootstrap samples of text_ids.
 
-    The 3 comparison methods are:
-        variance_matched_combined
-        variance_matched_combined_imc
-        variance_matched_combined_tc_imc
+    When there are more than 4 methods the subplots wrap into 2 rows so the
+    figure stays readable.
 
     Args:
         predictor_records: List of dicts as returned by compute_predictor_records.
@@ -710,36 +732,58 @@ def plot_predictor_scatter(predictor_records, dataset, plots_dir):
         dataset: Dataset name used in plot titles and filenames.
         plots_dir: Directory to save the plots.
     """
-    from src.utils.predictor_analysis import PREDICTOR_COMPARISON_METHODS
-
     if not predictor_records:
         print("No predictor records to plot.")
         return
 
     df = pd.DataFrame(predictor_records)
 
-    # Short display names for x-axis method labels
+    # Discover methods from icc_gap_* columns present in the records
+    comparison_methods = sorted(
+        col[len("icc_gap_"):] for col in df.columns if col.startswith("icc_gap_")
+    )
+
+    # Short display names for subplot titles (fallback to raw name)
     method_labels = {
-        "variance_matched_combined":        "VM",
+        "variance_matched_combined":        "VM (combined)",
         "variance_matched_combined_imc":    "VM+IMC",
+        "variance_matched_combined_tc":     "VM+TC",
         "variance_matched_combined_tc_imc": "VM+TC+IMC",
+        "variance_matched_msb":             "VM (MSB)",
+        "variance_matched_msb_imc":         "VM MSB+IMC",
+        "variance_matched_msb_tc":          "VM MSB+TC",
+        "variance_matched_msb_tc_imc":      "VM MSB+TC+IMC",
+        "oracle":                           "Oracle",
+        "oracle_imc":                       "Oracle+IMC",
+        "random_imc":                       "Random+IMC",
+        "metric_matched_icc":               "Metric (ICC)",
+        "metric_matched_alpha":             "Metric (Alpha)",
+        "metric_matched_mse":               "Metric (MSE)",
     }
 
     predictors = [
-        ("mean_shift",   "Mean Shift\n(im_msb+im_mse) − (hm_msb+hm_mse)"),
-        ("correlation",  "Correlation\nr(im_ms, hm_ms) across bootstrap samples"),
+        ("mean_shift",       "Mean Shift\n(im_msb+im_mse) − (hm_msb+hm_mse)"),
+        ("correlation",      "Correlation\nr(im_msb+im_mse, hm_msb+hm_mse) across bootstrap samples"),
+        ("correlation_msb",  "MSB Correlation\nr(im_msb, hm_msb) across bootstrap samples"),
     ]
 
-    print(f"\n[Predictor scatter plots] {len(df)} (axis, model) records")
+    n_methods = len(comparison_methods)
+    n_cols = min(n_methods, 4)
+    n_rows = int(np.ceil(n_methods / n_cols))
+
+    print(f"\n[Predictor scatter plots] {len(df)} (axis, model) records, "
+          f"{n_methods} methods ({n_rows}×{n_cols} grid)")
 
     for predictor_col, predictor_label in predictors:
-        fig, axes = plt.subplots(1, len(PREDICTOR_COMPARISON_METHODS),
-                                 figsize=(5 * len(PREDICTOR_COMPARISON_METHODS), 4),
-                                 sharey=True)
-        if len(PREDICTOR_COMPARISON_METHODS) == 1:
-            axes = [axes]
+        fig, axes = plt.subplots(n_rows, n_cols,
+                                 figsize=(5 * n_cols, 4 * n_rows),
+                                 sharey=True, squeeze=False)
+        # Flatten to a 1-D list for easy zip with methods; hide any unused cells
+        ax_flat = [axes[r][c] for r in range(n_rows) for c in range(n_cols)]
+        for ax in ax_flat[n_methods:]:
+            ax.set_visible(False)
 
-        for ax, method in zip(axes, PREDICTOR_COMPARISON_METHODS):
+        for ax, method in zip(ax_flat, comparison_methods):
             gap_col = f"icc_gap_{method}"
             plot_df = df[[predictor_col, gap_col]].dropna()
 
@@ -750,7 +794,8 @@ def plot_predictor_scatter(predictor_records, dataset, plots_dir):
                 continue
 
             ax.scatter(plot_df[gap_col], plot_df[predictor_col],
-                       alpha=0.7, edgecolors="k", linewidths=0.5, s=60)
+                       alpha=0.7, edgecolors="k", linewidths=0.5, s=60,
+                       color=METHOD_COLORS.get(method))
             ax.axvline(0, color="red", linestyle="--", linewidth=1, alpha=0.6)
             ax.set_xlabel("ICC error gap vs random\n(method − random; negative = better)",
                           fontsize=9)
@@ -765,7 +810,10 @@ def plot_predictor_scatter(predictor_records, dataset, plots_dir):
 
             ax.grid(alpha=0.3)
 
-        axes[0].set_ylabel(predictor_label, fontsize=9)
+        # Label the y-axis on the leftmost visible subplot of each row
+        for r in range(n_rows):
+            axes[r][0].set_ylabel(predictor_label, fontsize=9)
+
         fig.suptitle(f"{dataset}: predictor vs ICC error gap ({predictor_col})",
                      fontsize=11)
         fig.tight_layout()
