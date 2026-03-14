@@ -29,11 +29,11 @@ def save_results_dataframes(plots_dir, icc_results, alpha_results, mse_results,
     """
     Save all result DataFrames and metadata dicts to disk for later reloading.
 
-    Saves into a 'dataframes/{dataset}/' subdirectory within plots_dir so that
+    Saves into a '{dataset}/dataframes/' subdirectory within plots_dir so that
     concurrent runs on different datasets do not overwrite each other's files.
 
     Args:
-        plots_dir: Directory where plots are saved (dataframes go in plots_dir/dataframes/{dataset}/)
+        plots_dir: Directory where plots are saved (dataframes go in plots_dir/{dataset}/dataframes/)
         icc_results: Combined ICC results DataFrame
         alpha_results: Combined Alpha results DataFrame
         mse_results: Combined MSE results DataFrame
@@ -44,7 +44,7 @@ def save_results_dataframes(plots_dir, icc_results, alpha_results, mse_results,
         reliability_metadata_by_axis: Dict mapping axis -> model -> metadata
         dataset: Dataset name used to namespace the output subdirectory (e.g. "hanna")
     """
-    df_dir = os.path.join(plots_dir, "dataframes", dataset) if dataset else os.path.join(plots_dir, "dataframes")
+    df_dir = os.path.join(plots_dir, dataset, "dataframes", dataset) if dataset else os.path.join(plots_dir, "dataframes")
     os.makedirs(df_dir, exist_ok=True)
 
     icc_results.to_csv(os.path.join(df_dir, "icc_results.csv"), index=False)
@@ -80,12 +80,12 @@ def load_results_dataframes(results_dir, dataset=None):
     """
     Load previously saved result DataFrames and metadata from disk.
 
-    Expects data in a 'dataframes/{dataset}/' subdirectory within results_dir
+    Expects data in a '{dataset}/dataframes/' subdirectory within results_dir
     (i.e., the same directory that was passed as plots_dir when the results were
     saved, with the same dataset name).
 
     Args:
-        results_dir: Directory containing the 'dataframes/' subdirectory
+        results_dir: Directory containing the '{dataset}/dataframes/' subdirectory
         dataset: Dataset name used when saving (e.g. "hanna"); must match the
                  value passed to save_results_dataframes
 
@@ -94,7 +94,7 @@ def load_results_dataframes(results_dir, dataset=None):
                   icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
                   reliability_metadata_all, reliability_metadata_by_axis)
     """
-    df_dir = os.path.join(results_dir, "dataframes", dataset) if dataset else os.path.join(results_dir, "dataframes")
+    df_dir = os.path.join(results_dir, dataset, "dataframes", dataset) if dataset else os.path.join(results_dir, "dataframes")
 
     icc_results = pd.read_csv(os.path.join(df_dir, "icc_results.csv"))
     alpha_results = pd.read_csv(os.path.join(df_dir, "alpha_results.csv"))
@@ -609,3 +609,170 @@ def plot_all_results(icc_results, alpha_results, mse_results,
         hm_key="true_hm_mse",
         im_key="im_mse"
     )
+
+
+def save_predictor_inputs(plots_dir, dataset, axis_jobs,
+                          per_model_variance_by_axis, comparison_mode, ensemble_models):
+    """
+    Save all data needed to run predictor scatter analysis post-hoc.
+
+    Writes into plots_dir/{dataset}/dataframes/predictor_inputs/:
+        predictor_config.json     – comparison_mode and ensemble_models
+        per_model_variance.json   – variance components per axis per model
+        axis_data_{safe_axis}.csv – raw scores DataFrame per axis
+
+    Args:
+        plots_dir: Base results directory (same value passed to save_results_dataframes).
+        dataset: Dataset name used to namespace the subdirectory.
+        axis_jobs: List of (axis, axis_df) from the experiment run.
+        per_model_variance_by_axis: Dict axis -> model -> {im_msb, im_mse, hm_msb, hm_mse}.
+        comparison_mode: Comparison mode string used in the run.
+        ensemble_models: List of ensemble model names used in the run.
+    """
+    pred_dir = os.path.join(plots_dir, dataset, "dataframes", dataset, "predictor_inputs")
+    os.makedirs(pred_dir, exist_ok=True)
+
+    config = {"comparison_mode": comparison_mode, "ensemble_models": list(ensemble_models)}
+    with open(os.path.join(pred_dir, "predictor_config.json"), "w") as f:
+        json.dump(config, f)
+
+    with open(os.path.join(pred_dir, "per_model_variance.json"), "w") as f:
+        json.dump(per_model_variance_by_axis, f, cls=_NumpyEncoder)
+
+    for axis, axis_df in axis_jobs:
+        safe_axis = axis.replace("/", "-").replace("\\", "-").replace(" ", "_")
+        axis_df.to_csv(os.path.join(pred_dir, f"axis_data_{safe_axis}.csv"), index=False)
+
+    axes = [axis for axis, _ in axis_jobs]
+    with open(os.path.join(pred_dir, "axes.json"), "w") as f:
+        json.dump(axes, f)
+
+    print(f"\nPredictor inputs saved to: {pred_dir}")
+
+
+def load_predictor_inputs(results_dir, dataset):
+    """
+    Load predictor inputs saved by save_predictor_inputs.
+
+    Args:
+        results_dir: Base results directory (same as plots_dir used when saving).
+        dataset: Dataset name.
+
+    Returns:
+        Tuple of (axis_jobs, per_model_variance_by_axis, config) where:
+            axis_jobs: List of (axis, axis_df).
+            per_model_variance_by_axis: Dict axis -> model -> variance components.
+            config: Dict with keys 'comparison_mode' and 'ensemble_models'.
+    """
+    pred_dir = os.path.join(results_dir, dataset, "dataframes", dataset, "predictor_inputs")
+
+    with open(os.path.join(pred_dir, "predictor_config.json")) as f:
+        config = json.load(f)
+
+    with open(os.path.join(pred_dir, "per_model_variance.json")) as f:
+        per_model_variance_by_axis = json.load(f)
+
+    with open(os.path.join(pred_dir, "axes.json")) as f:
+        axes = json.load(f)
+
+    axis_jobs = []
+    for axis in axes:
+        safe_axis = axis.replace("/", "-").replace("\\", "-").replace(" ", "_")
+        csv_path = os.path.join(pred_dir, f"axis_data_{safe_axis}.csv")
+        axis_df = pd.read_csv(csv_path)
+        axis_jobs.append((axis, axis_df))
+
+    print(f"Predictor inputs loaded from: {pred_dir}")
+    return axis_jobs, per_model_variance_by_axis, config
+
+
+def plot_predictor_scatter(predictor_records, dataset, plots_dir):
+    """
+    Create 6 scatter plots: 2 predictors × 3 selection methods vs random.
+
+    Each point represents one (axis, model) pair.
+        x-axis: mean_ICC_error(method) − mean_ICC_error(random), averaged across
+                all budgets/trials.  Negative = method beats random.
+        y-axis (plot type A): mean_shift  = (im_msb+im_mse) − (hm_msb+hm_mse)
+                               on the full dataset.
+        y-axis (plot type B): correlation = Pearson r between im_ms and hm_ms
+                               across 500 bootstrap samples of 10 text_ids.
+
+    The 3 comparison methods are:
+        variance_matched_combined
+        variance_matched_combined_imc
+        variance_matched_combined_tc_imc
+
+    Args:
+        predictor_records: List of dicts as returned by compute_predictor_records.
+            Each dict has keys: axis, model, mean_shift, correlation,
+            icc_gap_<method> for each PREDICTOR_COMPARISON_METHODS entry.
+        dataset: Dataset name used in plot titles and filenames.
+        plots_dir: Directory to save the plots.
+    """
+    from src.utils.predictor_analysis import PREDICTOR_COMPARISON_METHODS
+
+    if not predictor_records:
+        print("No predictor records to plot.")
+        return
+
+    df = pd.DataFrame(predictor_records)
+
+    # Short display names for x-axis method labels
+    method_labels = {
+        "variance_matched_combined":        "VM",
+        "variance_matched_combined_imc":    "VM+IMC",
+        "variance_matched_combined_tc_imc": "VM+TC+IMC",
+    }
+
+    predictors = [
+        ("mean_shift",   "Mean Shift\n(im_msb+im_mse) − (hm_msb+hm_mse)"),
+        ("correlation",  "Correlation\nr(im_ms, hm_ms) across bootstrap samples"),
+    ]
+
+    print(f"\n[Predictor scatter plots] {len(df)} (axis, model) records")
+
+    for predictor_col, predictor_label in predictors:
+        fig, axes = plt.subplots(1, len(PREDICTOR_COMPARISON_METHODS),
+                                 figsize=(5 * len(PREDICTOR_COMPARISON_METHODS), 4),
+                                 sharey=True)
+        if len(PREDICTOR_COMPARISON_METHODS) == 1:
+            axes = [axes]
+
+        for ax, method in zip(axes, PREDICTOR_COMPARISON_METHODS):
+            gap_col = f"icc_gap_{method}"
+            plot_df = df[[predictor_col, gap_col]].dropna()
+
+            if len(plot_df) == 0:
+                ax.set_title(method_labels.get(method, method))
+                ax.text(0.5, 0.5, "no data", ha="center", va="center",
+                        transform=ax.transAxes)
+                continue
+
+            ax.scatter(plot_df[gap_col], plot_df[predictor_col],
+                       alpha=0.7, edgecolors="k", linewidths=0.5, s=60)
+            ax.axvline(0, color="red", linestyle="--", linewidth=1, alpha=0.6)
+            ax.set_xlabel("ICC error gap vs random\n(method − random; negative = better)",
+                          fontsize=9)
+            ax.set_title(method_labels.get(method, method), fontsize=10)
+
+            # Pearson r annotation
+            if len(plot_df) >= 3:
+                r = np.corrcoef(plot_df[gap_col].values,
+                                plot_df[predictor_col].values)[0, 1]
+                ax.text(0.05, 0.95, f"r={r:.2f}", transform=ax.transAxes,
+                        fontsize=8, va="top")
+
+            ax.grid(alpha=0.3)
+
+        axes[0].set_ylabel(predictor_label, fontsize=9)
+        fig.suptitle(f"{dataset}: predictor vs ICC error gap ({predictor_col})",
+                     fontsize=11)
+        fig.tight_layout()
+
+        safe_pred = predictor_col.replace(" ", "_")
+        filename = os.path.join(plots_dir,
+                                f"{dataset}_predictor_scatter_{safe_pred}.jpg")
+        fig.savefig(filename, dpi=300)
+        plt.close(fig)
+        print(f"  Saved: {filename}")

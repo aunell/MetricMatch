@@ -27,7 +27,7 @@ from src.utils.selection_strategies import (
     metric_matched_selection,
     max_expand_selection,
 )
-from src.utils.plotting import plot_all_results, load_results_dataframes
+from src.utils.plotting import plot_all_results, load_results_dataframes, save_predictor_inputs
 # Set random seed for reproducibility
 np.random.seed(42)
 
@@ -62,9 +62,11 @@ SAMPLING_STRATEGIES = [
     "random",
     "random_imc",
     "variance_matched_combined",
-    # "variance_matched_combined_imc",
+    "variance_matched_combined_imc",
     "variance_matched_combined_tc",
-    # "variance_matched_combined_tc_imc",
+    "variance_matched_combined_tc_imc",
+    "oracle",
+    "oracle_imc",
     "metric_matched_icc",
     "metric_matched_alpha",
     "metric_matched_mse",
@@ -390,6 +392,11 @@ _SCORE_METHOD_MAP = {
     "variance_matched_combined_tc": "combined",   # same method; targets are bias-corrected
 }
 
+# Oracle base strategy names: use HM MSB/MSE (from hm_full_df) as selection targets
+# instead of IM MSB/MSE. This is the oracle upper bound — it requires knowing the
+# true human-model variance structure (i.e. all human annotations) in advance.
+_ORACLE_BASES = {"oracle"}
+
 # Base strategy names that apply adaptive bias correction to the MSB/MSE selection
 # targets.  "_tc" is intentionally NOT stripped by _parse_strategy so it stays in the
 # base name and forms its own sampling group, separate from the non-corrected variants.
@@ -407,6 +414,7 @@ _METRIC_MATCH_TARGET = {
 def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials,
                           hm_full_df, im_full_df, model, true_icc, true_alpha, true_mse,
                           im_msb_target=None, im_mse_target=None,
+                          hm_msb_target=None, hm_mse_target=None,
                           im_models=None, true_im_icc=None, true_im_alpha=None,
                           past_im_msb_obs=None, past_im_mse_obs=None,
                           past_hm_msb_obs=None, past_hm_mse_obs=None,
@@ -512,7 +520,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                     and all_im_msb_obs and all_hm_msb_obs
                     and len(all_im_msb_obs) == len(all_hm_msb_obs)):
                 effective_msb_target = (
-                    im_msb_target + np.mean(all_im_msb_obs) - np.mean(all_hm_msb_obs)
+                    im_msb_target + np.mean(all_hm_msb_obs) - np.mean(all_im_msb_obs)
                 )
             else:
                 effective_msb_target = im_msb_target
@@ -521,7 +529,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                     and all_im_mse_obs and all_hm_mse_obs
                     and len(all_im_mse_obs) == len(all_hm_mse_obs)):
                 effective_mse_target = (
-                    im_mse_target + np.mean(all_im_mse_obs) - np.mean(all_hm_mse_obs)
+                    im_mse_target + np.mean(all_hm_mse_obs) - np.mean(all_im_mse_obs)
                 )
             else:
                 effective_mse_target = im_mse_target
@@ -571,6 +579,18 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                 fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
                 seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
                 forced_ids=forced_ids
+            )
+            if sampled_ids is None:
+                continue
+        elif base_strategy in _ORACLE_BASES:
+            # Oracle: variance matching against the true HM MSB/MSE targets using hm_full_df.
+            # This is the upper bound — it assumes access to the full human-model variance
+            # structure (hm_msb_target, hm_mse_target) and selects subsets of human
+            # annotations that best reproduce that structure.
+            sampled_ids = variance_matched_selection_ms(
+                text_ids, k, hm_full_df, hm_msb_target, hm_mse_target,
+                fast_ms_fn, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
+                score_method="combined", forced_ids=forced_ids
             )
             if sampled_ids is None:
                 continue
@@ -694,6 +714,8 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
     for model in target_models:
         im_msb_target = per_model_variance[model]["im_msb"]
         im_mse_target = per_model_variance[model]["im_mse"]
+        hm_msb_target = per_model_variance[model]["hm_msb"]
+        hm_mse_target = per_model_variance[model]["hm_mse"]
 
         hm_full_df = df[df["model_name"].isin([model, "original"])]
 
@@ -766,6 +788,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
                         base_strategy, strategy_variants, text_ids, k, n_trials,
                         hm_full_df, im_full_df, model, true_icc, true_alpha, true_mse,
                         im_msb_target=im_msb_target, im_mse_target=im_mse_target,
+                        hm_msb_target=hm_msb_target, hm_mse_target=hm_mse_target,
                         im_models=im_models, true_im_icc=im_icc, true_im_alpha=im_alpha,
                         past_im_msb_obs=past_im_msb_obs, past_im_mse_obs=past_im_mse_obs,
                         past_hm_msb_obs=past_hm_msb_obs, past_hm_mse_obs=past_hm_mse_obs,
@@ -805,7 +828,7 @@ def _run_axis_worker(args):
         axis_df, target_models, ensemble_models, axis_per_model_variance,
         online_acquisition=ONLINE_ACQUISITION
     )
-    return axis, axis_icc, axis_alpha, axis_mse, axis_metadata
+    return axis, axis_icc, axis_alpha, axis_mse, axis_metadata, axis_per_model_variance
 
 
 # -------------------------
@@ -852,11 +875,13 @@ def main():
     alpha_results_by_axis = {}
     mse_results_by_axis = {}
     reliability_metadata_by_axis = {}
-    for axis, axis_icc, axis_alpha, axis_mse, axis_metadata in axis_results:
+    per_model_variance_by_axis = {}
+    for axis, axis_icc, axis_alpha, axis_mse, axis_metadata, axis_per_model_var in axis_results:
         icc_results_by_axis[axis] = axis_icc
         alpha_results_by_axis[axis] = axis_alpha
         mse_results_by_axis[axis] = axis_mse
         reliability_metadata_by_axis[axis] = axis_metadata
+        per_model_variance_by_axis[axis] = axis_per_model_var
         print(f"Collected {len(axis_icc)} ICC, {len(axis_alpha)} Alpha, {len(axis_mse)} MSE results for {axis}")
 
     # Combine per-axis results
@@ -945,10 +970,14 @@ def main():
 
     return (icc_results, alpha_results, mse_results,
             icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
-            reliability_metadata_all, reliability_metadata_by_axis)
+            reliability_metadata_all, reliability_metadata_by_axis,
+            axis_jobs, per_model_variance_by_axis)
 
 
 if __name__ == "__main__":
+    axis_jobs_for_predictors = None
+    per_model_variance_by_axis_for_predictors = None
+
     if args.results_dir is not None:
         print(f"\nLoading saved results from: {args.results_dir} (dataset={dataset})")
         (icc_results, alpha_results, mse_results,
@@ -957,7 +986,8 @@ if __name__ == "__main__":
     else:
         (icc_results, alpha_results, mse_results,
          icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
-         reliability_metadata_all, reliability_metadata_by_axis) = main()
+         reliability_metadata_all, reliability_metadata_by_axis,
+         axis_jobs_for_predictors, per_model_variance_by_axis_for_predictors) = main()
 
     plot_all_results(
         icc_results, alpha_results, mse_results,
@@ -965,3 +995,15 @@ if __name__ == "__main__":
         reliability_metadata_all, reliability_metadata_by_axis,
         dataset, PLOTS_DIR, COMPARISON_MODE
     )
+
+    # Save predictor inputs for post-hoc scatter analysis (only available when running from scratch)
+    if axis_jobs_for_predictors is not None and per_model_variance_by_axis_for_predictors is not None:
+        print("\n" + "=" * 60)
+        print("SAVING PREDICTOR INPUTS")
+        print("=" * 60)
+        save_predictor_inputs(
+            PLOTS_DIR, dataset,
+            axis_jobs_for_predictors,
+            per_model_variance_by_axis_for_predictors,
+            COMPARISON_MODE, ensemble_models,
+        )
