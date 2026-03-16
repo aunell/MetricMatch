@@ -11,25 +11,14 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
-METHOD_COLORS = {
-    "random":                           "#888888",
-    "random_imc":                       "#444444",
-    "variance_matched_combined":        "#1f77b4",
-    "variance_matched_combined_imc":    "#aec7e8",
-    "variance_matched_combined_tc":     "#0a3d62",
-    "variance_matched_combined_tc_imc": "#17becf",
-    "variance_matched_msb":             "#2ca02c",
-    "variance_matched_msb_imc":         "#98df8a",
-    "variance_matched_msb_tc":          "#005500",
-    "variance_matched_msb_tc_imc":      "#3dcf8e",
-    "proxy_oracle":                     "#9467bd",
-    "proxy_oracle_imc":                 "#c5b0d5",
-    "oracle":                           "#7f1084",
-    "oracle_imc":                       "#d48fd4",
-    "metric_matched_icc":               "#d62728",
-    "metric_matched_alpha":             "#ff7f0e",
-    "metric_matched_mse":               "#bcbd22",
-}
+def _get_colors_for_methods(methods):
+    """Return a dict mapping each method name to a unique color from tab20."""
+    import matplotlib.cm as cm
+    n = len(methods)
+    if n == 0:
+        return {}
+    cmap = cm.get_cmap("tab20" if n <= 20 else "hsv")
+    return {m: cmap(i / max(n, 1)) for i, m in enumerate(methods)}
 
 
 class _NumpyEncoder(json.JSONEncoder):
@@ -115,7 +104,7 @@ def load_results_dataframes(results_dir, dataset=None):
                   icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
                   reliability_metadata_all, reliability_metadata_by_axis)
     """
-    df_dir = os.path.join(results_dir, dataset, "dataframes", dataset) if dataset else os.path.join(results_dir, "dataframes")
+    df_dir = os.path.join(results_dir, dataset, "dataframes") if dataset else os.path.join(results_dir, "dataframes")
 
     icc_results = pd.read_csv(os.path.join(df_dir, "icc_results.csv"))
     alpha_results = pd.read_csv(os.path.join(df_dir, "alpha_results.csv"))
@@ -239,11 +228,13 @@ def create_estimation_error_plot(avg_results, title, ylabel, filename, legend_te
     Returns:
         Path to saved file
     """
-    plt.figure(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(11, 6))
 
-    for method in avg_results["method"].unique():
+    methods = list(avg_results["method"].unique())
+    colors = _get_colors_for_methods(methods)
+    for method in methods:
         method_data = avg_results[avg_results["method"] == method]
-        plt.errorbar(
+        ax.errorbar(
             method_data["budget"],
             method_data["mean"],
             yerr=method_data["ci_half_width"],
@@ -252,18 +243,18 @@ def create_estimation_error_plot(avg_results, title, ylabel, filename, legend_te
             capsize=5,
             capthick=2,
             label=method,
-            color=METHOD_COLORS.get(method),
+            color=colors[method],
             alpha=0.8
         )
 
-    plt.ylabel(ylabel, fontsize=12)
-    plt.xlabel("Human Annotation Budget", fontsize=12)
-    plt.title(f"{title}{legend_text}", fontsize=11)
-    plt.legend(title="Method", fontsize=11)
-    plt.grid(alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(filename, dpi=300)
-    plt.close()
+    ax.set_ylabel(ylabel, fontsize=12)
+    ax.set_xlabel("Human Annotation Budget", fontsize=12)
+    ax.set_title(f"{title}{legend_text}", fontsize=11)
+    ax.legend(title="Method", fontsize=10, bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(filename, dpi=300, bbox_inches='tight')
+    plt.close(fig)
 
     return filename
 
@@ -281,28 +272,30 @@ def create_variance_plot(var_results, title, ylabel, filename):
     Returns:
         Path to saved file
     """
-    plt.figure(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(11, 6))
 
-    for method in var_results["method"].unique():
+    methods = list(var_results["method"].unique())
+    colors = _get_colors_for_methods(methods)
+    for method in methods:
         method_data = var_results[var_results["method"] == method].sort_values("budget")
-        plt.plot(
+        ax.plot(
             method_data["budget"],
             method_data["variance"],
             marker='o',
             linewidth=2.5,
             label=method,
-            color=METHOD_COLORS.get(method),
+            color=colors[method],
             alpha=0.8
         )
 
-    plt.ylabel(ylabel, fontsize=12)
-    plt.xlabel("Human Annotation Budget", fontsize=12)
-    plt.title(title, fontsize=11)
-    plt.legend(title="Method", fontsize=11)
-    plt.grid(alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(filename, dpi=300)
-    plt.close()
+    ax.set_ylabel(ylabel, fontsize=12)
+    ax.set_xlabel("Human Annotation Budget", fontsize=12)
+    ax.set_title(title, fontsize=11)
+    ax.legend(title="Method", fontsize=10, bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(filename, dpi=300, bbox_inches='tight')
+    plt.close(fig)
 
     return filename
 
@@ -324,15 +317,17 @@ def create_log_abs_error_plot(avg_results, title, ylabel, filename):
     Returns:
         Path to saved file
     """
-    plt.figure(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(11, 6))
 
-    for method in avg_results["method"].unique():
+    methods = list(avg_results["method"].unique())
+    colors = _get_colors_for_methods(methods)
+    for method in methods:
         method_data = avg_results[avg_results["method"] == method].sort_values("budget")
         means = method_data["mean"].values
         # Clip CI bounds to be non-negative so log scale doesn't break
         yerr_lower = np.clip(means - method_data["ci_lower"].values, 0, None)
         yerr_upper = np.clip(method_data["ci_upper"].values - means, 0, None)
-        plt.errorbar(
+        ax.errorbar(
             method_data["budget"],
             means,
             yerr=[yerr_lower, yerr_upper],
@@ -341,19 +336,19 @@ def create_log_abs_error_plot(avg_results, title, ylabel, filename):
             capsize=5,
             capthick=2,
             label=method,
-            color=METHOD_COLORS.get(method),
+            color=colors[method],
             alpha=0.8
         )
 
-    plt.yscale('log')
-    plt.ylabel(ylabel, fontsize=12)
-    plt.xlabel("Human Annotation Budget", fontsize=12)
-    plt.title(title, fontsize=11)
-    plt.legend(title="Method", fontsize=11)
-    plt.grid(alpha=0.3, which='both')
-    plt.tight_layout()
-    plt.savefig(filename, dpi=300)
-    plt.close()
+    ax.set_yscale('log')
+    ax.set_ylabel(ylabel, fontsize=12)
+    ax.set_xlabel("Human Annotation Budget", fontsize=12)
+    ax.set_title(title, fontsize=11)
+    ax.legend(title="Method", fontsize=10, bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0)
+    ax.grid(alpha=0.3, which='both')
+    fig.tight_layout()
+    fig.savefig(filename, dpi=300, bbox_inches='tight')
+    plt.close(fig)
 
     return filename
 
@@ -688,7 +683,7 @@ def load_predictor_inputs(results_dir, dataset):
             per_model_variance_by_axis: Dict axis -> model -> variance components.
             config: Dict with keys 'comparison_mode' and 'ensemble_models'.
     """
-    pred_dir = os.path.join(results_dir, dataset, "dataframes", dataset, "predictor_inputs")
+    pred_dir = os.path.join(results_dir, dataset, "dataframes", "predictor_inputs")
 
     with open(os.path.join(pred_dir, "predictor_config.json")) as f:
         config = json.load(f)
@@ -792,6 +787,7 @@ def plot_predictor_scatter(predictor_records, dataset, plots_dir):
             for ax in ax_flat[n_methods:]:
                 ax.set_visible(False)
 
+            scatter_colors = _get_colors_for_methods(comparison_methods)
             for ax, method in zip(ax_flat, comparison_methods):
                 gap_col = f"{metric_key}_gap_{method}"
                 plot_df = df[[predictor_col, gap_col]].dropna()
@@ -804,7 +800,7 @@ def plot_predictor_scatter(predictor_records, dataset, plots_dir):
 
                 ax.scatter(plot_df[gap_col], plot_df[predictor_col],
                            alpha=0.7, edgecolors="k", linewidths=0.5, s=60,
-                           color=METHOD_COLORS.get(method))
+                           color=scatter_colors[method])
                 ax.axvline(0, color="red", linestyle="--", linewidth=1, alpha=0.6)
                 ax.set_xlabel(x_label, fontsize=9)
                 ax.set_title(method_labels.get(method, method), fontsize=10)

@@ -72,7 +72,8 @@ SAMPLING_STRATEGIES = [
     "proxy_oracle",
     "proxy_oracle_imc",
     "oracle",
-    "oracle_imc",
+    "oracle_msb",
+    "oracle_mse",
     "metric_matched_icc",
     "metric_matched_alpha",
     "metric_matched_mse",
@@ -405,7 +406,16 @@ _PROXY_ORACLE_BASES = {"proxy_oracle"}
 
 # True oracle: uses HM scores directly for both scoring and targeting.
 # Upper bound — requires all human annotations at selection time.
-_ORACLE_BASES = {"oracle"}
+# oracle       – matches combined MSB+MSE
+# oracle_msb   – matches MSB only
+# oracle_mse   – matches MSE only
+_ORACLE_BASES = {"oracle", "oracle_msb", "oracle_mse"}
+
+_ORACLE_SCORE_METHOD = {
+    "oracle": "combined",
+    "oracle_msb": "msb_only",
+    "oracle_mse": "mse_only",
+}
 
 # Base strategy names that apply adaptive bias correction to the MSB/MSE selection
 # targets.  "_tc" is intentionally NOT stripped by _parse_strategy so it stays in the
@@ -610,7 +620,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             sampled_ids = variance_matched_selection_ms(
                 text_ids, k, hm_full_df, hm_msb_target, hm_mse_target,
                 fast_ms_fn, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
-                score_method="combined", forced_ids=forced_ids
+                score_method=_ORACLE_SCORE_METHOD[base_strategy], forced_ids=forced_ids
             )
             if sampled_ids is None:
                 continue
