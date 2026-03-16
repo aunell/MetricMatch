@@ -69,6 +69,8 @@ SAMPLING_STRATEGIES = [
     "variance_matched_msb_imc",
     "variance_matched_msb_tc",
     "variance_matched_msb_tc_imc",
+    "proxy_oracle",
+    "proxy_oracle_imc",
     "oracle",
     "oracle_imc",
     "metric_matched_icc",
@@ -397,9 +399,12 @@ _SCORE_METHOD_MAP = {
     "variance_matched_combined_tc": "combined",   # same method; targets are bias-corrected
 }
 
-# Oracle base strategy names: use HM MSB/MSE (from hm_full_df) as selection targets
-# instead of IM MSB/MSE. This is the oracle upper bound — it requires knowing the
-# true human-model variance structure (i.e. all human annotations) in advance.
+# Proxy oracle: uses IM scores for selection but targets true HM MSB/MSE.
+# Isolates whether target misspecification is the bottleneck.
+_PROXY_ORACLE_BASES = {"proxy_oracle"}
+
+# True oracle: uses HM scores directly for both scoring and targeting.
+# Upper bound — requires all human annotations at selection time.
 _ORACLE_BASES = {"oracle"}
 
 # Base strategy names that apply adaptive bias correction to the MSB/MSE selection
@@ -587,14 +592,23 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             )
             if sampled_ids is None:
                 continue
-        elif base_strategy in _ORACLE_BASES:
-            # Oracle: variance matching using IM scores (same pipeline as regular methods)
-            # but targeting the true HM MSB/MSE instead of IM MSB/MSE.
-            # This isolates whether target misspecification is the bottleneck —
-            # it asks "how much better would variance matching be if you knew the
-            # true HM variance targets?" while still being constrained to IM scores.
+        elif base_strategy in _PROXY_ORACLE_BASES:
+            # Proxy oracle: IM scores for selection, HM MSB/MSE as targets.
+            # Isolates whether target misspecification is the bottleneck —
+            # "how much better would variance matching be if you knew the
+            # true HM variance targets?" while still constrained to IM scores.
             sampled_ids = variance_matched_selection_ms(
                 text_ids, k, im_full_df, hm_msb_target, hm_mse_target,
+                fast_ms_fn, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
+                score_method="combined", forced_ids=forced_ids
+            )
+            if sampled_ids is None:
+                continue
+        elif base_strategy in _ORACLE_BASES:
+            # True oracle: uses HM scores for both scoring and targeting.
+            # Upper bound — requires all human annotations at selection time.
+            sampled_ids = variance_matched_selection_ms(
+                text_ids, k, hm_full_df, hm_msb_target, hm_mse_target,
                 fast_ms_fn, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
                 score_method="combined", forced_ids=forced_ids
             )

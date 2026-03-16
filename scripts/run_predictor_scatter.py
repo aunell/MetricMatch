@@ -15,7 +15,7 @@ Usage:
 The --results-dir must be the same path that was passed as --plots-dir to
 variance_selection_analysis.py so that the expected
   results-dir/<dataset>/dataframes/<dataset>/predictor_inputs/
-  results-dir/<dataset>/dataframes/icc_by_axis_*.csv
+  results-dir/<dataset>/dataframes/<dataset>/icc_by_axis_*.csv
 directory structure is found.
 
 --output-dir defaults to results-dir/predictor_scatter.
@@ -83,6 +83,8 @@ def _plot_predictor_scatter(df, output_dir):
         "variance_matched_msb_imc":         "VM MSB+IMC",
         "variance_matched_msb_tc":          "VM MSB+TC",
         "variance_matched_msb_tc_imc":      "VM MSB+TC+IMC",
+        "proxy_oracle":                     "Proxy Oracle",
+        "proxy_oracle_imc":                 "Proxy Oracle+IMC",
         "oracle":                           "Oracle",
         "oracle_imc":                       "Oracle+IMC",
         "random_imc":                       "Random+IMC",
@@ -96,10 +98,16 @@ def _plot_predictor_scatter(df, output_dir):
         ("correlation_msb",  "MSB Correlation\nr(im_msb, hm_msb) across bootstrap samples"),
     ]
 
-    # Discover methods from icc_gap_* columns in the DataFrame
-    comparison_methods = sorted(
-        col[len("icc_gap_"):] for col in df.columns if col.startswith("icc_gap_")
-    )
+    # Discover which metrics have gap columns in the DataFrame
+    metric_info = [
+        ("icc",   "ICC",   "ICC error gap vs random\n(method − random; negative = better)"),
+        ("alpha", "Alpha", "Alpha error gap vs random\n(method − random; negative = better)"),
+        ("mse",   "MSE",   "MSE error gap vs random\n(method − random; negative = better)"),
+    ]
+    available_metrics = [
+        (key, label, xlabel) for key, label, xlabel in metric_info
+        if any(col.startswith(f"{key}_gap_") for col in df.columns)
+    ]
 
     datasets = sorted(df["dataset"].unique())
     models = sorted(df["model"].unique())
@@ -108,83 +116,90 @@ def _plot_predictor_scatter(df, output_dir):
     color_map = {d: colors[i % len(colors)] for i, d in enumerate(datasets)}
     marker_map = {m: markers[i % len(markers)] for i, m in enumerate(models)}
 
-    n_methods = len(comparison_methods)
-    n_cols = min(n_methods, 4)
-    n_rows = int(np.ceil(n_methods / n_cols))
-
     print(f"\n[Predictor scatter plots] {len(df)} total (axis, model) records "
-          f"across {len(datasets)} dataset(s), {n_methods} methods ({n_rows}×{n_cols} grid)")
+          f"across {len(datasets)} dataset(s), {len(available_metrics)} metric(s)")
 
-    for predictor_col, predictor_label in predictors:
-        fig, axes_grid = plt.subplots(n_rows, n_cols,
-                                      figsize=(5 * n_cols, 4 * n_rows),
-                                      sharey=True, squeeze=False)
-        ax_flat = [axes_grid[r][c] for r in range(n_rows) for c in range(n_cols)]
-        for ax in ax_flat[n_methods:]:
-            ax.set_visible(False)
-        axes_list = ax_flat  # alias for legend code below
+    import matplotlib.lines as mlines
 
-        for ax, method in zip(ax_flat, comparison_methods):
-            gap_col = f"icc_gap_{method}"
-            plot_df = df[[predictor_col, gap_col, "dataset", "model"]].dropna()
-
-            if len(plot_df) == 0:
-                ax.set_title(method_labels.get(method, method))
-                ax.text(0.5, 0.5, "no data", ha="center", va="center",
-                        transform=ax.transAxes)
-                continue
-
-            for ds in datasets:
-                for mdl in models:
-                    sub = plot_df[(plot_df["dataset"] == ds) & (plot_df["model"] == mdl)]
-                    if len(sub) == 0:
-                        continue
-                    ax.scatter(sub[gap_col], sub[predictor_col],
-                               alpha=0.7, edgecolors="k", linewidths=0.4, s=60,
-                               color=color_map[ds], marker=marker_map[mdl])
-
-            ax.axvline(0, color="red", linestyle="--", linewidth=1, alpha=0.6)
-            ax.set_xlabel("ICC error gap vs random\n(method − random; negative = better)",
-                          fontsize=9)
-            ax.set_title(method_labels.get(method, method), fontsize=10)
-
-            if len(plot_df) >= 3:
-                r = np.corrcoef(plot_df[gap_col].values,
-                                plot_df[predictor_col].values)[0, 1]
-                ax.text(0.05, 0.95, f"r={r:.2f}", transform=ax.transAxes,
-                        fontsize=8, va="top")
-
-            ax.grid(alpha=0.3)
-
-        # Build two legend groups: color → dataset, marker → model
-        import matplotlib.lines as mlines
-        dataset_handles = [
-            mlines.Line2D([], [], color=color_map[d], marker="o", linestyle="None",
-                          markersize=6, label=d)
-            for d in datasets
-        ]
-        model_handles = [
-            mlines.Line2D([], [], color="gray", marker=marker_map[m], linestyle="None",
-                          markersize=6, label=m)
-            for m in models
-        ]
-        # Set y-label on leftmost axis of each row
-        for r in range(n_rows):
-            axes_grid[r][0].set_ylabel(predictor_label, fontsize=9)
-        ax_flat[n_methods - 1].legend(
-            handles=dataset_handles + [mlines.Line2D([], [], linestyle="None")] + model_handles,
-            labels=[d for d in datasets] + [""] + [m for m in models],
-            title="Dataset / Model", fontsize=7, loc="upper left",
-            bbox_to_anchor=(1.02, 1), borderaxespad=0,
+    for metric_key, metric_label, x_label in available_metrics:
+        comparison_methods = sorted(
+            col[len(f"{metric_key}_gap_"):] for col in df.columns
+            if col.startswith(f"{metric_key}_gap_")
         )
-        fig.suptitle(f"Predictor vs ICC error gap ({predictor_col}) — all datasets",
-                     fontsize=11)
-        fig.tight_layout()
+        n_methods = len(comparison_methods)
+        n_cols = min(n_methods, 4)
+        n_rows = int(np.ceil(n_methods / n_cols))
 
-        filename = os.path.join(output_dir, f"predictor_scatter_{predictor_col}.jpg")
-        fig.savefig(filename, dpi=300, bbox_inches="tight")
-        plt.close(fig)
-        print(f"  Saved: {filename}")
+        for predictor_col, predictor_label in predictors:
+            fig, axes_grid = plt.subplots(n_rows, n_cols,
+                                          figsize=(5 * n_cols, 4 * n_rows),
+                                          sharey=True, squeeze=False)
+            ax_flat = [axes_grid[r][c] for r in range(n_rows) for c in range(n_cols)]
+            for ax in ax_flat[n_methods:]:
+                ax.set_visible(False)
+
+            for ax, method in zip(ax_flat, comparison_methods):
+                gap_col = f"{metric_key}_gap_{method}"
+                plot_df = df[[predictor_col, gap_col, "dataset", "model"]].dropna()
+
+                if len(plot_df) == 0:
+                    ax.set_title(method_labels.get(method, method))
+                    ax.text(0.5, 0.5, "no data", ha="center", va="center",
+                            transform=ax.transAxes)
+                    continue
+
+                for ds in datasets:
+                    for mdl in models:
+                        sub = plot_df[(plot_df["dataset"] == ds) & (plot_df["model"] == mdl)]
+                        if len(sub) == 0:
+                            continue
+                        ax.scatter(sub[gap_col], sub[predictor_col],
+                                   alpha=0.7, edgecolors="k", linewidths=0.4, s=60,
+                                   color=color_map[ds], marker=marker_map[mdl])
+
+                ax.axvline(0, color="red", linestyle="--", linewidth=1, alpha=0.6)
+                ax.set_xlabel(x_label, fontsize=9)
+                ax.set_title(method_labels.get(method, method), fontsize=10)
+
+                if len(plot_df) >= 3:
+                    r = np.corrcoef(plot_df[gap_col].values,
+                                    plot_df[predictor_col].values)[0, 1]
+                    ax.text(0.05, 0.95, f"r={r:.2f}", transform=ax.transAxes,
+                            fontsize=8, va="top")
+
+                ax.grid(alpha=0.3)
+
+            # Build two legend groups: color → dataset, marker → model
+            dataset_handles = [
+                mlines.Line2D([], [], color=color_map[d], marker="o", linestyle="None",
+                              markersize=6, label=d)
+                for d in datasets
+            ]
+            model_handles = [
+                mlines.Line2D([], [], color="gray", marker=marker_map[m], linestyle="None",
+                              markersize=6, label=m)
+                for m in models
+            ]
+            for r in range(n_rows):
+                axes_grid[r][0].set_ylabel(predictor_label, fontsize=9)
+            ax_flat[n_methods - 1].legend(
+                handles=dataset_handles + [mlines.Line2D([], [], linestyle="None")] + model_handles,
+                labels=[d for d in datasets] + [""] + [m for m in models],
+                title="Dataset / Model", fontsize=7, loc="upper left",
+                bbox_to_anchor=(1.02, 1), borderaxespad=0,
+            )
+            fig.suptitle(
+                f"Predictor vs {metric_label} error gap ({predictor_col}) — all datasets",
+                fontsize=11
+            )
+            fig.tight_layout()
+
+            filename = os.path.join(
+                output_dir, f"predictor_scatter_{metric_key}_{predictor_col}.jpg"
+            )
+            fig.savefig(filename, dpi=300, bbox_inches="tight")
+            plt.close(fig)
+            print(f"  Saved: {filename}")
 
 
 # ---------------------------------------------------------------------------
@@ -224,9 +239,9 @@ def main():
             axis_jobs, per_model_variance_by_axis, config = load_predictor_inputs(
                 args.results_dir, dataset
             )
-            _, _, _, icc_results_by_axis, _, _, _, _ = load_results_dataframes(
-                args.results_dir, dataset
-            )
+            (_, _, _,
+             icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
+             _, _) = load_results_dataframes(args.results_dir, dataset)
         except FileNotFoundError as e:
             print(f"  Skipping {dataset}: {e}")
             continue
@@ -241,6 +256,8 @@ def main():
         records = compute_predictor_records(
             axis_jobs, per_model_variance_by_axis, icc_results_by_axis,
             im_df_builder,
+            alpha_results_by_axis=alpha_results_by_axis,
+            mse_results_by_axis=mse_results_by_axis,
             n_samples=args.n_samples, sample_size=args.sample_size,
         )
         for r in records:

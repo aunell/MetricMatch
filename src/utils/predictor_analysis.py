@@ -100,16 +100,22 @@ def compute_correlation_predictor(im_full_df, hm_full_df,
 
 def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
                                icc_results_by_axis, im_df_builder,
+                               alpha_results_by_axis=None,
+                               mse_results_by_axis=None,
                                n_samples=500, sample_size=10):
     """
     Build a list of predictor records for scatter plotting.
 
     Each record corresponds to one (axis, model) pair and contains:
         axis, model
-        mean_shift          – (im_msb+im_mse) − (hm_msb+hm_mse) on the full dataset
-        correlation         – Pearson r between im_ms and hm_ms across bootstrap samples
-        icc_gap_<method>    – mean_ICC_error(method) − mean_ICC_error(random),
-                              averaged across all budgets/trials
+        mean_shift            – (im_msb+im_mse) − (hm_msb+hm_mse) on the full dataset
+        correlation           – Pearson r between im_ms and hm_ms across bootstrap samples
+        correlation_msb       – Pearson r between im_msb and hm_msb across bootstrap samples
+        icc_gap_<method>      – mean_ICC_error(method) − mean_ICC_error(random)
+        alpha_gap_<method>    – mean_Alpha_error(method) − mean_Alpha_error(random)
+                                (only if alpha_results_by_axis is provided)
+        mse_gap_<method>      – mean_MSE_error(method) − mean_MSE_error(random)
+                                (only if mse_results_by_axis is provided)
 
     Args:
         axis_jobs: List of (axis, axis_df) pairs from the experiment run.
@@ -119,21 +125,23 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
         icc_results_by_axis: Dict mapping axis -> ICC results DataFrame
             (columns: model, budget, method, estimation_error).
         im_df_builder: Callable(axis_df, model) -> im_full_df.
-            Builds the inter-model DataFrame for a given axis_df and model using
-            whatever comparison_mode and ensemble_models are appropriate for the run.
-            Defined in the calling experiment so no logic is duplicated here.
+        alpha_results_by_axis: Optional dict mapping axis -> Alpha results DataFrame.
+        mse_results_by_axis: Optional dict mapping axis -> MSE results DataFrame.
         n_samples: Bootstrap samples for the correlation predictor.
         sample_size: Items per bootstrap sample.
 
     Returns:
         List[dict]: One record per (axis, model) pair.
     """
-    # Discover all non-random methods present across all axes
+    # Discover all non-random methods present across all axes (union across all metrics)
     all_methods: set = set()
-    for axis, _ in axis_jobs:
-        axis_icc_tmp = icc_results_by_axis.get(axis)
-        if axis_icc_tmp is not None and len(axis_icc_tmp) > 0:
-            all_methods.update(axis_icc_tmp["method"].unique())
+    for results_by_axis in [icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis]:
+        if results_by_axis is None:
+            continue
+        for axis, _ in axis_jobs:
+            axis_res = results_by_axis.get(axis)
+            if axis_res is not None and len(axis_res) > 0:
+                all_methods.update(axis_res["method"].unique())
     all_methods.discard("random")
     comparison_methods = sorted(all_methods)
 
@@ -144,6 +152,9 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
         axis_icc = icc_results_by_axis.get(axis)
         if axis_icc is None or len(axis_icc) == 0:
             continue
+
+        axis_alpha = alpha_results_by_axis.get(axis) if alpha_results_by_axis else None
+        axis_mse = mse_results_by_axis.get(axis) if mse_results_by_axis else None
 
         for model, var_info in per_model_var.items():
             im_msb = var_info.get("im_msb", np.nan)
@@ -171,10 +182,6 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
                 components="msb_only"
             )
 
-            model_icc = axis_icc[axis_icc["model"] == model]
-            random_errors = model_icc[model_icc["method"] == "random"]["estimation_error"]
-            random_mean = random_errors.mean() if len(random_errors) > 0 else np.nan
-
             record = {
                 "axis": axis,
                 "model": model,
@@ -183,12 +190,29 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
                 "correlation_msb": corr_msb,
             }
 
-            for method in comparison_methods:
-                method_errors = model_icc[model_icc["method"] == method]["estimation_error"]
-                if len(method_errors) == 0 or not np.isfinite(random_mean):
-                    record[f"icc_gap_{method}"] = np.nan
-                else:
-                    record[f"icc_gap_{method}"] = float(method_errors.mean() - random_mean)
+            # Compute error gaps for each metric
+            metric_results = [
+                ("icc",   axis_icc),
+                ("alpha", axis_alpha),
+                ("mse",   axis_mse),
+            ]
+            for metric_name, axis_res in metric_results:
+                if axis_res is None or len(axis_res) == 0:
+                    continue
+                model_res = axis_res[axis_res["model"] == model]
+                random_mean = (
+                    model_res[model_res["method"] == "random"]["estimation_error"].mean()
+                    if len(model_res[model_res["method"] == "random"]) > 0
+                    else np.nan
+                )
+                for method in comparison_methods:
+                    method_errors = model_res[model_res["method"] == method]["estimation_error"]
+                    if len(method_errors) == 0 or not np.isfinite(random_mean):
+                        record[f"{metric_name}_gap_{method}"] = np.nan
+                    else:
+                        record[f"{metric_name}_gap_{method}"] = float(
+                            method_errors.mean() - random_mean
+                        )
 
             records.append(record)
 

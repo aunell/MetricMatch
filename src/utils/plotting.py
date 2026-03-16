@@ -22,8 +22,10 @@ METHOD_COLORS = {
     "variance_matched_msb_imc":         "#98df8a",
     "variance_matched_msb_tc":          "#005500",
     "variance_matched_msb_tc_imc":      "#3dcf8e",
-    "oracle":                           "#9467bd",
-    "oracle_imc":                       "#c5b0d5",
+    "proxy_oracle":                     "#9467bd",
+    "proxy_oracle_imc":                 "#c5b0d5",
+    "oracle":                           "#7f1084",
+    "oracle_imc":                       "#d48fd4",
     "metric_matched_icc":               "#d62728",
     "metric_matched_alpha":             "#ff7f0e",
     "metric_matched_mse":               "#bcbd22",
@@ -63,7 +65,7 @@ def save_results_dataframes(plots_dir, icc_results, alpha_results, mse_results,
         reliability_metadata_by_axis: Dict mapping axis -> model -> metadata
         dataset: Dataset name used to namespace the output subdirectory (e.g. "hanna")
     """
-    df_dir = os.path.join(plots_dir, dataset, "dataframes", dataset) if dataset else os.path.join(plots_dir, "dataframes")
+    df_dir = os.path.join(plots_dir, dataset, "dataframes") if dataset else os.path.join(plots_dir, "dataframes")
     os.makedirs(df_dir, exist_ok=True)
 
     icc_results.to_csv(os.path.join(df_dir, "icc_results.csv"), index=False)
@@ -651,7 +653,7 @@ def save_predictor_inputs(plots_dir, dataset, axis_jobs,
         comparison_mode: Comparison mode string used in the run.
         ensemble_models: List of ensemble model names used in the run.
     """
-    pred_dir = os.path.join(plots_dir, dataset, "dataframes", dataset, "predictor_inputs")
+    pred_dir = os.path.join(plots_dir, dataset, "dataframes", "predictor_inputs")
     os.makedirs(pred_dir, exist_ok=True)
 
     config = {"comparison_mode": comparison_mode, "ensemble_models": list(ensemble_models)}
@@ -710,25 +712,20 @@ def load_predictor_inputs(results_dir, dataset):
 
 def plot_predictor_scatter(predictor_records, dataset, plots_dir):
     """
-    Create scatter plots: 3 predictors × N selection methods vs random.
+    Create scatter plots: 3 predictors × N methods × 3 metrics (ICC, Alpha, MSE).
 
     Each point represents one (axis, model) pair.
-        x-axis: mean_ICC_error(method) − mean_ICC_error(random), averaged across
-                all budgets/trials.  Negative = method beats random.
+        x-axis: mean_error(method) − mean_error(random) for the given metric.
+                Negative = method beats random.
         y-axis (plot type A): mean_shift      = (im_msb+im_mse) − (hm_msb+hm_mse)
-                               on the full dataset.
-        y-axis (plot type B): correlation     = Pearson r between (im_msb+im_mse) and
-                               (hm_msb+hm_mse) across bootstrap samples of text_ids.
-        y-axis (plot type C): correlation_msb = Pearson r between im_msb and hm_msb
-                               across bootstrap samples of text_ids.
+        y-axis (plot type B): correlation     = Pearson r(im_ms, hm_ms)
+        y-axis (plot type C): correlation_msb = Pearson r(im_msb, hm_msb)
 
-    When there are more than 4 methods the subplots wrap into 2 rows so the
-    figure stays readable.
+    One figure is saved per (metric, predictor) combination. Methods wrap at 4
+    per row.
 
     Args:
         predictor_records: List of dicts as returned by compute_predictor_records.
-            Each dict has keys: axis, model, mean_shift, correlation,
-            icc_gap_<method> for each PREDICTOR_COMPARISON_METHODS entry.
         dataset: Dataset name used in plot titles and filenames.
         plots_dir: Directory to save the plots.
     """
@@ -738,10 +735,16 @@ def plot_predictor_scatter(predictor_records, dataset, plots_dir):
 
     df = pd.DataFrame(predictor_records)
 
-    # Discover methods from icc_gap_* columns present in the records
-    comparison_methods = sorted(
-        col[len("icc_gap_"):] for col in df.columns if col.startswith("icc_gap_")
-    )
+    # Discover which metrics have gap columns in the records
+    metric_info = [
+        ("icc",   "ICC",   "ICC error gap vs random\n(method − random; negative = better)"),
+        ("alpha", "Alpha", "Alpha error gap vs random\n(method − random; negative = better)"),
+        ("mse",   "MSE",   "MSE error gap vs random\n(method − random; negative = better)"),
+    ]
+    available_metrics = [
+        (key, label, xlabel) for key, label, xlabel in metric_info
+        if any(col.startswith(f"{key}_gap_") for col in df.columns)
+    ]
 
     # Short display names for subplot titles (fallback to raw name)
     method_labels = {
@@ -753,6 +756,8 @@ def plot_predictor_scatter(predictor_records, dataset, plots_dir):
         "variance_matched_msb_imc":         "VM MSB+IMC",
         "variance_matched_msb_tc":          "VM MSB+TC",
         "variance_matched_msb_tc_imc":      "VM MSB+TC+IMC",
+        "proxy_oracle":                     "Proxy Oracle",
+        "proxy_oracle_imc":                 "Proxy Oracle+IMC",
         "oracle":                           "Oracle",
         "oracle_imc":                       "Oracle+IMC",
         "random_imc":                       "Random+IMC",
@@ -767,60 +772,65 @@ def plot_predictor_scatter(predictor_records, dataset, plots_dir):
         ("correlation_msb",  "MSB Correlation\nr(im_msb, hm_msb) across bootstrap samples"),
     ]
 
-    n_methods = len(comparison_methods)
-    n_cols = min(n_methods, 4)
-    n_rows = int(np.ceil(n_methods / n_cols))
-
     print(f"\n[Predictor scatter plots] {len(df)} (axis, model) records, "
-          f"{n_methods} methods ({n_rows}×{n_cols} grid)")
+          f"{len(available_metrics)} metric(s)")
 
-    for predictor_col, predictor_label in predictors:
-        fig, axes = plt.subplots(n_rows, n_cols,
-                                 figsize=(5 * n_cols, 4 * n_rows),
-                                 sharey=True, squeeze=False)
-        # Flatten to a 1-D list for easy zip with methods; hide any unused cells
-        ax_flat = [axes[r][c] for r in range(n_rows) for c in range(n_cols)]
-        for ax in ax_flat[n_methods:]:
-            ax.set_visible(False)
+    for metric_key, metric_label, x_label in available_metrics:
+        comparison_methods = sorted(
+            col[len(f"{metric_key}_gap_"):] for col in df.columns
+            if col.startswith(f"{metric_key}_gap_")
+        )
+        n_methods = len(comparison_methods)
+        n_cols = min(n_methods, 4)
+        n_rows = int(np.ceil(n_methods / n_cols))
 
-        for ax, method in zip(ax_flat, comparison_methods):
-            gap_col = f"icc_gap_{method}"
-            plot_df = df[[predictor_col, gap_col]].dropna()
+        for predictor_col, predictor_label in predictors:
+            fig, axes = plt.subplots(n_rows, n_cols,
+                                     figsize=(5 * n_cols, 4 * n_rows),
+                                     sharey=True, squeeze=False)
+            ax_flat = [axes[r][c] for r in range(n_rows) for c in range(n_cols)]
+            for ax in ax_flat[n_methods:]:
+                ax.set_visible(False)
 
-            if len(plot_df) == 0:
-                ax.set_title(method_labels.get(method, method))
-                ax.text(0.5, 0.5, "no data", ha="center", va="center",
-                        transform=ax.transAxes)
-                continue
+            for ax, method in zip(ax_flat, comparison_methods):
+                gap_col = f"{metric_key}_gap_{method}"
+                plot_df = df[[predictor_col, gap_col]].dropna()
 
-            ax.scatter(plot_df[gap_col], plot_df[predictor_col],
-                       alpha=0.7, edgecolors="k", linewidths=0.5, s=60,
-                       color=METHOD_COLORS.get(method))
-            ax.axvline(0, color="red", linestyle="--", linewidth=1, alpha=0.6)
-            ax.set_xlabel("ICC error gap vs random\n(method − random; negative = better)",
-                          fontsize=9)
-            ax.set_title(method_labels.get(method, method), fontsize=10)
+                if len(plot_df) == 0:
+                    ax.set_title(method_labels.get(method, method))
+                    ax.text(0.5, 0.5, "no data", ha="center", va="center",
+                            transform=ax.transAxes)
+                    continue
 
-            # Pearson r annotation
-            if len(plot_df) >= 3:
-                r = np.corrcoef(plot_df[gap_col].values,
-                                plot_df[predictor_col].values)[0, 1]
-                ax.text(0.05, 0.95, f"r={r:.2f}", transform=ax.transAxes,
-                        fontsize=8, va="top")
+                ax.scatter(plot_df[gap_col], plot_df[predictor_col],
+                           alpha=0.7, edgecolors="k", linewidths=0.5, s=60,
+                           color=METHOD_COLORS.get(method))
+                ax.axvline(0, color="red", linestyle="--", linewidth=1, alpha=0.6)
+                ax.set_xlabel(x_label, fontsize=9)
+                ax.set_title(method_labels.get(method, method), fontsize=10)
 
-            ax.grid(alpha=0.3)
+                if len(plot_df) >= 3:
+                    r = np.corrcoef(plot_df[gap_col].values,
+                                    plot_df[predictor_col].values)[0, 1]
+                    ax.text(0.05, 0.95, f"r={r:.2f}", transform=ax.transAxes,
+                            fontsize=8, va="top")
 
-        # Label the y-axis on the leftmost visible subplot of each row
-        for r in range(n_rows):
-            axes[r][0].set_ylabel(predictor_label, fontsize=9)
+                ax.grid(alpha=0.3)
 
-        fig.suptitle(f"{dataset}: predictor vs ICC error gap ({predictor_col})",
-                     fontsize=11)
-        fig.tight_layout()
+            for r in range(n_rows):
+                axes[r][0].set_ylabel(predictor_label, fontsize=9)
 
-        safe_pred = predictor_col.replace(" ", "_")
-        filename = os.path.join(plots_dir,
-                                f"{dataset}_predictor_scatter_{safe_pred}.jpg")
-        fig.savefig(filename, dpi=300)
-        plt.close(fig)
-        print(f"  Saved: {filename}")
+            fig.suptitle(
+                f"{dataset}: predictor vs {metric_label} error gap ({predictor_col})",
+                fontsize=11
+            )
+            fig.tight_layout()
+
+            safe_pred = predictor_col.replace(" ", "_")
+            filename = os.path.join(
+                plots_dir,
+                f"{dataset}_predictor_scatter_{metric_key}_{safe_pred}.jpg"
+            )
+            fig.savefig(filename, dpi=300)
+            plt.close(fig)
+            print(f"  Saved: {filename}")
