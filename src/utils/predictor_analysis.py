@@ -98,6 +98,61 @@ def compute_correlation_predictor(im_full_df, hm_full_df,
     return float(np.corrcoef(im_arr, hm_arr)[0, 1])
 
 
+def compute_ms_budget_samples(im_full_df, hm_full_df,
+                               budgets=(10, 20, 30, 40, 50),
+                               n_samples=200, seed=123):
+    """
+    For each budget, draw n_samples subsets of `budget` text_ids and compute
+    (im_msb+im_mse, hm_msb+hm_mse) for each subset.
+
+    Args:
+        im_full_df: Inter-model DataFrame (text_id, model_name, evaluation_score).
+        hm_full_df: Human-model DataFrame (text_id, model_name, evaluation_score).
+        budgets: Sequence of sample sizes to evaluate.
+        n_samples: Number of random draws per budget.
+        seed: Random seed.
+
+    Returns:
+        dict mapping budget (int) -> list of (im_ms_val, hm_ms_val) tuples.
+    """
+    rng = np.random.RandomState(seed)
+    fast_ms = partial(compute_ms_components, validate=False)
+
+    im_ids = set(im_full_df["text_id"].unique())
+    hm_ids = set(hm_full_df["text_id"].unique())
+    shared_ids = np.array(sorted(im_ids & hm_ids))
+
+    results = {}
+    for budget in budgets:
+        if len(shared_ids) < budget:
+            results[budget] = []
+            continue
+
+        combined, msb_only, mse_only = [], [], []
+        for _ in range(n_samples):
+            sample_ids = rng.choice(shared_ids, size=budget, replace=False)
+
+            im_ms = fast_ms(im_full_df[im_full_df["text_id"].isin(sample_ids)])
+            hm_ms = fast_ms(hm_full_df[hm_full_df["text_id"].isin(sample_ids)])
+
+            if im_ms is None or hm_ms is None:
+                continue
+
+            if (np.isfinite(im_ms.msb) and np.isfinite(hm_ms.msb)
+                    and np.isfinite(im_ms.mse) and np.isfinite(hm_ms.mse)):
+                combined.append((im_ms.msb + im_ms.mse, hm_ms.msb + hm_ms.mse))
+
+            if np.isfinite(im_ms.msb) and np.isfinite(hm_ms.msb):
+                msb_only.append((im_ms.msb, hm_ms.msb))
+
+            if np.isfinite(im_ms.mse) and np.isfinite(hm_ms.mse):
+                mse_only.append((im_ms.mse, hm_ms.mse))
+
+        results[budget] = {"combined": combined, "msb": msb_only, "mse": mse_only}
+
+    return results
+
+
 def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
                                icc_results_by_axis, im_df_builder,
                                alpha_results_by_axis=None,
@@ -190,7 +245,7 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
                 "correlation_msb": corr_msb,
             }
 
-            # Compute error gaps for each metric
+            # Compute error gaps for each metric (across all budgets and per budget)
             metric_results = [
                 ("icc",   axis_icc),
                 ("alpha", axis_alpha),
@@ -200,6 +255,8 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
                 if axis_res is None or len(axis_res) == 0:
                     continue
                 model_res = axis_res[axis_res["model"] == model]
+
+                # Across-all-budgets gap
                 random_mean = (
                     model_res[model_res["method"] == "random"]["estimation_error"].mean()
                     if len(model_res[model_res["method"] == "random"]) > 0
@@ -213,6 +270,24 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
                         record[f"{metric_name}_gap_{method}"] = float(
                             method_errors.mean() - random_mean
                         )
+
+                # Per-budget gap
+                if "budget" in model_res.columns:
+                    for budget in sorted(model_res["budget"].unique()):
+                        budget_res = model_res[model_res["budget"] == budget]
+                        random_budget_mean = (
+                            budget_res[budget_res["method"] == "random"]["estimation_error"].mean()
+                            if len(budget_res[budget_res["method"] == "random"]) > 0
+                            else np.nan
+                        )
+                        for method in comparison_methods:
+                            method_budget_errors = budget_res[budget_res["method"] == method]["estimation_error"]
+                            if len(method_budget_errors) == 0 or not np.isfinite(random_budget_mean):
+                                record[f"{metric_name}_gap_{method}_b{budget}"] = np.nan
+                            else:
+                                record[f"{metric_name}_gap_{method}_b{budget}"] = float(
+                                    method_budget_errors.mean() - random_budget_mean
+                                )
 
             records.append(record)
 

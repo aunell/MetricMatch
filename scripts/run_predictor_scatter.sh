@@ -23,7 +23,7 @@
 set -e
 
 # Defaults
-RESULTS_DIR="/share/pi/nigam/users/aunell/SmartSample_local/results/03_14_added_predictors"
+RESULTS_DIR="/share/pi/nigam/users/aunell/SmartSample_local/results/03_16_new_oracle"
 DATASETS=("medval" "summeval" "hanna" "mslr")
 OUTPUT_DIR=""
 N_SAMPLES=500

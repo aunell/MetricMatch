@@ -105,12 +105,24 @@ def load_results_dataframes(results_dir, dataset=None):
                   reliability_metadata_all, reliability_metadata_by_axis)
     """
     df_dir = os.path.join(results_dir, dataset, "dataframes") if dataset else os.path.join(results_dir, "dataframes")
+    # Handle legacy nested paths: dataset/dataset/dataframes/ (repeated dataset subfolder).
+    if dataset and not os.path.exists(os.path.join(df_dir, "alpha_results.csv")):
+        double_nested = os.path.join(results_dir, dataset, dataset, "dataframes")
+        if os.path.exists(os.path.join(double_nested, "alpha_results.csv")):
+            df_dir = double_nested
+    # Legacy results may have most files nested one level deeper (dataset/dataframes/dataset/)
+    # while icc_results.csv stays at the flat level. Detect and handle this split.
+    meta_dir = df_dir
+    if dataset and not os.path.exists(os.path.join(df_dir, "alpha_results.csv")):
+        nested = os.path.join(df_dir, dataset)
+        if os.path.exists(os.path.join(nested, "alpha_results.csv")):
+            meta_dir = nested
 
     icc_results = pd.read_csv(os.path.join(df_dir, "icc_results.csv"))
-    alpha_results = pd.read_csv(os.path.join(df_dir, "alpha_results.csv"))
-    mse_results = pd.read_csv(os.path.join(df_dir, "mse_results.csv"))
+    alpha_results = pd.read_csv(os.path.join(meta_dir, "alpha_results.csv"))
+    mse_results = pd.read_csv(os.path.join(meta_dir, "mse_results.csv"))
 
-    with open(os.path.join(df_dir, "axes.json")) as f:
+    with open(os.path.join(meta_dir, "axes.json")) as f:
         axes = json.load(f)
 
     icc_results_by_axis = {}
@@ -118,19 +130,19 @@ def load_results_dataframes(results_dir, dataset=None):
     mse_results_by_axis = {}
     for axis in axes:
         safe_axis = axis.replace("/", "-").replace("\\", "-").replace(" ", "_")
-        icc_path = os.path.join(df_dir, f"icc_by_axis_{safe_axis}.csv")
-        alpha_path = os.path.join(df_dir, f"alpha_by_axis_{safe_axis}.csv")
-        mse_path = os.path.join(df_dir, f"mse_by_axis_{safe_axis}.csv")
+        icc_path = os.path.join(meta_dir, f"icc_by_axis_{safe_axis}.csv")
+        alpha_path = os.path.join(meta_dir, f"alpha_by_axis_{safe_axis}.csv")
+        mse_path = os.path.join(meta_dir, f"mse_by_axis_{safe_axis}.csv")
         icc_results_by_axis[axis] = pd.read_csv(icc_path) if os.path.exists(icc_path) else pd.DataFrame()
         alpha_results_by_axis[axis] = pd.read_csv(alpha_path) if os.path.exists(alpha_path) else pd.DataFrame()
         mse_results_by_axis[axis] = pd.read_csv(mse_path) if os.path.exists(mse_path) else pd.DataFrame()
 
-    with open(os.path.join(df_dir, "reliability_metadata_all.json")) as f:
+    with open(os.path.join(meta_dir, "reliability_metadata_all.json")) as f:
         reliability_metadata_all = json.load(f)
-    with open(os.path.join(df_dir, "reliability_metadata_by_axis.json")) as f:
+    with open(os.path.join(meta_dir, "reliability_metadata_by_axis.json")) as f:
         reliability_metadata_by_axis = json.load(f)
 
-    print(f"Dataframes loaded from: {df_dir}")
+    print(f"Dataframes loaded from: {meta_dir}")
     return (icc_results, alpha_results, mse_results,
             icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
             reliability_metadata_all, reliability_metadata_by_axis)
@@ -684,6 +696,10 @@ def load_predictor_inputs(results_dir, dataset):
             config: Dict with keys 'comparison_mode' and 'ensemble_models'.
     """
     pred_dir = os.path.join(results_dir, dataset, "dataframes", "predictor_inputs")
+    if not os.path.exists(pred_dir):
+        nested_pred_dir = os.path.join(results_dir, dataset, dataset, "dataframes", "predictor_inputs")
+        if os.path.exists(nested_pred_dir):
+            pred_dir = nested_pred_dir
 
     with open(os.path.join(pred_dir, "predictor_config.json")) as f:
         config = json.load(f)
@@ -830,3 +846,115 @@ def plot_predictor_scatter(predictor_records, dataset, plots_dir):
             fig.savefig(filename, dpi=300)
             plt.close(fig)
             print(f"  Saved: {filename}")
+
+
+def plot_ms_budget_scatter(axis_jobs, im_df_builder, dataset, plots_dir,
+                            budgets=(10, 20, 30, 40, 50), n_samples=200, seed=123):
+    """
+    For each (axis, model) pair, scatter-plot im_msb+im_mse (x) vs hm_msb+hm_mse (y)
+    across random samples of text_ids, with one subplot per budget.
+
+    Each point represents one random draw of `budget` text_ids; the axes show the
+    mean-square components of model-model (IM) vs human-model (HM) annotations on
+    that draw.  A y=x reference line is drawn in red.
+
+    One figure is saved per (axis, model), with subplots for budgets [10,20,30,40,50].
+    Figures are saved into plots_dir/ms_budget_scatter/.
+
+    Args:
+        axis_jobs: List of (axis, axis_df) pairs.
+        im_df_builder: Callable(axis_df, model) -> im_full_df.
+        dataset: Dataset name for titles and filenames.
+        plots_dir: Base directory to save plots.
+        budgets: Sequence of sample sizes (default: (10, 20, 30, 40, 50)).
+        n_samples: Random draws per budget (default: 200).
+        seed: Random seed.
+    """
+    from src.utils.predictor_analysis import compute_ms_budget_samples
+
+    budgets = list(budgets)
+    n_budgets = len(budgets)
+
+    subdir = os.path.join(plots_dir, "ms_budget_scatter")
+    os.makedirs(subdir, exist_ok=True)
+
+    for axis, axis_df in axis_jobs:
+        models = [m for m in axis_df["model_name"].unique() if m != "original"]
+
+        for model in models:
+            im_full_df = im_df_builder(axis_df, model)
+            hm_full_df = axis_df[axis_df["model_name"].isin([model, "original"])]
+
+            print(f"  MS budget scatter: axis={axis}, model={model} ...")
+            budget_samples = compute_ms_budget_samples(
+                im_full_df, hm_full_df,
+                budgets=budgets, n_samples=n_samples, seed=seed,
+            )
+
+            safe_axis = str(axis).replace(" ", "_").replace("/", "-")
+            safe_model = model.replace(" ", "_").replace("/", "-")
+
+            component_configs = [
+                ("combined", "IM MSB+MSE\n(model-model)", "HM MSB+MSE\n(human-model)",
+                 "IM MSB+MSE vs HM MSB+MSE across random samples", "ms_budget_scatter"),
+                ("msb",      "IM MSB\n(model-model)",     "HM MSB\n(human-model)",
+                 "IM MSB vs HM MSB across random samples",         "msb_budget_scatter"),
+                ("mse",      "IM MSE\n(model-model)",     "HM MSE\n(human-model)",
+                 "IM MSE vs HM MSE across random samples",         "mse_budget_scatter"),
+            ]
+
+            budget_colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+                             "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
+
+            for comp_key, x_label, y_label, suptitle_suffix, file_suffix in component_configs:
+                fig, axes = plt.subplots(1, n_budgets,
+                                         figsize=(4 * n_budgets, 4),
+                                         squeeze=False)
+                ax_row = axes[0]
+
+                for i, (ax, budget) in enumerate(zip(ax_row, budgets)):
+                    pairs = budget_samples[budget][comp_key]
+                    color = budget_colors[i % len(budget_colors)]
+                    ax.set_title(f"Budget = {budget}", fontsize=10)
+                    ax.set_xlabel(x_label, fontsize=9)
+                    if i == 0:
+                        ax.set_ylabel(y_label, fontsize=9)
+
+                    if not pairs:
+                        ax.text(0.5, 0.5, "insufficient data",
+                                ha="center", va="center", transform=ax.transAxes)
+                        ax.grid(alpha=0.3)
+                        continue
+
+                    xs = [p[0] for p in pairs]
+                    ys = [p[1] for p in pairs]
+                    ax.scatter(xs, ys, alpha=0.4, edgecolors="none", s=20, color=color)
+
+                    lim_min = min(min(xs), min(ys))
+                    lim_max = max(max(xs), max(ys))
+                    ax.plot([lim_min, lim_max], [lim_min, lim_max],
+                            color="red", linestyle="--", linewidth=1, alpha=0.6)
+
+                    m, b = np.polyfit(xs, ys, 1)
+                    x_line = np.linspace(min(xs), max(xs), 100)
+                    ax.plot(x_line, m * x_line + b, color="black", linewidth=1.2, alpha=0.7)
+
+                    if len(pairs) >= 3:
+                        r = float(np.corrcoef(xs, ys)[0, 1])
+                        ax.text(0.05, 0.95, f"r={r:.2f}, slope={m:.2f}", transform=ax.transAxes,
+                                fontsize=8, va="top")
+
+                    ax.grid(alpha=0.3)
+
+                fig.suptitle(
+                    f"{dataset} | axis={axis} | model={model}\n{suptitle_suffix}",
+                    fontsize=10
+                )
+                fig.tight_layout()
+
+                filename = os.path.join(
+                    subdir, f"{dataset}_{safe_axis}_{safe_model}_{file_suffix}.jpg"
+                )
+                fig.savefig(filename, dpi=300)
+                plt.close(fig)
+                print(f"    Saved: {filename}")

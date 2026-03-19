@@ -32,7 +32,7 @@ import matplotlib.pyplot as plt
 # Make the project importable when run from the repo root or the scripts/ dir.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.utils.plotting import load_results_dataframes, load_predictor_inputs
+from src.utils.plotting import load_results_dataframes, load_predictor_inputs, plot_ms_budget_scatter
 from src.utils.predictor_analysis import compute_predictor_records, PREDICTOR_COMPARISON_METHODS
 
 
@@ -72,7 +72,7 @@ def _build_im_df(axis_df, model, ensemble_models, comparison_mode):
         return im_subset[im_subset["text_id"].isin(shared)]
 
 
-def _plot_predictor_scatter(df, output_dir):
+def _plot_predictor_scatter(df, output_dir, title_suffix="", filename_suffix=""):
     """Generate scatter plots with points coloured by dataset and shaped by model."""
     method_labels = {
         "variance_matched_combined":        "VM (combined)",
@@ -162,9 +162,11 @@ def _plot_predictor_scatter(df, output_dir):
                 ax.set_title(method_labels.get(method, method), fontsize=10)
 
                 if len(plot_df) >= 3:
-                    r = np.corrcoef(plot_df[gap_col].values,
-                                    plot_df[predictor_col].values)[0, 1]
-                    ax.text(0.05, 0.95, f"r={r:.2f}", transform=ax.transAxes,
+                    xs_pd = plot_df[gap_col].values
+                    ys_pd = plot_df[predictor_col].values
+                    r = np.corrcoef(xs_pd, ys_pd)[0, 1]
+                    slope = np.polyfit(xs_pd, ys_pd, 1)[0]
+                    ax.text(0.05, 0.95, f"r={r:.2f}, slope={slope:.2f}", transform=ax.transAxes,
                             fontsize=8, va="top")
 
                 ax.grid(alpha=0.3)
@@ -189,17 +191,65 @@ def _plot_predictor_scatter(df, output_dir):
                 bbox_to_anchor=(1.02, 1), borderaxespad=0,
             )
             fig.suptitle(
-                f"Predictor vs {metric_label} error gap ({predictor_col}) — all datasets",
+                f"Predictor vs {metric_label} error gap ({predictor_col}) — all datasets{title_suffix}",
                 fontsize=11
             )
             fig.tight_layout()
 
             filename = os.path.join(
-                output_dir, f"predictor_scatter_{metric_key}_{predictor_col}.jpg"
+                output_dir, f"predictor_scatter_{metric_key}_{predictor_col}{filename_suffix}.jpg"
             )
             fig.savefig(filename, dpi=300, bbox_inches="tight")
             plt.close(fig)
             print(f"  Saved: {filename}")
+
+
+def _plot_predictor_scatter_by_budget(df, output_dir):
+    """
+    For each budget found in the per-budget gap columns, create the same predictor
+    scatter plots as _plot_predictor_scatter but using only data for that budget.
+
+    Per-budget gap columns are expected to be named {metric}_gap_{method}_b{budget}.
+    Saves into output_dir/by_budget/.
+    """
+    import re
+    budget_pattern = re.compile(r"_b(\d+)$")
+
+    budgets = set()
+    for col in df.columns:
+        m = budget_pattern.search(col)
+        if m:
+            budgets.add(int(m.group(1)))
+    budgets = sorted(budgets)
+
+    if not budgets:
+        print("No per-budget gap columns found; skipping by-budget plots.")
+        return
+
+    budget_dir = os.path.join(output_dir, "by_budget")
+    os.makedirs(budget_dir, exist_ok=True)
+
+    meta_cols = [c for c in ["axis", "model", "dataset", "mean_shift", "correlation", "correlation_msb"]
+                 if c in df.columns]
+
+    for budget in budgets:
+        # Build a df with only this budget's gap columns, renamed to generic form
+        rename_map = {}
+        for col in df.columns:
+            m = budget_pattern.search(col)
+            if m and int(m.group(1)) == budget:
+                base = col[:col.rfind(f"_b{budget}")]
+                rename_map[col] = base
+
+        keep_cols = meta_cols + list(rename_map.keys())
+        budget_df = df[keep_cols].rename(columns=rename_map)
+
+        print(f"\n[Predictor scatter — budget={budget}]")
+        _plot_predictor_scatter(
+            budget_df, budget_dir,
+            title_suffix=f" (budget={budget})",
+            filename_suffix=f"_b{budget}",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +315,12 @@ def main():
         all_records.extend(records)
         print(f"  Collected {len(records)} (axis, model) records for {dataset}")
 
+        print(f"\n[MS budget scatter] {dataset}")
+        plot_ms_budget_scatter(
+            axis_jobs, im_df_builder, dataset, output_dir,
+            budgets=(10, 20, 30, 40, 50), n_samples=args.n_samples,
+        )
+
     if not all_records:
         print("\nNo predictor records found across any dataset. Exiting.")
         return
@@ -275,6 +331,7 @@ def main():
     print(f"\nSaved predictor_records.csv ({len(df)} rows) → {records_path}")
 
     _plot_predictor_scatter(df, output_dir)
+    _plot_predictor_scatter_by_budget(df, output_dir)
 
     print(f"\nDone. Plots saved to: {output_dir}")
 

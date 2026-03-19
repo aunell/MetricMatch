@@ -504,6 +504,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
     needs_plain = any(not imc for _, imc in [_parse_strategy(s) for s in strategy_variants])
 
     results = {s: {"icc_errors": [], "alpha_errors": [], "mse_errors": []} for s in strategy_variants}
+    results["baseline_hm_minus_mm_icc"] = {"icc_errors": [], "alpha_errors": [], "mse_errors": []}
 
     actual_trials = 1 if base_strategy == "max_expand" else n_trials
 
@@ -695,6 +696,14 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             if matched_metric in (None, "mse"):
                 if est_mse is not None and np.isfinite(est_mse) and true_mse is not None and np.isfinite(true_mse):
                     results[strategy]["mse_errors"].append(abs(est_mse - true_mse))
+
+        # ── Baseline: HM ICC - MM ICC ────────────────────────────────────────
+        if (plain_icc is not None and np.isfinite(plain_icc)
+                and true_im_icc is not None and np.isfinite(true_im_icc)):
+            baseline_est_icc = abs(true_im_icc - plain_icc)
+            results["baseline_hm_minus_mm_icc"]["icc_errors"].append(
+                min(2, abs(baseline_est_icc - true_icc))
+            )
 
     return results, new_im_msb_obs, new_im_mse_obs, new_hm_msb_obs, new_hm_mse_obs, updated_selected_per_trial
 
