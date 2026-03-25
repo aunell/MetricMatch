@@ -63,14 +63,18 @@ SAMPLING_STRATEGIES = [
     "random_imc",
     "variance_matched_combined",
     "variance_matched_combined_imc",
-    "variance_matched_combined_tc",
-    "variance_matched_combined_tc_imc",
+    # "variance_matched_combined_tc",
+    # "variance_matched_combined_tc_imc",
     "variance_matched_msb",
     "variance_matched_msb_imc",
-    "variance_matched_msb_tc",
-    "variance_matched_msb_tc_imc",
-    "proxy_oracle",
-    "proxy_oracle_imc",
+    # "variance_matched_msb_tc",
+    # "variance_matched_msb_tc_imc",
+    "variance_matched_weighted_.5",
+    "variance_matched_weighted_.5_imc",
+    "variance_matched_weighted_.7",
+    "variance_matched_weighted_.7_imc",
+    # "proxy_oracle",
+    # "proxy_oracle_imc",
     "oracle",
     "oracle_msb",
     "oracle_mse",
@@ -398,6 +402,14 @@ _SCORE_METHOD_MAP = {
     "variance_matched_mse": "mse_only",
     "variance_matched_combined": "combined",
     "variance_matched_combined_tc": "combined",   # same method; targets are bias-corrected
+    "variance_matched_weighted_.5": "weighted",
+    "variance_matched_weighted_.7": "weighted",
+}
+
+# MSB weight for each "weighted" strategy (MSE weight = 1 - msb_weight).
+_WEIGHTED_MSB_WEIGHTS = {
+    "variance_matched_weighted_.5": 0.5,
+    "variance_matched_weighted_.7": 0.7,
 }
 
 # Proxy oracle: uses IM scores for selection but targets true HM MSB/MSE.
@@ -572,7 +584,9 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             sampled_ids = variance_matched_selection_ms(
                 text_ids, k, im_full_df, effective_msb_target, effective_mse_target,
                 fast_ms_fn, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
-                score_method=_SCORE_METHOD_MAP[base_strategy], forced_ids=forced_ids
+                score_method=_SCORE_METHOD_MAP[base_strategy],
+                msb_weight=_WEIGHTED_MSB_WEIGHTS.get(base_strategy, 0.5),
+                forced_ids=forced_ids
             )
             if sampled_ids is None:
                 continue

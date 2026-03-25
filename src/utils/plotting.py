@@ -775,6 +775,10 @@ def plot_predictor_scatter(predictor_records, dataset, plots_dir):
         "metric_matched_icc":               "Metric (ICC)",
         "metric_matched_alpha":             "Metric (Alpha)",
         "metric_matched_mse":               "Metric (MSE)",
+        "variance_matched_weighted_.5":     "VM Weighted (.5/.5)",
+        "variance_matched_weighted_.5_imc": "VM Weighted (.5/.5)+IMC",
+        "variance_matched_weighted_.7":     "VM Weighted (.7/.3)",
+        "variance_matched_weighted_.7_imc": "VM Weighted (.7/.3)+IMC",
     }
 
     predictors = [
@@ -901,6 +905,8 @@ def plot_ms_budget_scatter(axis_jobs, im_df_builder, dataset, plots_dir,
                  "IM MSB vs HM MSB across random samples",         "msb_budget_scatter"),
                 ("mse",      "IM MSE\n(model-model)",     "HM MSE\n(human-model)",
                  "IM MSE vs HM MSE across random samples",         "mse_budget_scatter"),
+                ("icc",      "IM ICC\n(model-model)",     "HM ICC\n(human-model)",
+                 "IM ICC vs HM ICC across random samples",         "icc_budget_scatter"),
             ]
 
             budget_colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
@@ -941,8 +947,8 @@ def plot_ms_budget_scatter(axis_jobs, im_df_builder, dataset, plots_dir,
 
                     if len(pairs) >= 3:
                         r = float(np.corrcoef(xs, ys)[0, 1])
-                        ax.text(0.05, 0.95, f"r={r:.2f}, slope={m:.2f}", transform=ax.transAxes,
-                                fontsize=8, va="top")
+                        ax.text(0.05, 0.95, f"r={r:.2f}, slope={m:.2f}",
+                                transform=ax.transAxes, fontsize=8, va="top")
 
                     ax.grid(alpha=0.3)
 

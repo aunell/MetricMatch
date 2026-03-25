@@ -91,6 +91,10 @@ def _plot_predictor_scatter(df, output_dir, title_suffix="", filename_suffix="")
         "metric_matched_icc":               "Metric (ICC)",
         "metric_matched_alpha":             "Metric (Alpha)",
         "metric_matched_mse":               "Metric (MSE)",
+        "variance_matched_weighted_.5":     "VM Weighted (.5/.5)",
+        "variance_matched_weighted_.5_imc": "VM Weighted (.5/.5)+IMC",
+        "variance_matched_weighted_.7":     "VM Weighted (.7/.3)",
+        "variance_matched_weighted_.7_imc": "VM Weighted (.7/.3)+IMC",
     }
     predictors = [
         ("mean_shift",       "Mean Shift\n(im_msb+im_mse) − (hm_msb+hm_mse)"),

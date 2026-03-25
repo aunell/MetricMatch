@@ -331,7 +331,7 @@ def variance_matching(cheap_ratings, n_expensive, seed, epsilon=0.1, k=10):
 
 def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse_target,
                                    compute_ms_fn, seed=42, n_candidates=20, score_method="combined",
-                                   forced_ids=None):
+                                   msb_weight=0.5, forced_ids=None):
     """
     Select subset that best matches target inter-model variance using MS components.
 
@@ -352,6 +352,11 @@ def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse
             - "msb_only": score = abs(cand_msb - im_msb_target)
             - "mse_only": score = abs(cand_mse - im_mse_target)
             - "combined": score = abs(cand_msb - im_msb_target) + abs(cand_mse - im_mse_target)
+            - "weighted": score = msb_weight * |Δmsb|/msb_target + (1-msb_weight) * |Δmse|/mse_target
+                          Normalizes each component by its target to account for scale differences
+                          between MSB (larger) and MSE (smaller). Use msb_weight to control emphasis.
+        msb_weight: Weight on the MSB term for score_method="weighted" (default: 0.5 = equal).
+                    The MSE term receives weight (1 - msb_weight). Ignored for other score methods.
         forced_ids: IDs that must be included in the selection (ONLINE_ACQUISITION mode only —
                     these are IDs already annotated at a prior budget level). Only the
                     incremental IDs needed to reach k are sampled from the remaining pool.
@@ -393,6 +398,12 @@ def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse
             score = abs(cand_msb - im_msb_target)
         elif score_method == "mse_only":
             score = abs(cand_mse - im_mse_target)
+        elif score_method == "weighted":
+            dmsb = (abs(cand_msb - im_msb_target) / im_msb_target
+                    if im_msb_target != 0 else abs(cand_msb - im_msb_target))
+            dmse = (abs(cand_mse - im_mse_target) / im_mse_target
+                    if im_mse_target != 0 else abs(cand_mse - im_mse_target))
+            score = msb_weight * dmsb + (1.0 - msb_weight) * dmse
         else:  # "combined" (default)
             score = abs(cand_msb - im_msb_target) + abs(cand_mse - im_mse_target)
 

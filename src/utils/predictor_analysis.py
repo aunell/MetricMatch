@@ -31,6 +31,10 @@ PREDICTOR_COMPARISON_METHODS = [
     "variance_matched_msb_imc",
     "variance_matched_msb_tc",
     "variance_matched_msb_tc_imc",
+    "variance_matched_weighted_.5",
+    "variance_matched_weighted_.5_imc",
+    "variance_matched_weighted_.7",
+    "variance_matched_weighted_.7_imc",
 ]
 
 
@@ -128,7 +132,7 @@ def compute_ms_budget_samples(im_full_df, hm_full_df,
             results[budget] = []
             continue
 
-        combined, msb_only, mse_only = [], [], []
+        combined, msb_only, mse_only, icc_pairs = [], [], [], []
         for _ in range(n_samples):
             sample_ids = rng.choice(shared_ids, size=budget, replace=False)
 
@@ -148,7 +152,12 @@ def compute_ms_budget_samples(im_full_df, hm_full_df,
             if np.isfinite(im_ms.mse) and np.isfinite(hm_ms.mse):
                 mse_only.append((im_ms.mse, hm_ms.mse))
 
-        results[budget] = {"combined": combined, "msb": msb_only, "mse": mse_only}
+            if (hasattr(im_ms, "icc") and hasattr(hm_ms, "icc")
+                    and np.isfinite(im_ms.icc) and np.isfinite(hm_ms.icc)):
+                icc_pairs.append((im_ms.icc, hm_ms.icc))
+
+        results[budget] = {"combined": combined, "msb": msb_only, "mse": mse_only,
+                           "icc": icc_pairs}
 
     return results
 
