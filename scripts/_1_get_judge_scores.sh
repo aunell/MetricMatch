@@ -1,11 +1,11 @@
 #!/bin/bash
 #
-#SBATCH --job-name=medval_gemma
+#SBATCH --job-name=dsummeval
 #SBATCH --partition=nigam-h100
 #SBATCH --nodelist=secure-gpu-14
 #SBATCH --gres=gpu:1
 #SBATCH --mem=100G
-#SBATCH --time=12:00:00
+#SBATCH --time=36:00:00
 #SBATCH --ntasks=1
 
 # ==============================================================================
@@ -38,6 +38,9 @@ DATASET="summeval"
 # MODEL_NAME="meta-llama/Llama-3.1-8B-Instruct"
 # MODEL_NAME="meta-llama/Llama-3.1-70B-Instruct"
 
+# Llama models (azure)
+# MODEL_NAME="llama-3-3-70b-instruct"
+
 # Qwen models (use full HuggingFace path):
 # MODEL_NAME="Qwen/Qwen2.5-7B-Instruct"
 
@@ -45,7 +48,11 @@ DATASET="summeval"
 # MODEL_NAME="google/gemma-3-1b-it"
 
 # Gemini models:
-MODEL_NAME="gemini-2.5-pro"
+# MODEL_NAME="gemini-2.5-pro"
+
+# Deepseek
+
+MODEL_NAME="deepseek-r1"
 
 # ==============================================================================
 # AUTO-CONFIGURATION (Do not edit below this line)
@@ -64,9 +71,10 @@ elif [[ "$MODEL_NAME" == *"gemma"* ]] || [[ "$MODEL_NAME" == *"Gemma"* ]]; then
     JUDGE_MODEL="gemma"
 elif [[ "$MODEL_NAME" == *"gemini"* ]] || [[ "$MODEL_NAME" == *"Gemini"* ]]; then
     JUDGE_MODEL="gemini"
+elif [[ "$MODEL_NAME" == *"deepseek"* ]] || [[ "$MODEL_NAME" == *"Deepseek"* ]]; then
+    JUDGE_MODEL="deepseek"
 else
     echo "ERROR: Could not infer judge model type from MODEL_NAME: $MODEL_NAME"
-    exit 1
 fi
 
 # Replace / with - for file paths (for HuggingFace model names)
@@ -83,7 +91,7 @@ echo "Using model name: ${MODEL_NAME}"
 echo "Using safe model name for files: ${MODEL_NAME_SAFE}"
 python src/experiments/_1_get_judge_scores.py \
     --output_file "data/judge_scores/${DATASET}/results_${DATASET}_${MODEL_NAME_SAFE}.json" \
-    --sample_size 350 \
+    --sample_size 450 \
     --dataset "$DATASET" \
     --judge_model "$JUDGE_MODEL" \
     --model_name "$MODEL_NAME"

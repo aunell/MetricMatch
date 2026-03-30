@@ -5,12 +5,11 @@ from typing import Dict, Any, List
 import signal
 import argparse
 from datetime import datetime
-import pandas as pd
 
 # Add the src directory to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from utils.api_support_functions import completion_with_backoff, completion_with_backoff_anthropic, completion_with_backoff_llama, completion_with_backoff_qwen, completion_with_backoff_gemma, completion_with_backoff_gemini
+from utils.api_support_functions import completion_with_backoff, completion_with_backoff_anthropic, completion_with_backoff_llama, completion_with_backoff_llama33, completion_with_backoff_qwen, completion_with_backoff_gemma, completion_with_backoff_gemini, completion_with_backoff_deepseek
 from dataset_classes.summ_eval import SummevalDataset
 from dataset_classes.hanna import HannaDataset
 from dataset_classes.mslr import MSLRDataset
@@ -31,6 +30,8 @@ MODEL_LISTS = {
         {'judge_model': 'openai', 'model_name': 'gpt-5'},
         {'judge_model': 'anthropic', 'model_name': 'claude-3-5-sonnet'},
         {'judge_model': 'gemini', 'model_name': 'gemini-2.5-pro'},
+        {'judge_model': 'llama', 'model_name': 'llama-3-3-70b-instruct'},
+        {'judge_model': 'deepseek', 'model_name': 'deepseek-r1'},
     ],
     'openai_models': [
         {'judge_model': 'openai', 'model_name': 'gpt-4o'},
@@ -84,15 +85,26 @@ def evaluate_text(prompt_text: str, judge_model="openai", model_name="gpt-4o", t
             return None
 
     elif judge_model == "llama":
-        response = completion_with_backoff_llama(
-        messages=[
-            {"role": "system", "content": f"You are an AI assistant tasked with evaluating text."},
-            {"role": "user", "content": prompt_text}
-        ],
-        max_tokens=1000,
-        temperature=temperature,
-        model_name=model_name,
-    )
+        if "llama-3-3-70b" in model_name.lower():
+            # Llama 3.3 70B Instruct is served via its own Stanford Healthcare endpoint
+            response = completion_with_backoff_llama33(
+                messages=[
+                    {"role": "system", "content": f"You are an AI assistant tasked with evaluating text."},
+                    {"role": "user", "content": prompt_text}
+                ],
+                max_tokens=1000,
+                temperature=temperature,
+            )
+        else:
+            response = completion_with_backoff_llama(
+                messages=[
+                    {"role": "system", "content": f"You are an AI assistant tasked with evaluating text."},
+                    {"role": "user", "content": prompt_text}
+                ],
+                max_tokens=1000,
+                temperature=temperature,
+                model_name=model_name,
+            )
         try:
             evaluation = json.loads(response['choices'][0]['message']['content'])
             return evaluation
@@ -184,6 +196,38 @@ def evaluate_text(prompt_text: str, judge_model="openai", model_name="gpt-4o", t
             print("Raw response:")
             print(response)
             return None
+    elif judge_model == "deepseek":
+        response = completion_with_backoff_deepseek(
+            messages=[
+                {"role": "system", "content": f"You are an AI assistant tasked with evaluating text."},
+                {"role": "user", "content": prompt_text}
+            ],
+            max_tokens=1000,
+            temperature=temperature,
+            model_name=model_name,
+        )
+        try:
+            content = response['choices'][0]['message']['content']
+            # Strip <think>...</think> reasoning block
+            if '<think>' in content and '</think>' in content:
+                content = content[content.find('</think>') + len('</think>'):].strip()
+            # Extract JSON from markdown code block if present
+            if '```json' in content:
+                json_start = content.find('```json') + 7
+                json_end = content.find('```', json_start)
+                content = content[json_start:json_end].strip()
+            elif '```' in content:
+                json_start = content.find('```') + 3
+                json_end = content.find('```', json_start)
+                content = content[json_start:json_end].strip()
+            evaluation = json.loads(content)
+            return evaluation
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            print(f"Error parsing LLM response: {e}")
+            print("Raw response:")
+            print(response)
+            return None
+
     else:
         raise ValueError(f"Invalid judge model: {judge_model}")
 
@@ -230,6 +274,7 @@ def judge_pipeline(results, dataset_obj, processed_ids, output_file, dimension=N
     """
     print(f"Processing {len(dataset_obj.get_data_and_prompts())} texts")
     data_and_prompts = dataset_obj.get_data_and_prompts()
+    failures = []
     for idx, data_row in data_and_prompts.iterrows():
         if data_row["text_id"] in processed_ids:
             print(f"Text {data_row['text_id']} already processed. Skipping.")
@@ -259,50 +304,19 @@ def judge_pipeline(results, dataset_obj, processed_ids, output_file, dimension=N
                         "score_differences": score_diffs,
                         "detailed_results": results
                     }, f, indent=2)
+            else:
+                failures.append({"text_id": data_row["text_id"], "dimension": dimension, "reason": "parse_error"})
 
             signal.alarm(0)  # Reset the alarm
 
         except TimeoutError:
             print(f"Evaluation timed out for text {idx}")
+            failures.append({"text_id": data_row["text_id"], "dimension": dimension, "reason": "timeout"})
         except Exception as e:
             print(f"Error processing text {idx}: {str(e)}")
-    return results
+            failures.append({"text_id": data_row["text_id"], "dimension": dimension, "reason": f"exception: {str(e)}"})
+    return results, failures
 
-def results_to_dataframe(results: List[Dict[str, Any]], dimension: str, dataset: str, judge_model: str, model_name: str, temperature: float) -> pd.DataFrame:
-    """
-    Convert results list to a pandas DataFrame for easier analysis and visualization.
-    """
-    df_data = []
-    for result in results:
-        try:
-            # Extract evaluation score
-            evaluation = result.get('evaluation', {})
-            if isinstance(evaluation, str):
-                evaluation = json.loads(evaluation)
-
-            try:
-                model_score = evaluation['evaluation']['score']
-            except (KeyError, TypeError):
-                model_score = evaluation.get('score')
-
-            row = {
-                'text_id': result.get('text_id'),
-                'dimension': dimension,
-                'dataset': dataset,
-                'judge_model': judge_model,
-                'model_name': model_name,
-                'temperature': temperature,
-                'human_score': result.get('original_score'),
-                'model_score': model_score,
-                'score_difference': result.get('score_difference'),
-                'absolute_difference': abs(result.get('score_difference', 0)) if result.get('score_difference') is not None else None,
-            }
-            df_data.append(row)
-        except Exception as e:
-            print(f"Error converting result to dataframe row: {e}")
-            continue
-
-    return pd.DataFrame(df_data)
 
 def print_results(results, output_file):
     """
@@ -334,11 +348,16 @@ def main():
         random.seed(args.seed)
         np.random.seed(args.seed)
 
-    # Create date-stamped results folder
+    # Create date-stamped results folder (for metadata and failures only)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     results_dir = f"results_{timestamp}"
     os.makedirs(results_dir, exist_ok=True)
-    print(f"Results will be saved to: {results_dir}/")
+    print(f"Run artifacts will be saved to: {results_dir}/")
+
+    # Output directory for judge score JSON files
+    scores_dir = os.path.dirname(args.output_file)
+    os.makedirs(scores_dir, exist_ok=True)
+    print(f"Judge scores will be saved to: {scores_dir}/")
 
     # Save experiment metadata
     metadata = {
@@ -371,55 +390,39 @@ def main():
     # Get dimensions to evaluate
     dimensions = [args.dimension] if args.dimension else dataset_class(None, None).get_available_dimensions()
 
-    # Track all results across dimensions for combined CSV
-    all_dimension_dfs = []
     temperature = args.temperature if args.temperature is not None else 0.2
+    base_filename = os.path.basename(args.output_file).replace('.json', '')
+    all_failures = []
 
     for dimension in dimensions:
         # Create dataset object for this dimension
         dataset_obj = dataset_class(dimension, args.sample_size)
 
-        # Modify output file path to include dimension and save in results folder
-        base_filename = os.path.basename(args.output_file).replace('.json', '')
-        dimension_output_file = os.path.join(results_dir, f'{base_filename}_{dimension}.json')
+        dimension_output_file = os.path.join(scores_dir, f'{base_filename}_{dimension}.json')
 
         results = []
         processed_ids = set()
         if os.path.exists(dimension_output_file):
-            with open(dimension_output_file, 'r') as f:
-                existing_results = json.load(f)
-            results = existing_results.get('detailed_results', [])
-            processed_ids = set(result.get('text_id') for result in results)
-        
+            try:
+                with open(dimension_output_file, 'r') as f:
+                    existing_results = json.load(f)
+                results = existing_results.get('detailed_results', [])
+                processed_ids = set(result.get('text_id') for result in results)
+            except (json.JSONDecodeError, ValueError) as e:
+                print(f"Warning: could not load existing results from {dimension_output_file} ({e}). Starting fresh.")
+                results = []
+                processed_ids = set()
+
         signal.signal(signal.SIGALRM, timeout_handler)
-        results = judge_pipeline(results, dataset_obj, processed_ids, dimension_output_file, dimension, judge_model=args.judge_model, model_name=args.model_name, temperature=temperature)
+        results, failures = judge_pipeline(results, dataset_obj, processed_ids, dimension_output_file, dimension, judge_model=args.judge_model, model_name=args.model_name, temperature=temperature)
         print_results(results, dimension_output_file)
+        all_failures.extend(failures)
 
-        # Convert results to DataFrame and save as CSV
-        df = results_to_dataframe(results, dimension, args.dataset, args.judge_model, args.model_name, temperature)
-        csv_filename = os.path.join(results_dir, f'{base_filename}_{dimension}.csv')
-        df.to_csv(csv_filename, index=False)
-        print(f"CSV saved to: {csv_filename}")
-
-        # Add to combined results
-        all_dimension_dfs.append(df)
-
-    # Create combined CSV with all dimensions
-    if all_dimension_dfs:
-        combined_df = pd.concat(all_dimension_dfs, ignore_index=True)
-        combined_csv_filename = os.path.join(results_dir, f'{base_filename}_all_dimensions.csv')
-        combined_df.to_csv(combined_csv_filename, index=False)
-        print(f"\nCombined CSV saved to: {combined_csv_filename}")
-        print(f"Total evaluations across all dimensions: {len(combined_df)}")
-
-        # Print summary statistics
-        print("\n=== Summary Statistics ===")
-        summary = combined_df.groupby('dimension').agg({
-            'score_difference': ['mean', 'std'],
-            'absolute_difference': ['mean', 'std'],
-            'text_id': 'count'
-        }).round(3)
-        print(summary)
+    # Save failures to the timestamped results folder
+    failures_file = os.path.join(results_dir, 'failures.json')
+    with open(failures_file, 'w') as f:
+        json.dump(all_failures, f, indent=2)
+    print(f"\nFailures ({len(all_failures)} total) saved to: {failures_file}")
 
 if __name__ == "__main__":
     main()

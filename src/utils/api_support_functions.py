@@ -391,6 +391,102 @@ def completion_with_backoff_gemini(**kwargs) -> Dict[str, Any]:
                 return {}
             time.sleep(10)
 
+DEEPSEEK_API_URL = "https://apim.stanfordhealthcare.org/deepseekr1/v1/chat/completions"
+DEEPSEEK_MODEL = "deepseek-r1"
+
+def completion_with_backoff_deepseek(**kwargs) -> Dict[str, Any]:
+    """Completion function for DeepSeek R1 via Stanford Healthcare API."""
+    retry_count = 0
+    while True:
+        retry_count += 1
+        try:
+            headers = {
+                "Ocp-Apim-Subscription-Key": OPENAI_API_KEY,
+                "Content-Type": 'application/json'
+            }
+            model_name = kwargs.get('model_name', DEEPSEEK_MODEL)
+            data = {
+                "model": model_name,
+                "messages": kwargs['messages'],
+                "max_tokens": kwargs.get('max_tokens', 1000),
+                "temperature": kwargs.get('temperature', 0.7)
+            }
+            response = requests.post(DEEPSEEK_API_URL, headers=headers, json=data)
+            try:
+                response.raise_for_status()
+            except requests.exceptions.HTTPError as http_err:
+                print(f"HTTP error occurred: {http_err}")
+                print(f"Response text: {response.text}")
+                if response.status_code == 400:
+                    print("400 error encountered. Skipping this prompt.")
+                    return None
+                if response.status_code == 429:
+                    print("429 Rate limit hit. Retrying after delay.")
+                    time.sleep(10)
+                    continue
+                if retry_count > 3:
+                    return {}
+                time.sleep(10)
+                continue
+            return response.json()
+        except requests.exceptions.RequestException as error:
+            print(f"Error: {error}")
+            if hasattr(error, 'response') and error.response is not None:
+                print("Response text:", error.response.text)
+                if getattr(error.response, 'status_code', None) == 400:
+                    print("400 error encountered. Skipping this prompt.")
+                    return None
+            if retry_count > 3:
+                return {}
+            time.sleep(10)
+
+
+def completion_with_backoff_llama33(**kwargs) -> Dict[str, Any]:
+    """Completion function for Llama 3.3 70B Instruct via Stanford Healthcare API."""
+    retry_count = 0
+    while True:
+        retry_count += 1
+        try:
+            url = f"https://aihubapi.stanfordhealthcare.org/azure-openai/deployments/llama-3-3-70b-instruct/chat/completions?api-version={API_VERSION}"
+            headers = {
+                "Ocp-Apim-Subscription-Key": OPENAI_API_KEY,
+                "Content-Type": 'application/json'
+            }
+            data = {
+                "messages": kwargs['messages'],
+                "max_tokens": kwargs.get('max_tokens', 1000),
+                "temperature": kwargs.get('temperature', 0.7)
+            }
+            response = requests.post(url, headers=headers, json=data)
+            try:
+                response.raise_for_status()
+            except requests.exceptions.HTTPError as http_err:
+                print(f"HTTP error occurred: {http_err}")
+                print(f"Response text: {response.text}")
+                if response.status_code == 400:
+                    print("400 error encountered. Skipping this prompt.")
+                    return None
+                if response.status_code == 429:
+                    print("429 Rate limit hit. Retrying after delay.")
+                    time.sleep(10)
+                    continue
+                if retry_count > 3:
+                    return {}
+                time.sleep(10)
+                continue
+            return response.json()
+        except requests.exceptions.RequestException as error:
+            print(f"Error: {error}")
+            if hasattr(error, 'response') and error.response is not None:
+                print("Response text:", error.response.text)
+                if getattr(error.response, 'status_code', None) == 400:
+                    print("400 error encountered. Skipping this prompt.")
+                    return None
+            if retry_count > 3:
+                return {}
+            time.sleep(10)
+
+
 def completion_with_backoff(**kwargs) -> Dict[str, Any]:
     retry_count = 0
     model_name = kwargs.get('model_name', 'gpt-4o')  # Default to gpt-4o if not specified

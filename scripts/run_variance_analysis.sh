@@ -18,6 +18,9 @@
 #   --target-models M1 M2   Models to evaluate independently (default: same as --model-names)
 #   --ensemble-models E1    Models used for variance matching / IMC (default: same as --model-names;
 #                           each target is automatically excluded from its own ensemble)
+#   --step-size N           Step size for annotation budget levels (default: 5).
+#                           E.g. --step-size 1 tests every budget [5,6,7,...,max-budget].
+#   --max-budget N          Maximum annotation budget to evaluate (default: 50).
 #
 # Examples:
 #
@@ -38,14 +41,16 @@ set -e  # Exit on error
 N_BOOTSTRAP=100
 N_CANDIDATES=20
 TOTAL_ANNOTATIONS=300
-PLOTS_DIR="results/03_19_weighted_matching"
+PLOTS_DIR="results/03_30_deepseek_gemini"
 DATA_DIR="data/judge_scores"
 COMPARISON_MODE="pairwise_average"
 ONLINE_ACQUISITION=true  # true → cumulative/incremental selection; false → batch selection
+STEP_SIZE=5              # step size for annotation budget levels (e.g. 1, 5, 10)
+MAX_BUDGET=50            # maximum annotation budget to evaluate
 DATASETS=("medval" "summeval" "mslr" "hanna") #("hanna" "medval" "mslr" "summeval")
-MODEL_NAMES=("claude-3.5-sonnet" "gpt-4.1" "gpt-5" )
+MODEL_NAMES=("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro")
 # MODEL_NAMES=("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")
-TARGET_MODELS=()    #("claude-3.5-sonnet" "gpt-4.1" "gpt-5")  # empty = use MODEL_NAMES
+TARGET_MODELS=() #("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro")  # empty = use MODEL_NAMES
 ENSEMBLE_MODELS=() #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")  # empty = use MODEL_NAMES
 
 # Parse command-line arguments
@@ -82,6 +87,14 @@ while [[ $# -gt 0 ]]; do
     --no-online-acquisition)
       ONLINE_ACQUISITION=false
       shift
+      ;;
+    --step-size)
+      STEP_SIZE="$2"
+      shift 2
+      ;;
+    --max-budget)
+      MAX_BUDGET="$2"
+      shift 2
       ;;
     --datasets)
       DATASETS=()
@@ -137,6 +150,8 @@ echo "PLOTS_DIR:          $PLOTS_DIR"
 echo "DATA_DIR:           $DATA_DIR"
 echo "COMPARISON_MODE:    $COMPARISON_MODE"
 echo "ONLINE_ACQUISITION: $ONLINE_ACQUISITION"
+echo "STEP_SIZE:          $STEP_SIZE"
+echo "MAX_BUDGET:         $MAX_BUDGET"
 echo "DATASETS:           ${DATASETS[*]}"
 echo "MODEL_NAMES:        ${MODEL_NAMES[*]}"
 echo "TARGET_MODELS:      ${TARGET_MODELS[*]:-<same as MODEL_NAMES>}"
@@ -160,6 +175,8 @@ if [ "$ONLINE_ACQUISITION" = "true" ]; then
 else
   EXTRA_ARGS+=(--no-online-acquisition)
 fi
+EXTRA_ARGS+=(--step-size "$STEP_SIZE")
+EXTRA_ARGS+=(--max-budget "$MAX_BUDGET")
 
 # Loop through datasets — submit each as its own sbatch job
 for dataset in "${DATASETS[@]}"; do

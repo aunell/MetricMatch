@@ -51,6 +51,8 @@ DEFAULT_COMPARISON_MODE = "average_pairwise"
 # ONLINE_ACQUISITION=False → batch selection: each budget level independently samples k
 #                            items from scratch without any carryover.
 DEFAULT_ONLINE_ACQUISITION = True
+DEFAULT_STEP_SIZE = 5
+DEFAULT_MAX_BUDGET = 50
 
 # Sampling strategies to compare
 # Variance matching methods: "variance_matched_msb", "variance_matched_mse", "variance_matched_combined"
@@ -60,24 +62,31 @@ DEFAULT_ONLINE_ACQUISITION = True
 #               "_tc" and "_imc" can be combined (e.g. "variance_matched_combined_tc_imc").
 SAMPLING_STRATEGIES = [
     "random",
-    "random_imc",
+    # "random_imc",
     "variance_matched_combined",
-    "variance_matched_combined_imc",
+    # "variance_matched_combined_imc",
     # "variance_matched_combined_tc",
     # "variance_matched_combined_tc_imc",
     "variance_matched_msb",
-    "variance_matched_msb_imc",
+    # "variance_matched_msb_imc",
     # "variance_matched_msb_tc",
     # "variance_matched_msb_tc_imc",
+    "variance_matched_weighted_.2",
+    # "variance_matched_weighted_.2_imc",
     "variance_matched_weighted_.5",
-    "variance_matched_weighted_.5_imc",
+    # "variance_matched_weighted_.5_imc",
     "variance_matched_weighted_.7",
-    "variance_matched_weighted_.7_imc",
+    # "variance_matched_weighted_.7_imc",
+    "variance_matched_weighted_.9",
+    # "variance_matched_weighted_.9_imc",
     # "proxy_oracle",
     # "proxy_oracle_imc",
-    "oracle",
+    "oracle_msb_mse",
     "oracle_msb",
     "oracle_mse",
+    "oracle_icc",
+    "oracle_alpha",
+    "oracle_mean_squared_error",
     "metric_matched_icc",
     "metric_matched_alpha",
     "metric_matched_mse",
@@ -151,6 +160,16 @@ def parse_args():
              "to larger budgets (online/incremental). If False, each budget level independently "
              "samples k items from scratch (batch selection)."
     )
+    parser.add_argument(
+        "--step-size", type=int, default=DEFAULT_STEP_SIZE,
+        help=f"Step size for annotation budget levels (default: {DEFAULT_STEP_SIZE}). "
+             "E.g. 5 → budgets [5, 10, 15, ...], 1 → budgets [5, 6, 7, ...]."
+    )
+    parser.add_argument(
+        "--max-budget", type=int, default=DEFAULT_MAX_BUDGET,
+        help=f"Maximum annotation budget to evaluate (default: {DEFAULT_MAX_BUDGET}). "
+             "Budgets are tested from 5 to this value in steps of --step-size."
+    )
     return parser.parse_args()
 
 
@@ -172,6 +191,8 @@ DATA_DIR = args.data_dir
 PLOTS_DIR = args.plots_dir
 COMPARISON_MODE = args.comparison_mode
 ONLINE_ACQUISITION = args.online_acquisition
+STEP_SIZE = args.step_size
+MAX_BUDGET = args.max_budget
 
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
@@ -402,14 +423,18 @@ _SCORE_METHOD_MAP = {
     "variance_matched_mse": "mse_only",
     "variance_matched_combined": "combined",
     "variance_matched_combined_tc": "combined",   # same method; targets are bias-corrected
+    "variance_matched_weighted_.2": "weighted",
     "variance_matched_weighted_.5": "weighted",
     "variance_matched_weighted_.7": "weighted",
+    "variance_matched_weighted_.9": "weighted",
 }
 
 # MSB weight for each "weighted" strategy (MSE weight = 1 - msb_weight).
 _WEIGHTED_MSB_WEIGHTS = {
+    "variance_matched_weighted_.2": 0.2,
     "variance_matched_weighted_.5": 0.5,
     "variance_matched_weighted_.7": 0.7,
+    "variance_matched_weighted_.9": 0.9,
 }
 
 # Proxy oracle: uses IM scores for selection but targets true HM MSB/MSE.
@@ -418,15 +443,26 @@ _PROXY_ORACLE_BASES = {"proxy_oracle"}
 
 # True oracle: uses HM scores directly for both scoring and targeting.
 # Upper bound — requires all human annotations at selection time.
-# oracle       – matches combined MSB+MSE
-# oracle_msb   – matches MSB only
-# oracle_mse   – matches MSE only
-_ORACLE_BASES = {"oracle", "oracle_msb", "oracle_mse"}
+# oracle_msb_mse – matches combined MSB+MSE
+# oracle_msb     – matches MSB only
+# oracle_mse     – matches MSE only
+_ORACLE_BASES = {"oracle_msb_mse", "oracle_msb", "oracle_mse"}
 
 _ORACLE_SCORE_METHOD = {
-    "oracle": "combined",
+    "oracle_msb_mse": "combined",
     "oracle_msb": "msb_only",
     "oracle_mse": "mse_only",
+}
+
+# True oracle for target metric: uses HM scores for both scoring and targeting.
+# Each strategy matches on its respective metric — upper bound for that metric's estimation.
+# oracle_icc                – matches on ICC
+# oracle_alpha              – matches on Krippendorff's alpha
+# oracle_mean_squared_error – matches on MSE (the estimation target, not the ANOVA component)
+_ORACLE_TARGET_BASES = {
+    "oracle_icc":                ("icc",   "true_icc"),
+    "oracle_alpha":              ("alpha", "true_alpha"),
+    "oracle_mean_squared_error": ("mse",   "true_mse"),
 }
 
 # Base strategy names that apply adaptive bias correction to the MSB/MSE selection
@@ -437,9 +473,12 @@ _TARGET_BC_BASES = {"variance_matched_combined_tc", "variance_matched_msb_tc"}
 # Maps metric-matched base strategy names to the single metric they should report errors for.
 # Strategies not in this map report errors for all metrics.
 _METRIC_MATCH_TARGET = {
-    "metric_matched_icc": "icc",
-    "metric_matched_alpha": "alpha",
-    "metric_matched_mse": "mse",
+    "metric_matched_icc":        "icc",
+    "metric_matched_alpha":      "alpha",
+    "metric_matched_mse":        "mse",
+    "oracle_icc":                "icc",
+    "oracle_alpha":              "alpha",
+    "oracle_mean_squared_error": "mse",
 }
 
 
@@ -516,7 +555,6 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
     needs_plain = any(not imc for _, imc in [_parse_strategy(s) for s in strategy_variants])
 
     results = {s: {"icc_errors": [], "alpha_errors": [], "mse_errors": []} for s in strategy_variants}
-    results["baseline_hm_minus_mm_icc"] = {"icc_errors": [], "alpha_errors": [], "mse_errors": []}
 
     actual_trials = 1 if base_strategy == "max_expand" else n_trials
 
@@ -630,12 +668,25 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             if sampled_ids is None:
                 continue
         elif base_strategy in _ORACLE_BASES:
-            # True oracle: uses HM scores for both scoring and targeting.
+            # True oracle (MSB/MSE): uses HM scores for both scoring and targeting.
             # Upper bound — requires all human annotations at selection time.
             sampled_ids = variance_matched_selection_ms(
                 text_ids, k, hm_full_df, hm_msb_target, hm_mse_target,
                 fast_ms_fn, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
                 score_method=_ORACLE_SCORE_METHOD[base_strategy], forced_ids=forced_ids
+            )
+            if sampled_ids is None:
+                continue
+        elif base_strategy in _ORACLE_TARGET_BASES:
+            # True oracle for target metric: uses HM scores for both scoring and targeting.
+            target_metric, target_attr = _ORACLE_TARGET_BASES[base_strategy]
+            target_val = {"true_icc": true_icc, "true_alpha": true_alpha,
+                          "true_mse": true_mse}[target_attr]
+            sampled_ids = metric_matched_selection(
+                text_ids, k, hm_full_df, target_val, target_metric,
+                fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
+                im_models=[model, "original"], forced_ids=forced_ids
             )
             if sampled_ids is None:
                 continue
@@ -710,14 +761,6 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             if matched_metric in (None, "mse"):
                 if est_mse is not None and np.isfinite(est_mse) and true_mse is not None and np.isfinite(true_mse):
                     results[strategy]["mse_errors"].append(abs(est_mse - true_mse))
-
-        # ── Baseline: HM ICC - MM ICC ────────────────────────────────────────
-        if (plain_icc is not None and np.isfinite(plain_icc)
-                and true_im_icc is not None and np.isfinite(true_im_icc)):
-            baseline_est_icc = abs(true_im_icc - plain_icc)
-            results["baseline_hm_minus_mm_icc"]["icc_errors"].append(
-                min(2, abs(baseline_est_icc - true_icc))
-            )
 
     return results, new_im_msb_obs, new_im_mse_obs, new_hm_msb_obs, new_hm_mse_obs, updated_selected_per_trial
 
@@ -879,6 +922,7 @@ def _run_axis_worker(args):
     )
     axis_icc, axis_alpha, axis_mse, axis_metadata = evaluate_reliability_estimators(
         axis_df, target_models, ensemble_models, axis_per_model_variance,
+        budgets=range(5, MAX_BUDGET + 1, STEP_SIZE),
         online_acquisition=ONLINE_ACQUISITION
     )
     return axis, axis_icc, axis_alpha, axis_mse, axis_metadata, axis_per_model_variance

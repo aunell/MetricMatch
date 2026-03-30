@@ -7,7 +7,7 @@ more dataset run directories, computes predictor records, and generates
 scatter plots with all datasets combined (points coloured by dataset).
 
 Usage:
-    python scripts/run_predictor_scatter.py \
+    python src/experiments/predictor_scatter.py \
         --results-dir results/03_13 \
         --datasets medval summeval hanna mslr \
         --output-dir results/03_13/predictor_scatter
@@ -29,16 +29,52 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# Make the project importable when run from the repo root or the scripts/ dir.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from src.utils.plotting import load_results_dataframes, load_predictor_inputs, plot_ms_budget_scatter
 from src.utils.predictor_analysis import compute_predictor_records, PREDICTOR_COMPARISON_METHODS
+from src.experiments.meta_correlation_analysis import run as run_meta_correlation_analysis
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _compute_pairwise_im_stats(axis_df, target_model, ensemble_models):
+    """
+    For each other model in ensemble_models, compute MSB/MSE/ICC on the
+    (target_model, other_model) pair, then return the average across pairs.
+
+    Returns dict with keys im_msb, im_mse, im_icc.
+    """
+    from src.utils.reliability_metrics import compute_ms_components
+
+    other_models = [m for m in ensemble_models if m != target_model]
+    msb_vals, mse_vals, icc_vals = [], [], []
+
+    for other in other_models:
+        pair_df = axis_df[axis_df["model_name"].isin([target_model, other])]
+        counts = pair_df.groupby("text_id")["model_name"].nunique()
+        shared_ids = counts[counts == 2].index
+        pair_df = pair_df[pair_df["text_id"].isin(shared_ids)]
+        if len(pair_df) == 0:
+            continue
+        ms = compute_ms_components(pair_df, validate=False)
+        if ms is None:
+            continue
+        if np.isfinite(ms.msb):
+            msb_vals.append(ms.msb)
+        if np.isfinite(ms.mse):
+            mse_vals.append(ms.mse)
+        if hasattr(ms, "icc") and np.isfinite(ms.icc):
+            icc_vals.append(ms.icc)
+
+    return {
+        "im_msb": float(np.mean(msb_vals)) if msb_vals else np.nan,
+        "im_mse": float(np.mean(mse_vals)) if mse_vals else np.nan,
+        "im_icc": float(np.mean(icc_vals)) if icc_vals else np.nan,
+    }
+
 
 def _build_im_df(axis_df, model, ensemble_models, comparison_mode):
     """Reconstruct im_full_df from saved axis_df using the run's comparison mode."""
@@ -85,16 +121,22 @@ def _plot_predictor_scatter(df, output_dir, title_suffix="", filename_suffix="")
         "variance_matched_msb_tc_imc":      "VM MSB+TC+IMC",
         "proxy_oracle":                     "Proxy Oracle",
         "proxy_oracle_imc":                 "Proxy Oracle+IMC",
-        "oracle":                           "Oracle",
-        "oracle_imc":                       "Oracle+IMC",
+        "oracle_msb_mse":                   "Oracle (MSB+MSE)",
+        "oracle_msb":                       "Oracle (MSB)",
+        "oracle_mse":                       "Oracle (MSE)",
+        "oracle_icc":                       "Oracle (ICC)",
+        "oracle_alpha":                     "Oracle (Alpha)",
+        "oracle_mean_squared_error":        "Oracle (MSE)",
         "random_imc":                       "Random+IMC",
         "metric_matched_icc":               "Metric (ICC)",
         "metric_matched_alpha":             "Metric (Alpha)",
         "metric_matched_mse":               "Metric (MSE)",
+        "variance_matched_weighted_.2":     "VM Weighted (.2/.8)",
         "variance_matched_weighted_.5":     "VM Weighted (.5/.5)",
         "variance_matched_weighted_.5_imc": "VM Weighted (.5/.5)+IMC",
         "variance_matched_weighted_.7":     "VM Weighted (.7/.3)",
         "variance_matched_weighted_.7_imc": "VM Weighted (.7/.3)+IMC",
+        "variance_matched_weighted_.9":     "VM Weighted (.9/.1)",
     }
     predictors = [
         ("mean_shift",       "Mean Shift\n(im_msb+im_mse) − (hm_msb+hm_mse)"),
@@ -277,6 +319,9 @@ def main():
                         help="Bootstrap samples for correlation predictor (default: 500)")
     parser.add_argument("--sample-size", type=int, default=10,
                         help="Items per bootstrap sample (default: 10)")
+    parser.add_argument("--human-agreement", default=None,
+                        help="Path to human_agreement.csv with columns: "
+                             "dataset, axis, icc, krippendorff_alpha, mse")
     args = parser.parse_args()
 
     output_dir = args.output_dir or os.path.join(args.results_dir, "predictor_scatter")
@@ -295,7 +340,7 @@ def main():
             )
             (_, _, _,
              icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
-             _, _) = load_results_dataframes(args.results_dir, dataset)
+             _, reliability_metadata_by_axis) = load_results_dataframes(args.results_dir, dataset)
         except FileNotFoundError as e:
             print(f"  Skipping {dataset}: {e}")
             continue
@@ -307,12 +352,16 @@ def main():
                           _em=ensemble_models, _cm=comparison_mode):
             return _build_im_df(axis_df, model, _em, _cm)
 
+        def pairwise_stats_builder(axis_df, model, _em=ensemble_models):
+            return _compute_pairwise_im_stats(axis_df, model, _em)
+
         records = compute_predictor_records(
             axis_jobs, per_model_variance_by_axis, icc_results_by_axis,
             im_df_builder,
             alpha_results_by_axis=alpha_results_by_axis,
             mse_results_by_axis=mse_results_by_axis,
             n_samples=args.n_samples, sample_size=args.sample_size,
+            pairwise_stats_builder=pairwise_stats_builder,
         )
         for r in records:
             r["dataset"] = dataset
@@ -333,6 +382,9 @@ def main():
     records_path = os.path.join(output_dir, "predictor_records.csv")
     df.to_csv(records_path, index=False)
     print(f"\nSaved predictor_records.csv ({len(df)} rows) → {records_path}")
+
+    run_meta_correlation_analysis(df, output_dir,
+                                  human_agreement_path=args.human_agreement)
 
     _plot_predictor_scatter(df, output_dir)
     _plot_predictor_scatter_by_budget(df, output_dir)

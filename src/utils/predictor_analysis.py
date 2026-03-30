@@ -87,6 +87,17 @@ def compute_correlation_predictor(im_full_df, hm_full_df,
         if components == "msb_only":
             im_vals.append(im_ms.msb)
             hm_vals.append(hm_ms.msb)
+        elif components == "mse_only":
+            if not np.isfinite(im_ms.mse) or not np.isfinite(hm_ms.mse):
+                continue
+            im_vals.append(im_ms.mse)
+            hm_vals.append(hm_ms.mse)
+        elif components == "icc_only":
+            if (not hasattr(im_ms, "icc") or not hasattr(hm_ms, "icc")
+                    or not np.isfinite(im_ms.icc) or not np.isfinite(hm_ms.icc)):
+                continue
+            im_vals.append(im_ms.icc)
+            hm_vals.append(hm_ms.icc)
         else:  # "combined"
             if not np.isfinite(im_ms.mse) or not np.isfinite(hm_ms.mse):
                 continue
@@ -166,7 +177,8 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
                                icc_results_by_axis, im_df_builder,
                                alpha_results_by_axis=None,
                                mse_results_by_axis=None,
-                               n_samples=500, sample_size=10):
+                               n_samples=500, sample_size=10,
+                               pairwise_stats_builder=None):
     """
     Build a list of predictor records for scatter plotting.
 
@@ -235,6 +247,23 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
             print(f"  Correlation predictor: axis={axis}, model={model} ...")
             im_full_df = im_df_builder(axis_df, model)
             hm_full_df = axis_df[axis_df["model_name"].isin([model, "original"])]
+
+            # Pairwise-averaged inter-model stats (target vs each other model, averaged)
+            if pairwise_stats_builder is not None:
+                pw = pairwise_stats_builder(axis_df, model)
+                im_msb = pw.get("im_msb", im_msb)
+                im_mse = pw.get("im_mse", im_mse)
+                im_icc = pw.get("im_icc", np.nan)
+            else:
+                _full_im_ms = compute_ms_components(im_full_df, validate=False)
+                im_icc = (
+                    float(_full_im_ms.icc)
+                    if (_full_im_ms is not None
+                        and hasattr(_full_im_ms, "icc")
+                        and np.isfinite(_full_im_ms.icc))
+                    else np.nan
+                )
+
             corr = compute_correlation_predictor(
                 im_full_df, hm_full_df,
                 n_samples=n_samples, sample_size=sample_size,
@@ -245,13 +274,47 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
                 n_samples=n_samples, sample_size=sample_size,
                 components="msb_only"
             )
+            corr_mse = compute_correlation_predictor(
+                im_full_df, hm_full_df,
+                n_samples=n_samples, sample_size=sample_size,
+                components="mse_only"
+            )
+            corr_icc = compute_correlation_predictor(
+                im_full_df, hm_full_df,
+                n_samples=n_samples, sample_size=sample_size,
+                components="icc_only"
+            )
+            # Per-budget correlations (10 draws of `budget` items each)
+            _budget_corrs: dict = {}
+            for _b in sorted(set(
+                int(c.split("_b")[-1])
+                for results in [icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis]
+                if results is not None
+                for _ax_res in [results.get(axis)]
+                if _ax_res is not None and "budget" in _ax_res.columns
+                for c in [f"_b{int(bv)}" for bv in _ax_res["budget"].unique()]
+            )):
+                for _comp, _suffix in [("msb_only", "msb"), ("mse_only", "mse"), ("icc_only", "icc")]:
+                    _budget_corrs[f"correlation_{_suffix}_b{_b}"] = compute_correlation_predictor(
+                        im_full_df, hm_full_df,
+                        n_samples=10, sample_size=_b,
+                        components=_comp,
+                    )
 
             record = {
                 "axis": axis,
                 "model": model,
                 "mean_shift": float(mean_shift) if np.isfinite(mean_shift) else np.nan,
+                "im_msb": float(im_msb) if np.isfinite(im_msb) else np.nan,
+                "im_mse": float(im_mse) if np.isfinite(im_mse) else np.nan,
+                "im_icc": im_icc,
+                "hm_msb": float(hm_msb) if np.isfinite(hm_msb) else np.nan,
+                "hm_mse": float(hm_mse) if np.isfinite(hm_mse) else np.nan,
                 "correlation": corr,
                 "correlation_msb": corr_msb,
+                "correlation_mse": corr_mse,
+                "correlation_icc": corr_icc,
+                **_budget_corrs,
             }
 
             # Compute error gaps for each metric (across all budgets and per budget)

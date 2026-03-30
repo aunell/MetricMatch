@@ -11,6 +11,7 @@
 #   --output-dir DIR        Where to save scatter plots (default: results-dir/predictor_scatter)
 #   --n-samples N           Bootstrap samples for correlation predictor (default: 500)
 #   --sample-size N         Items per bootstrap sample (default: 10)
+#   --human-agreement FILE  Path to human_agreement.csv (default: results/03_25_human_aggreement/human_agreement.csv)
 #
 # Examples:
 #
@@ -23,11 +24,12 @@
 set -e
 
 # Defaults
-RESULTS_DIR="/share/pi/nigam/users/aunell/SmartSample_local/results/03_16_new_oracle"
+RESULTS_DIR="/share/pi/nigam/users/aunell/SmartSample_local/results/03_27_deepseek_gemini"
 DATASETS=("medval" "summeval" "hanna" "mslr")
 OUTPUT_DIR=""
 N_SAMPLES=500
 SAMPLE_SIZE=10
+HUMAN_AGREEMENT="/share/pi/nigam/users/aunell/SmartSample_local/results/03_25_human_aggreement/human_agreement.csv"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -56,6 +58,10 @@ while [[ $# -gt 0 ]]; do
       SAMPLE_SIZE="$2"
       shift 2
       ;;
+    --human-agreement)
+      HUMAN_AGREEMENT="$2"
+      shift 2
+      ;;
     -h|--help)
       head -30 "$0" | tail -28
       exit 0
@@ -82,6 +88,7 @@ echo "DATASETS:     ${DATASETS[*]}"
 echo "OUTPUT_DIR:   $OUTPUT_DIR"
 echo "N_SAMPLES:    $N_SAMPLES"
 echo "SAMPLE_SIZE:  $SAMPLE_SIZE"
+echo "HUMAN_AGREEMENT: $HUMAN_AGREEMENT"
 echo "=============================================="
 echo
 
@@ -99,12 +106,13 @@ sbatch \
     source \$CONDA_DIR/etc/profile.d/conda.sh
     conda activate pac_judge
     cd SmartSample_local
-    python scripts/run_predictor_scatter.py \
+    python src/experiments/predictor_scatter.py \
       --results-dir '${RESULTS_DIR}' \
       --datasets ${DATASETS[*]} \
       --output-dir '${OUTPUT_DIR}' \
       --n-samples '${N_SAMPLES}' \
-      --sample-size '${SAMPLE_SIZE}'
+      --sample-size '${SAMPLE_SIZE}' \
+      --human-agreement '${HUMAN_AGREEMENT}'
   "
 
 echo "Job submitted. Logs → ${OUTPUT_DIR}/slurm_<jobid>.out/.err"
