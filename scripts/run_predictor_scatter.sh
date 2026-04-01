@@ -24,7 +24,7 @@
 set -e
 
 # Defaults
-RESULTS_DIR="/share/pi/nigam/users/aunell/SmartSample_local/results/03_27_deepseek_gemini"
+RESULTS_DIR="/share/pi/nigam/users/aunell/SmartSample_local/results/03_30_deepseek_gemini"
 DATASETS=("medval" "summeval" "hanna" "mslr")
 OUTPUT_DIR=""
 N_SAMPLES=500

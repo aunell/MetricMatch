@@ -177,6 +177,13 @@ def _plot_predictor_scatter(df, output_dir, title_suffix="", filename_suffix="")
         n_rows = int(np.ceil(n_methods / n_cols))
 
         for predictor_col, predictor_label in predictors:
+            filename = os.path.join(
+                output_dir, f"predictor_scatter_{metric_key}_{predictor_col}{filename_suffix}.jpg"
+            )
+            if os.path.exists(filename):
+                print(f"  Skipping (exists): {filename}")
+                continue
+
             fig, axes_grid = plt.subplots(n_rows, n_cols,
                                           figsize=(5 * n_cols, 4 * n_rows),
                                           sharey=True, squeeze=False)
@@ -278,14 +285,19 @@ def _plot_predictor_scatter_by_budget(df, output_dir):
     meta_cols = [c for c in ["axis", "model", "dataset", "mean_shift", "correlation", "correlation_msb"]
                  if c in df.columns]
 
+    meta_col_set = set(meta_cols)
+
     for budget in budgets:
-        # Build a df with only this budget's gap columns, renamed to generic form
+        # Build a df with only this budget's gap columns, renamed to generic form.
+        # Skip budget columns whose stripped name collides with a meta column
+        # (e.g. correlation_msb_b5 → correlation_msb conflicts with the predictor col).
         rename_map = {}
         for col in df.columns:
             m = budget_pattern.search(col)
             if m and int(m.group(1)) == budget:
                 base = col[:col.rfind(f"_b{budget}")]
-                rename_map[col] = base
+                if base not in meta_col_set:
+                    rename_map[col] = base
 
         keep_cols = meta_cols + list(rename_map.keys())
         budget_df = df[keep_cols].rename(columns=rename_map)
@@ -296,6 +308,208 @@ def _plot_predictor_scatter_by_budget(df, output_dir):
             title_suffix=f" (budget={budget})",
             filename_suffix=f"_b{budget}",
         )
+
+
+# ---------------------------------------------------------------------------
+# Budget correlation overview (MSB / MSE / ICC / Alpha across budgets)
+# ---------------------------------------------------------------------------
+
+def _collect_budget_correlations(axis_jobs, im_df_builder, dataset,
+                                  budgets=(10, 20, 30, 40, 50),
+                                  n_samples=200, seed=123):
+    """
+    For each (axis, model) pair, collect individual bootstrap sample pairs of
+    IM and HM values for each budget and metric (msb, mse, icc, alpha).
+
+    Returns a list of dicts — one per bootstrap sample:
+        {dataset, axis, model, budget, metric, im_val, hm_val}
+    """
+    from src.utils.predictor_analysis import compute_ms_budget_samples
+    from src.utils.reliability_metrics import compute_krippendorff_alpha
+
+    budgets = list(budgets)
+    records = []
+
+    for axis, axis_df in axis_jobs:
+        models = [m for m in axis_df["model_name"].unique() if m != "original"]
+
+        for model in models:
+            im_full_df = im_df_builder(axis_df, model)
+            hm_full_df = axis_df[axis_df["model_name"].isin([model, "original"])]
+
+            # MSB / MSE / ICC via existing sampling utility
+            budget_samples = compute_ms_budget_samples(
+                im_full_df, hm_full_df,
+                budgets=budgets, n_samples=n_samples, seed=seed,
+            )
+
+            for budget in budgets:
+                bs = budget_samples.get(budget, {})
+                if not isinstance(bs, dict):
+                    continue
+                for metric in ("msb", "mse", "icc"):
+                    pairs = bs.get(metric, [])
+                    for im_val, hm_val in pairs:
+                        if np.isfinite(im_val) and np.isfinite(hm_val):
+                            records.append({
+                                "dataset": dataset, "axis": axis, "model": model,
+                                "budget": budget, "metric": metric,
+                                "im_val": float(im_val), "hm_val": float(hm_val),
+                            })
+
+            # Alpha — bootstrap manually (not in compute_ms_budget_samples)
+            rng = np.random.RandomState(seed + 1)
+            im_ids = set(im_full_df["text_id"].unique())
+            hm_ids = set(hm_full_df["text_id"].unique())
+            shared_ids = np.array(sorted(im_ids & hm_ids))
+
+            for budget in budgets:
+                if len(shared_ids) < budget:
+                    continue
+                for _ in range(n_samples):
+                    sample_ids = rng.choice(shared_ids, size=budget, replace=False)
+                    im_sub = im_full_df[im_full_df["text_id"].isin(sample_ids)]
+                    hm_sub = hm_full_df[hm_full_df["text_id"].isin(sample_ids)]
+                    try:
+                        im_a = compute_krippendorff_alpha(im_sub)
+                        hm_a = compute_krippendorff_alpha(hm_sub)
+                        if isinstance(im_a, dict) or isinstance(hm_a, dict):
+                            continue
+                        if np.isfinite(im_a) and np.isfinite(hm_a):
+                            records.append({
+                                "dataset": dataset, "axis": axis, "model": model,
+                                "budget": budget, "metric": "alpha",
+                                "im_val": float(im_a), "hm_val": float(hm_a),
+                            })
+                    except Exception:
+                        continue
+
+            print(f"    Budget corr collected: axis={axis}, model={model}")
+
+    return records
+
+
+def _plot_budget_correlation_overview(all_budget_records, output_dir):
+    """
+    Four-subplot figure (MSB, MSE, ICC, Alpha), each showing a scatter of
+    all individual bootstrap sample (IM, HM) pairs across all datasets,
+    axes, models, and budgets.
+
+    Each point = one bootstrap sample's IM value vs HM value.
+    Points are coloured by dataset.  Overall Pearson r across all points
+    is reported in each subplot title.
+    """
+    import matplotlib.lines as mlines
+
+    if not all_budget_records:
+        print("No budget correlation records; skipping overview plot.")
+        return
+
+    df = pd.DataFrame(all_budget_records)
+
+    if "im_val" not in df.columns or "hm_val" not in df.columns:
+        print("Budget correlation records are missing im_val/hm_val columns "
+              "(cached from an older run). Delete budget_correlation_records.csv "
+              "and re-run to regenerate.")
+        return
+
+    metric_labels = {
+        "msb":   "MSB",
+        "mse":   "MSE",
+        "icc":   "ICC",
+        "alpha": "Alpha (Krippendorff)",
+    }
+    metric_axis_labels = {
+        "msb":   ("Model-Model MSB (IM)", "Model-Human MSB (HM)"),
+        "mse":   ("Model-Model MSE (IM)", "Model-Human MSE (HM)"),
+        "icc":   ("Model-Model ICC (IM)", "Model-Human ICC (HM)"),
+        "alpha": ("Model-Model Alpha (IM)", "Model-Human Alpha (HM)"),
+    }
+    metrics = [m for m in ("msb", "mse", "icc", "alpha") if m in df["metric"].unique()]
+    if not metrics:
+        print("No metrics found in budget correlation records; skipping overview plot.")
+        return
+
+    datasets = sorted(df["dataset"].unique())
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    color_map = {d: colors[i % len(colors)] for i, d in enumerate(datasets)}
+
+    n_metrics = len(metrics)
+    n_cols = min(n_metrics, 2)
+    n_rows = int(np.ceil(n_metrics / n_cols))
+
+    fig, axes_grid = plt.subplots(n_rows, n_cols,
+                                   figsize=(6 * n_cols, 5 * n_rows),
+                                   squeeze=False)
+    ax_flat = [axes_grid[r][c] for r in range(n_rows) for c in range(n_cols)]
+    for ax in ax_flat[n_metrics:]:
+        ax.set_visible(False)
+
+    for ax, metric in zip(ax_flat, metrics):
+        sub = df[df["metric"] == metric].dropna(subset=["im_val", "hm_val"])
+        if sub.empty:
+            ax.set_title(metric_labels.get(metric, metric))
+            ax.text(0.5, 0.5, "no data", ha="center", va="center",
+                    transform=ax.transAxes)
+            continue
+
+        for ds in datasets:
+            pts = sub[sub["dataset"] == ds]
+            if pts.empty:
+                continue
+            ax.scatter(pts["im_val"], pts["hm_val"],
+                       color=color_map[ds], alpha=0.3,
+                       edgecolors="none", s=10,
+                       label=ds, zorder=2)
+
+        xs = sub["im_val"].values
+        ys = sub["hm_val"].values
+        r = float(np.corrcoef(xs, ys)[0, 1])
+
+        # Regression line
+        slope, intercept = np.polyfit(xs, ys, 1)
+        x_line = np.linspace(xs.min(), xs.max(), 100)
+        ax.plot(x_line, slope * x_line + intercept,
+                color="black", linewidth=1.5, alpha=0.8, zorder=3)
+
+        # y = x reference
+        lim_min = min(xs.min(), ys.min())
+        lim_max = max(xs.max(), ys.max())
+        ax.plot([lim_min, lim_max], [lim_min, lim_max],
+                color="red", linestyle="--", linewidth=1, alpha=0.5)
+
+        x_label, y_label = metric_axis_labels.get(metric, ("IM", "HM"))
+        ax.set_xlabel(x_label, fontsize=9)
+        ax.set_ylabel(y_label, fontsize=9)
+        ax.set_title(
+            f"{metric_labels.get(metric, metric)}   r = {r:.3f}  (n={len(sub):,})",
+            fontsize=11
+        )
+        ax.grid(alpha=0.3)
+
+    # Legend (dataset colours only)
+    dataset_handles = [
+        mlines.Line2D([], [], color=color_map[d], marker="o", linestyle="None",
+                      markersize=7, label=d)
+        for d in datasets
+    ]
+    fig.legend(dataset_handles, datasets,
+               title="Dataset", fontsize=9,
+               loc="lower center",
+               ncol=len(datasets),
+               bbox_to_anchor=(0.5, -0.02),
+               borderaxespad=0)
+
+    fig.suptitle(
+        "Model-Model vs Model-Human — all bootstrap samples across datasets, axes, models, and budgets",
+        fontsize=12
+    )
+    fig.tight_layout(rect=[0, 0.06, 1, 1])
+
+    filename = os.path.join(output_dir, "budget_correlation_overview.jpg")
+    fig.savefig(filename, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved: {filename}")
 
 
 # ---------------------------------------------------------------------------
@@ -327,9 +541,51 @@ def main():
     output_dir = args.output_dir or os.path.join(args.results_dir, "predictor_scatter")
     os.makedirs(output_dir, exist_ok=True)
 
-    all_records = []
+    records_path = os.path.join(output_dir, "predictor_records.csv")
+    budget_corr_path = os.path.join(output_dir, "budget_correlation_records.csv")
+    ms_scatter_dir = os.path.join(output_dir, "ms_budget_scatter")
+
+    # Load cached predictor records if available
+    if os.path.exists(records_path):
+        df_cached = pd.read_csv(records_path)
+        cached_pred_datasets = set(df_cached["dataset"].unique())
+        all_records = df_cached.to_dict("records")
+        print(f"Loaded {len(all_records)} predictor records from cache "
+              f"(datasets: {sorted(cached_pred_datasets)})")
+    else:
+        cached_pred_datasets = set()
+        all_records = []
+
+    # Load cached budget correlation records if available
+    if os.path.exists(budget_corr_path):
+        df_bcorr_cached = pd.read_csv(budget_corr_path)
+        if "im_val" in df_bcorr_cached.columns and "hm_val" in df_bcorr_cached.columns:
+            cached_bcorr_datasets = set(df_bcorr_cached["dataset"].unique())
+            all_budget_records = df_bcorr_cached.to_dict("records")
+            print(f"Loaded {len(all_budget_records)} budget-correlation records from cache "
+                  f"(datasets: {sorted(cached_bcorr_datasets)})")
+        else:
+            print(f"budget_correlation_records.csv is in old format (mean_im/mean_hm); "
+                  f"re-collecting all datasets.")
+            cached_bcorr_datasets = set()
+            all_budget_records = []
+    else:
+        cached_bcorr_datasets = set()
+        all_budget_records = []
 
     for dataset in args.datasets:
+        need_predictor = dataset not in cached_pred_datasets
+        need_budget_corr = dataset not in cached_bcorr_datasets
+        existing_ms = (
+            [f for f in os.listdir(ms_scatter_dir) if f.startswith(f"{dataset}_")]
+            if os.path.exists(ms_scatter_dir) else []
+        )
+        need_ms_scatter = len(existing_ms) == 0
+
+        if not (need_predictor or need_budget_corr or need_ms_scatter):
+            print(f"\nSkipping {dataset}: all outputs already cached.")
+            continue
+
         print(f"\n{'=' * 60}")
         print(f"Processing dataset: {dataset}")
         print(f"{'=' * 60}")
@@ -355,39 +611,67 @@ def main():
         def pairwise_stats_builder(axis_df, model, _em=ensemble_models):
             return _compute_pairwise_im_stats(axis_df, model, _em)
 
-        records = compute_predictor_records(
-            axis_jobs, per_model_variance_by_axis, icc_results_by_axis,
-            im_df_builder,
-            alpha_results_by_axis=alpha_results_by_axis,
-            mse_results_by_axis=mse_results_by_axis,
-            n_samples=args.n_samples, sample_size=args.sample_size,
-            pairwise_stats_builder=pairwise_stats_builder,
-        )
-        for r in records:
-            r["dataset"] = dataset
-        all_records.extend(records)
-        print(f"  Collected {len(records)} (axis, model) records for {dataset}")
+        if need_predictor:
+            records = compute_predictor_records(
+                axis_jobs, per_model_variance_by_axis, icc_results_by_axis,
+                im_df_builder,
+                alpha_results_by_axis=alpha_results_by_axis,
+                mse_results_by_axis=mse_results_by_axis,
+                n_samples=args.n_samples, sample_size=args.sample_size,
+                pairwise_stats_builder=pairwise_stats_builder,
+            )
+            for r in records:
+                r["dataset"] = dataset
+            all_records.extend(records)
+            print(f"  Collected {len(records)} (axis, model) records for {dataset}")
+        else:
+            print(f"  Predictor records cached for {dataset}, skipping.")
 
-        print(f"\n[MS budget scatter] {dataset}")
-        plot_ms_budget_scatter(
-            axis_jobs, im_df_builder, dataset, output_dir,
-            budgets=(10, 20, 30, 40, 50), n_samples=args.n_samples,
-        )
+        if need_ms_scatter:
+            print(f"\n[MS budget scatter] {dataset}")
+            plot_ms_budget_scatter(
+                axis_jobs, im_df_builder, dataset, output_dir,
+                budgets=(10, 20, 30, 40, 50), n_samples=args.n_samples,
+            )
+        else:
+            print(f"\n[MS budget scatter] {dataset}: {len(existing_ms)} files cached, skipping.")
+
+        if need_budget_corr:
+            print(f"\n[Budget correlation collection] {dataset}")
+            budget_records = _collect_budget_correlations(
+                axis_jobs, im_df_builder, dataset,
+                budgets=(10, 20, 30, 40, 50), n_samples=args.n_samples,
+            )
+            all_budget_records.extend(budget_records)
+            print(f"  Collected {len(budget_records)} budget-correlation records for {dataset}")
+        else:
+            print(f"\n[Budget correlation collection] {dataset}: cached, skipping.")
 
     if not all_records:
         print("\nNo predictor records found across any dataset. Exiting.")
         return
 
     df = pd.DataFrame(all_records)
-    records_path = os.path.join(output_dir, "predictor_records.csv")
     df.to_csv(records_path, index=False)
     print(f"\nSaved predictor_records.csv ({len(df)} rows) → {records_path}")
 
-    run_meta_correlation_analysis(df, output_dir,
-                                  human_agreement_path=args.human_agreement)
+    if all_budget_records:
+        pd.DataFrame(all_budget_records).to_csv(budget_corr_path, index=False)
+        print(f"Saved budget_correlation_records.csv ({len(all_budget_records)} rows) "
+              f"→ {budget_corr_path}")
+
+    meta_summary_path = os.path.join(output_dir, "predictor_meta_summary.csv")
+    if not os.path.exists(meta_summary_path):
+        run_meta_correlation_analysis(df, output_dir,
+                                      human_agreement_path=args.human_agreement)
+    else:
+        print(f"\nMeta correlation analysis outputs found, skipping.")
 
     _plot_predictor_scatter(df, output_dir)
     _plot_predictor_scatter_by_budget(df, output_dir)
+
+    print(f"\n[Budget correlation overview]")
+    _plot_budget_correlation_overview(all_budget_records, output_dir)
 
     print(f"\nDone. Plots saved to: {output_dir}")
 

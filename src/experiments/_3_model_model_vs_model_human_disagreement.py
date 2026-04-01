@@ -34,10 +34,18 @@ warnings.filterwarnings('ignore')
 # CONFIG
 # -------------------------
 # Default plots output directory - change this to specify where plots should be saved
-DEFAULT_PLOTS_DIR = "results/plots"  # Default: results/plots
+DEFAULT_PLOTS_DIR = "results/03_30_plots"  # Default: results/plots
 # Alternative examples:
 # DEFAULT_PLOTS_DIR = "01_11_plots"
 # DEFAULT_PLOTS_DIR = "/path/to/custom/plots/directory"
+
+# Number of scale points (inclusive) for each dataset, used to normalize disagreement to percent error
+SCALE_RANGES = {
+    'summeval': 5,  # 1-5 inclusive
+    'hanna': 5,     # 1-5 inclusive
+    'mslr': 3,      # 0-2 inclusive
+    'medval': 4,    # 1-4 inclusive
+}
 
 
 def get_available_models(base_dir: Path, dataset_name: str, dimension: str) -> List[str]:
@@ -230,9 +238,21 @@ def analyze_dimension(base_dir: Path, dataset_name: str, dimension: str) -> pd.D
         print(f"  No valid items after metric calculation")
         return pd.DataFrame()
 
+    # Normalize disagreement metrics to percent error using scale range
+    scale_range = SCALE_RANGES.get(dataset_name, None)
+    if scale_range is not None:
+        metrics_df['pct_model_human_diff'] = metrics_df['avg_model_human_diff'] / (scale_range - 1) * 100
+        metrics_df['pct_inter_model_std'] = metrics_df['inter_model_std'] / (scale_range - 1) * 100
+    else:
+        # Fallback: use raw values (no normalization)
+        metrics_df['pct_model_human_diff'] = metrics_df['avg_model_human_diff']
+        metrics_df['pct_inter_model_std'] = metrics_df['inter_model_std']
+
     print(f"  Calculated metrics for {len(metrics_df)} items")
     print(f"  Inter-model std range: [{metrics_df['inter_model_std'].min():.4f}, {metrics_df['inter_model_std'].max():.4f}]")
+    print(f"  Pct inter-model std range: [{metrics_df['pct_inter_model_std'].min():.2f}%, {metrics_df['pct_inter_model_std'].max():.2f}%]")
     print(f"  Avg model-human diff range: [{metrics_df['avg_model_human_diff'].min():.4f}, {metrics_df['avg_model_human_diff'].max():.4f}]")
+    print(f"  Pct model-human diff range: [{metrics_df['pct_model_human_diff'].min():.2f}%, {metrics_df['pct_model_human_diff'].max():.2f}%]")
 
     # Calculate correlation
     if len(metrics_df) >= 3:
@@ -272,23 +292,28 @@ def plot_inter_model_vs_human(df: pd.DataFrame, output_dir: Path,
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
 
+    x_col = 'pct_inter_model_std' if 'pct_inter_model_std' in df.columns else 'inter_model_std'
+    y_col = 'pct_model_human_diff' if 'pct_model_human_diff' in df.columns else 'avg_model_human_diff'
+    x_label = 'Inter-Model Disagreement (% of Scale)' if x_col == 'pct_inter_model_std' else 'Inter-Model Disagreement (Std Dev)'
+    y_label = 'Avg Model-Human Disagreement (% of Scale)' if y_col == 'pct_model_human_diff' else 'Avg Model-Human Disagreement'
+
     # Left plot: Scatter with regression
-    ax1.scatter(df['inter_model_std'], df['avg_model_human_diff'],
+    ax1.scatter(df[x_col], df[y_col],
                alpha=0.3, s=20, color='steelblue')
 
     # Regression line
-    z = np.polyfit(df['inter_model_std'], df['avg_model_human_diff'], 1)
+    z = np.polyfit(df[x_col], df[y_col], 1)
     p = np.poly1d(z)
-    x_line = np.linspace(df['inter_model_std'].min(), df['inter_model_std'].max(), 100)
+    x_line = np.linspace(df[x_col].min(), df[x_col].max(), 100)
     ax1.plot(x_line, p(x_line), "r--", linewidth=2,
             label=f'y = {z[0]:.3f}x + {z[1]:.3f}')
 
     # Calculate correlation
-    pearson_r, pearson_p = stats.pearsonr(df['inter_model_std'], df['avg_model_human_diff'])
-    spearman_r, spearman_p = stats.spearmanr(df['inter_model_std'], df['avg_model_human_diff'])
+    pearson_r, pearson_p = stats.pearsonr(df[x_col], df[y_col])
+    spearman_r, spearman_p = stats.spearmanr(df[x_col], df[y_col])
 
-    ax1.set_xlabel('Inter-Model Disagreement (Std Dev)', fontsize=12, fontweight='bold')
-    ax1.set_ylabel('Avg Model-Human Disagreement', fontsize=12, fontweight='bold')
+    ax1.set_xlabel(x_label, fontsize=12, fontweight='bold')
+    ax1.set_ylabel(y_label, fontsize=12, fontweight='bold')
     ax1.set_title(f'Inter-Model vs Model-Human Disagreement\n{title_suffix}',
                  fontsize=14, fontweight='bold')
 
@@ -303,22 +328,22 @@ def plot_inter_model_vs_human(df: pd.DataFrame, output_dir: Path,
     ax1.grid(True, alpha=0.3)
 
     # Right plot: Binned analysis
-    bins = pd.qcut(df['inter_model_std'], q=10, duplicates='drop')
+    bins = pd.qcut(df[x_col], q=10, duplicates='drop')
     binned_data = df.groupby(bins).agg({
-        'avg_model_human_diff': ['mean', 'std', 'count'],
-        'inter_model_std': 'mean'
+        y_col: ['mean', 'std', 'count'],
+        x_col: 'mean'
     }).reset_index(drop=True)
 
     binned_data.columns = ['_'.join(col).strip('_') for col in binned_data.columns]
 
-    ax2.errorbar(binned_data['inter_model_std_mean'],
-                binned_data['avg_model_human_diff_mean'],
-                yerr=binned_data['avg_model_human_diff_std'],
+    ax2.errorbar(binned_data[f'{x_col}_mean'],
+                binned_data[f'{y_col}_mean'],
+                yerr=binned_data[f'{y_col}_std'],
                 fmt='o-', linewidth=2, markersize=8, capsize=5,
                 color='darkgreen', label='Mean ± SD')
 
-    ax2.set_xlabel('Inter-Model Std (binned)', fontsize=12, fontweight='bold')
-    ax2.set_ylabel('Mean Model-Human Diff', fontsize=12, fontweight='bold')
+    ax2.set_xlabel(f'{x_label} (binned)', fontsize=12, fontweight='bold')
+    ax2.set_ylabel(f'Mean {y_label}', fontsize=12, fontweight='bold')
     ax2.set_title('Binned Analysis\n(10 quantiles)', fontsize=14, fontweight='bold')
     ax2.grid(True, alpha=0.3)
     ax2.legend()
@@ -328,7 +353,6 @@ def plot_inter_model_vs_human(df: pd.DataFrame, output_dir: Path,
     # Save
     filename = f"inter_model_vs_human_{title_suffix.replace(' ', '_').replace(',', '')}.png"
     plt.savefig(output_dir / filename, dpi=300, bbox_inches='tight')
-    plt.savefig(output_dir / filename.replace('.png', '.pdf'), bbox_inches='tight')
     print(f"  Saved plot: {filename}")
 
     plt.close()
@@ -346,7 +370,7 @@ def main():
         'summeval': ['coherence', 'consistency', 'fluency', 'relevance'],
         'hanna': ['Coherence', 'Complexity', 'Empathy', 'Engagement', 'Relevance', 'Surprise'],
         'mslr': ['fluency', 'intervention', 'outcome', 'population'],
-    }
+        'medval':['Risk']    }
 
     print("="*80)
     print("INTER-MODEL DISAGREEMENT vs MODEL-HUMAN DISAGREEMENT ANALYSIS")

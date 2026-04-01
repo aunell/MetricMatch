@@ -1,6 +1,6 @@
 """
-Calculate inter-human agreement metrics (ICC, Krippendorff's alpha, MSE)
-for each axis and dataset.
+Calculate inter-human and human-model agreement metrics (ICC, Krippendorff's alpha, MSE)
+for each axis and dataset, then plot predictor vs gap scatter figures.
 
 Datasets:
 - hanna (hanna_stories_annotations.csv): 1056 stories, 3 crowd workers, 6 axes
@@ -11,33 +11,104 @@ Datasets:
 - inter_physician (inter_physician.csv): 89 items, 2-5 physicians per task
 
 Output: results/03_25_human_aggreement/human_agreement.csv
+        results/03_25_human_aggreement/plots/
 """
 
 from __future__ import annotations
 
 import json
 import sys
-import os
-import re
 from functools import partial
-import pandas as pd
-import numpy as np
-import krippendorff
-import pingouin as pg
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-from pathlib import Path
 from itertools import combinations
 
-# Allow imports from src/
-sys.path.insert(0, str(Path(__file__).parents[1]))
+import krippendorff
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import pingouin as pg
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parents[2]))
 
 from src.utils.reliability_metrics import compute_ms_components
 
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
 DATA_DIR = Path(__file__).parents[2] / "data" / "raw_data"
-OUTPUT_DIR = Path(__file__).parents[2] / "results" / "03_25_human_aggreement"
+OUTPUT_DIR = Path(__file__).parents[2] / "results" / "03_30_deepseek_gemini"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+JUDGE_SCORES_DIR = Path(__file__).parents[2] / "data" / "judge_scores"
+RESULTS_DIR = Path(__file__).parents[2] / "results" / "03_30_deepseek_gemini"
+
+# Models used for IM and HM correlation computations
+MODELS_TO_PLOT = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "deepseek-r1", "gemini-2.5"]
+MODEL_COLORS = {
+    "claude-3.5-sonnet": "#E91E63",
+    "gpt-4.1":           "#FF9800",
+    "gpt-5":             "#4CAF50",
+    "deepseek-r1":       "#9C27B0",
+    "gemini-2.5":        "#009688",
+}
+HUMAN_COLOR = "#2196F3"
+
+# Axes that have judge score files (inter_physician has no LLM judge scores)
+DATASET_AXES = {
+    "hanna":    ["Relevance", "Coherence", "Empathy", "Surprise", "Engagement", "Complexity"],
+    "mslr":     ["fluency", "population", "intervention", "outcome"],
+    "summeval": ["coherence", "consistency", "fluency", "relevance"],
+    "medval":   ["Risk"],
+}
+
+# Bootstrap parameters for HM MSB/MSE correlation computation
+N_CORR_SAMPLES = 30
+CORR_SAMPLE_SIZE = 30
+
+# Plotting constants
+MODEL_MARKERS = {
+    "claude-3.5-sonnet": "o",
+    "gpt-4.1":           "s",
+    "gpt-5":             "^",
+    "deepseek-r1":       "D",
+    "gemini-2.5":        "P",
+}
+
+DATASET_COLORS = {
+    "hanna":    "#E91E63",
+    "mslr":     "#FF9800",
+    "summeval": "#4CAF50",
+    "medval":   "#2196F3",
+}
+
+# Scatter plot axes: (column_name, display_label)
+X_VARS = [
+    ("icc",                 "Human ICC"),
+    ("krippendorff_alpha",  "Human Alpha"),
+    ("mse",                 "Human MSE"),
+    ("human_msb_mse_ratio", "Human MSB/MSE"),
+    ("im_msb",              "IM MSB"),
+    ("im_mse",              "IM MSE"),
+    ("im_icc",              "IM ICC"),
+    ("hm_msb_mse_ratio",    "HM MSB/MSE"),
+    ("hm_msb_corr",         "HM MSB Corr"),
+    ("hm_mse_corr",         "HM MSE Corr"),
+    ("hm_icc_corr",         "HM ICC Corr"),
+]
+
+# (gap_col, best_method_col, display_label)
+Y_VARS = [
+    ("avg_gap_icc",   "best_method_icc",   "Avg Gap (ICC)"),
+    ("avg_gap_alpha", "best_method_alpha",  "Avg Gap (Alpha)"),
+    ("avg_gap_mse",   "best_method_mse",    "Avg Gap (MSE)"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Inter-human agreement metrics
+# ---------------------------------------------------------------------------
 
 def compute_icc(ratings_matrix: np.ndarray, icc_type: str = "ICC3k",
                 nan_policy: str = "listwise") -> float:
@@ -147,7 +218,7 @@ def _safe_msb_mse_ratio(ms) -> float:
 
 
 def compute_metrics(ratings_matrix: np.ndarray, icc_type: str = "ICC3k") -> dict:
-    """Compute all three metrics plus MSB/MSE ratio from an (n_items, n_raters) matrix."""
+    """Compute ICC, Krippendorff's alpha, MSE, and MSB/MSE ratio from an (n_items, n_raters) matrix."""
     icc = compute_icc(ratings_matrix, icc_type=icc_type)
     alpha = compute_krippendorff_alpha(ratings_matrix.T)
     mse = compute_pairwise_mse(ratings_matrix)
@@ -156,6 +227,10 @@ def compute_metrics(ratings_matrix: np.ndarray, icc_type: str = "ICC3k") -> dict
     return {"icc": icc, "krippendorff_alpha": alpha, "mse": mse,
             "human_msb_mse_ratio": _safe_msb_mse_ratio(ms)}
 
+
+# ---------------------------------------------------------------------------
+# Dataset processors
+# ---------------------------------------------------------------------------
 
 def process_hanna() -> list[dict]:
     """
@@ -183,16 +258,14 @@ def process_hanna() -> list[dict]:
         )
         ratings = pivot.values.astype(float)
         metrics = compute_metrics(ratings)
-        results.append(
-            {
-                "dataset": "hanna",
-                "axis": axis.lower(),
-                **metrics,
-                "n_items": ratings.shape[0],
-                "n_raters": n_raters,
-                "note": "",
-            }
-        )
+        results.append({
+            "dataset": "hanna",
+            "axis": axis.lower(),
+            **metrics,
+            "n_items": ratings.shape[0],
+            "n_raters": n_raters,
+            "note": "",
+        })
 
     return results
 
@@ -218,16 +291,14 @@ def process_mslr() -> list[dict]:
             if len(anns) >= 2:
                 item_id = f"{item['review_id']}_{pred['exp_short']}"
                 for ann in anns:
-                    rows.append(
-                        {
-                            "item_id": item_id,
-                            "annot_id": ann["annot_id"],
-                            "fluency": ann.get("fluency"),
-                            "population": ann.get("population"),
-                            "intervention": ann.get("intervention"),
-                            "outcome": ann.get("outcome"),
-                        }
-                    )
+                    rows.append({
+                        "item_id": item_id,
+                        "annot_id": ann["annot_id"],
+                        "fluency": ann.get("fluency"),
+                        "population": ann.get("population"),
+                        "intervention": ann.get("intervention"),
+                        "outcome": ann.get("outcome"),
+                    })
 
     df = pd.DataFrame(rows)
     axes = ["fluency", "population", "intervention", "outcome"]
@@ -240,16 +311,14 @@ def process_mslr() -> list[dict]:
         )
         ratings = pivot.values.astype(float)
         metrics = compute_metrics(ratings)
-        results.append(
-            {
-                "dataset": "mslr",
-                "axis": axis,
-                **metrics,
-                "n_items": pivot.shape[0],
-                "n_raters": pivot.shape[1],
-                "note": "",
-            }
-        )
+        results.append({
+            "dataset": "mslr",
+            "axis": axis,
+            **metrics,
+            "n_items": pivot.shape[0],
+            "n_raters": pivot.shape[1],
+            "note": "",
+        })
 
     return results
 
@@ -267,18 +336,16 @@ def process_summeval() -> list[dict]:
     axes = ["coherence", "consistency", "fluency", "relevance"]
     results = []
     for axis in axes:
-        results.append(
-            {
-                "dataset": "summeval",
-                "axis": axis,
-                "icc": np.nan,
-                "krippendorff_alpha": np.nan,
-                "mse": np.nan,
-                "n_items": 1600,  # 100 docs x 16 machine summaries
-                "n_raters": 3,
-                "note": "mteb/summeval stores averages of 3 expert raters; individual scores unavailable",
-            }
-        )
+        results.append({
+            "dataset": "summeval",
+            "axis": axis,
+            "icc": np.nan,
+            "krippendorff_alpha": np.nan,
+            "mse": np.nan,
+            "n_items": 1600,  # 100 docs x 16 machine summaries
+            "n_raters": 3,
+            "note": "mteb/summeval stores averages of 3 expert raters; individual scores unavailable",
+        })
     return results
 
 
@@ -317,19 +384,17 @@ def process_medval() -> list[dict]:
     mse = compute_pairwise_mse(ratings)
     ms_df = _ratings_matrix_to_ms_df(ratings)
     ms = compute_ms_components(ms_df) if not ms_df.empty else None
-    return [
-        {
-            "dataset": "medval",
-            "axis": "risk",
-            "icc": icc,
-            "krippendorff_alpha": alpha,
-            "mse": mse,
-            "human_msb_mse_ratio": _safe_msb_mse_ratio(ms),
-            "n_items": len(rows),
-            "n_raters": max_raters,
-            "note": "pooled across 6 tasks; anonymous rater ranks; all 90 items used",
-        }
-    ]
+    return [{
+        "dataset": "medval",
+        "axis": "risk",
+        "icc": icc,
+        "krippendorff_alpha": alpha,
+        "mse": mse,
+        "human_msb_mse_ratio": _safe_msb_mse_ratio(ms),
+        "n_items": len(rows),
+        "n_raters": max_raters,
+        "note": "pooled across 6 tasks; anonymous rater ranks; all 90 items used",
+    }]
 
 
 def process_inter_physician() -> list[dict]:
@@ -352,40 +417,21 @@ def process_inter_physician() -> list[dict]:
         print(f"  {task} ({len(active_cols)} raters, {len(task_df)} items)")
         ratings = task_df[active_cols].values.astype(float)
         metrics = compute_metrics(ratings)
-        results.append(
-            {
-                "dataset": "inter_physician",
-                "axis": task,
-                **metrics,
-                "n_items": ratings.shape[0],
-                "n_raters": len(active_cols),
-                "note": "",
-            }
-        )
+        results.append({
+            "dataset": "inter_physician",
+            "axis": task,
+            **metrics,
+            "n_items": ratings.shape[0],
+            "n_raters": len(active_cols),
+            "note": "",
+        })
 
     return results
 
 
-JUDGE_SCORES_DIR = Path(__file__).parents[2] / "data" / "judge_scores"
-RESULTS_DIR = Path(__file__).parents[2] / "results" / "03_27_deepseek_gemini"
-
-# Models used for IM and HM correlation computations
-MODELS_TO_PLOT = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "deepseek-r1", "gemini-2.5"]
-MODEL_COLORS = {"claude-3.5-sonnet": "#E91E63", "gpt-4.1": "#FF9800", "gpt-5": "#4CAF50", "deepseek-r1": "#9C27B0", "gemini-2.5": "#009688"}
-HUMAN_COLOR = "#2196F3"
-
-# Axes that have judge score files (inter_physician has no LLM judge scores)
-DATASET_AXES = {
-    "hanna": ["Relevance", "Coherence", "Empathy", "Surprise", "Engagement", "Complexity"],
-    "mslr": ["fluency", "population", "intervention", "outcome"],
-    "summeval": ["coherence", "consistency", "fluency", "relevance"],
-    "medval": ["Risk"],
-}
-
-# Bootstrap parameters for HM MSB/MSE correlation computation
-N_CORR_SAMPLES = 30
-CORR_SAMPLE_SIZE = 30
-
+# ---------------------------------------------------------------------------
+# Model score loading
+# ---------------------------------------------------------------------------
 
 def _extract_model_score(result: dict):
     """Extract model score from a result dict (handles two JSON shapes)."""
@@ -414,10 +460,8 @@ def load_judge_scores_for_model(dataset: str, axis: str, model: str):
     if not score_dir.exists():
         return {}
 
-    # Match case-insensitively on axis
     matches = list(score_dir.glob(f"results_{dataset}_{model}_{axis}.json"))
     if not matches:
-        # Try case-insensitive glob via listdir
         for fname in score_dir.iterdir():
             if fname.stem.lower() == f"results_{dataset}_{model}_{axis}".lower():
                 matches = [fname]
@@ -476,6 +520,10 @@ def load_model_scores_df(dataset: str, axis: str, models: list[str]) -> pd.DataF
 
     return pd.DataFrame(rows)
 
+
+# ---------------------------------------------------------------------------
+# Inter-model (IM) and human-model (HM) statistics
+# ---------------------------------------------------------------------------
 
 def _build_im_pairwise_df_subset(sub: pd.DataFrame, model: str, all_models: list) -> pd.DataFrame:
     """
@@ -646,6 +694,10 @@ def compute_hm_ms_corr(scores_df: pd.DataFrame,
     return per_model
 
 
+# ---------------------------------------------------------------------------
+# Best method gap computation
+# ---------------------------------------------------------------------------
+
 def compute_best_method_gap(dataset: str, axis: str, metric: str,
                              budget: int | None = None,
                              model: str | None = None) -> tuple[str, float]:
@@ -672,12 +724,10 @@ def compute_best_method_gap(dataset: str, axis: str, metric: str,
 
     df = pd.read_csv(fpath)
 
-    # Filter to matching axis (case-insensitive)
     axis_data = df[df["axis"].str.lower() == axis.lower()]
     if axis_data.empty:
         return "", np.nan
 
-    # Optionally filter to a specific budget and/or model
     if budget is not None:
         axis_data = axis_data[axis_data["budget"] == budget]
     if model is not None:
@@ -685,7 +735,6 @@ def compute_best_method_gap(dataset: str, axis: str, metric: str,
     if axis_data.empty:
         return "", np.nan
 
-    # Exclude oracle and metric_matched methods
     exclude_mask = (
         axis_data["method"].str.startswith("oracle") |
         axis_data["method"].str.startswith("metric_matched")
@@ -698,9 +747,7 @@ def compute_best_method_gap(dataset: str, axis: str, metric: str,
     if random_data.empty or non_random_data.empty:
         return "", np.nan
 
-    random_baseline = (
-        random_data.groupby(["model", "budget"])["estimation_error"].mean()
-    )
+    random_baseline = random_data.groupby(["model", "budget"])["estimation_error"].mean()
 
     method_gaps: dict[str, list[float]] = {}
     for method in non_random_data["method"].unique():
@@ -723,10 +770,95 @@ def compute_best_method_gap(dataset: str, axis: str, metric: str,
     return best_method, avg_gaps[best_method]
 
 
+def compute_gap_for_method(dataset: str, axis: str, metric: str,
+                            method_name: str, model: str | None = None,
+                            budget: int | None = None) -> float:
+    """Return the avg gap vs random for a specific named method."""
+    dataset_dir = RESULTS_DIR / dataset / dataset / "dataframes"
+    fpath = dataset_dir / f"{metric}_results.csv"
+    if not fpath.exists():
+        return np.nan
+    df = pd.read_csv(fpath)
+    axis_data = df[df["axis"].str.lower() == axis.lower()]
+    if model:
+        axis_data = axis_data[axis_data["model"] == model]
+    if budget is not None:
+        axis_data = axis_data[axis_data["budget"] == budget]
+    random_data = axis_data[axis_data["method"] == "random"]
+    method_data = axis_data[axis_data["method"] == method_name]
+    if random_data.empty or method_data.empty:
+        return np.nan
+    random_baseline = random_data.groupby(["model", "budget"])["estimation_error"].mean()
+    gaps = []
+    for (mdl, bdg), grp in method_data.groupby(["model", "budget"]):
+        try:
+            gaps.append(float(grp["estimation_error"].mean() - random_baseline[(mdl, bdg)]))
+        except KeyError:
+            pass
+    return float(np.mean(gaps)) if gaps else np.nan
+
+
+def find_global_best_method(output_df: pd.DataFrame,
+                             budget: int | None = None) -> tuple[str, float]:
+    """
+    Find the single variance_matched method with the most negative average gap
+    across all (dataset, axis, model, metric) combinations.
+
+    Args:
+        budget: if None, aggregate across all budgets; if int, restrict to that budget.
+
+    Returns:
+        (best_method, avg_gap_across_all)
+    """
+    method_gaps: dict[str, list[float]] = {}
+
+    for _, row in output_df.iterrows():
+        dataset = row["dataset"]
+        axis = row["axis"]
+        model = row.get("model") or None
+        if not model:
+            continue
+        for metric in ("icc", "alpha"):
+            dataset_dir = RESULTS_DIR / dataset / dataset / "dataframes"
+            fpath = dataset_dir / f"{metric}_results.csv"
+            if not fpath.exists():
+                continue
+            df = pd.read_csv(fpath)
+            axis_data = df[(df["axis"].str.lower() == axis.lower()) &
+                           (df["model"] == model)]
+            if budget is not None:
+                axis_data = axis_data[axis_data["budget"] == budget]
+            exclude = (axis_data["method"].str.startswith("oracle") |
+                       axis_data["method"].str.startswith("metric_matched"))
+            axis_data = axis_data[~exclude]
+            random_data = axis_data[axis_data["method"] == "random"]
+            non_random = axis_data[axis_data["method"] != "random"]
+            if random_data.empty or non_random.empty:
+                continue
+            random_baseline = random_data.groupby(["model", "budget"])["estimation_error"].mean()
+            for method in non_random["method"].unique():
+                for (mdl, bdg), grp in non_random[non_random["method"] == method].groupby(["model", "budget"]):
+                    try:
+                        gap = float(grp["estimation_error"].mean() - random_baseline[(mdl, bdg)])
+                        method_gaps.setdefault(method, []).append(gap)
+                    except KeyError:
+                        pass
+
+    if not method_gaps:
+        return "", np.nan
+    avg_gaps = {m: float(np.mean(g)) for m, g in method_gaps.items()}
+    best = min(avg_gaps, key=avg_gaps.get)
+    return best, avg_gaps[best]
+
+
+# ---------------------------------------------------------------------------
+# Plotting
+# ---------------------------------------------------------------------------
+
 def plot_score_distributions():
     """
     For each dataset and axis, plot a histogram comparing human score distribution
-    vs. each of the three model score distributions (one panel per axis).
+    vs. each of the model score distributions.
     Saves one figure per dataset to OUTPUT_DIR/plots/.
     """
     plots_dir = OUTPUT_DIR / "plots"
@@ -775,201 +907,6 @@ def plot_score_distributions():
         plt.savefig(out_path, dpi=150, bbox_inches="tight")
         plt.close()
         print(f"  Saved plot: {out_path}")
-
-
-MODEL_MARKERS = {
-    "claude-3.5-sonnet": "o",
-    "gpt-4.1":           "s",
-    "gpt-5":             "^",
-    "deepseek-r1":         "D",
-    "gemini-2.5":           "P",
-}
-
-DATASET_COLORS = {
-    "hanna":    "#E91E63",
-    "mslr":     "#FF9800",
-    "summeval": "#4CAF50",
-    "medval":   "#2196F3",
-}
-
-X_VARS = [
-    ("icc",                   "Human ICC"),
-    ("krippendorff_alpha",    "Human Alpha"),
-    ("mse",                   "Human MSE"),
-    ("human_msb_mse_ratio",   "Human MSB/MSE"),
-    ("im_msb",                "IM MSB"),
-    ("im_mse",                "IM MSE"),
-    ("im_icc",                "IM ICC"),
-    ("hm_msb_mse_ratio",      "HM MSB/MSE"),
-    ("hm_msb_corr",           "HM MSB Corr"),
-    ("hm_mse_corr",           "HM MSE Corr"),
-    ("hm_icc_corr",           "HM ICC Corr"),
-]
-
-Y_VARS = [
-    ("avg_gap_icc",   "best_method_icc",   "Avg Gap (ICC)"),
-    ("avg_gap_alpha", "best_method_alpha",  "Avg Gap (Alpha)"),
-    ("avg_gap_mse",   "best_method_mse",    "Avg Gap (MSE)"),
-]
-
-
-def compute_gap_for_method(dataset: str, axis: str, metric: str,
-                            method_name: str, model: str | None = None) -> float:
-    """Return the avg gap vs random for a specific named method."""
-    dataset_dir = RESULTS_DIR / dataset / dataset / "dataframes"
-    fpath = dataset_dir / f"{metric}_results.csv"
-    if not fpath.exists():
-        return np.nan
-    df = pd.read_csv(fpath)
-    axis_data = df[df["axis"].str.lower() == axis.lower()]
-    if model:
-        axis_data = axis_data[axis_data["model"] == model]
-    random_data = axis_data[axis_data["method"] == "random"]
-    method_data = axis_data[axis_data["method"] == method_name]
-    if random_data.empty or method_data.empty:
-        return np.nan
-    random_baseline = random_data.groupby(["model", "budget"])["estimation_error"].mean()
-    gaps = []
-    for (mdl, budget), grp in method_data.groupby(["model", "budget"]):
-        try:
-            gaps.append(float(grp["estimation_error"].mean() - random_baseline[(mdl, budget)]))
-        except KeyError:
-            pass
-    return float(np.mean(gaps)) if gaps else np.nan
-
-
-def find_global_best_method(output_df: pd.DataFrame) -> tuple[str, float]:
-    """
-    Find the single variance_matched method with the most negative average gap
-    across all (dataset, axis, model, metric) combinations.
-
-    Returns:
-        (best_method, avg_gap_across_all)
-    """
-    method_gaps: dict[str, list[float]] = {}
-
-    for _, row in output_df.iterrows():
-        dataset = row["dataset"]
-        axis = row["axis"]
-        model = row.get("model") or None
-        if not model:
-            continue
-        for metric in ("icc", "alpha"):
-            dataset_dir = RESULTS_DIR / dataset / dataset / "dataframes"
-            fpath = dataset_dir / f"{metric}_results.csv"
-            if not fpath.exists():
-                continue
-            df = pd.read_csv(fpath)
-            axis_data = df[(df["axis"].str.lower() == axis.lower()) &
-                           (df["model"] == model)]
-            exclude = (axis_data["method"].str.startswith("oracle") |
-                       axis_data["method"].str.startswith("metric_matched"))
-            axis_data = axis_data[~exclude]
-            random_data = axis_data[axis_data["method"] == "random"]
-            non_random = axis_data[axis_data["method"] != "random"]
-            if random_data.empty or non_random.empty:
-                continue
-            random_baseline = random_data.groupby(["model", "budget"])["estimation_error"].mean()
-            for method in non_random["method"].unique():
-                for (mdl, budget), grp in non_random[non_random["method"] == method].groupby(["model", "budget"]):
-                    try:
-                        gap = float(grp["estimation_error"].mean() - random_baseline[(mdl, budget)])
-                        method_gaps.setdefault(method, []).append(gap)
-                    except KeyError:
-                        pass
-
-    if not method_gaps:
-        return "", np.nan
-    avg_gaps = {m: float(np.mean(g)) for m, g in method_gaps.items()}
-    best = min(avg_gaps, key=avg_gaps.get)
-    return best, avg_gaps[best]
-
-
-def plot_global_best_method(output_df: pd.DataFrame) -> None:
-    """
-    Find the single globally best method (across all models, metrics, axes),
-    then plot predictor vs its gap, coloring by dataset and shaping by model.
-    """
-    plots_dir = OUTPUT_DIR / "plots"
-    plots_dir.mkdir(exist_ok=True)
-
-    print("  Finding globally best method...")
-    best_method, best_avg_gap = find_global_best_method(output_df)
-    if not best_method:
-        print("  No data — skipping global best method plot.")
-        return
-    print(f"  Globally best method: {best_method} (avg gap across all: {best_avg_gap:.4f})")
-
-    # Build plot DataFrame: one row per (dataset, axis, model), gap = gap for best_method
-    plot_rows = []
-    pred_cols = [x for x, _ in X_VARS]
-    for _, row in output_df.iterrows():
-        model = row.get("model") or None
-        if not model:
-            continue
-        prow = {c: row[c] for c in pred_cols + ["dataset", "axis", "model"] if c in row}
-        for metric in ("icc", "alpha", "mse"):
-            prow[f"avg_gap_{metric}"] = compute_gap_for_method(
-                row["dataset"], row["axis"], metric, best_method, model=model)
-        plot_rows.append(prow)
-
-    plot_df = pd.DataFrame(plot_rows)
-
-    n_rows, n_cols = len(Y_VARS), len(X_VARS)
-    fig, axes = plt.subplots(n_rows, n_cols,
-                             figsize=(3.5 * n_cols, 3.2 * n_rows),
-                             squeeze=False)
-    fig.suptitle(f"Global best method: {best_method}  (avg gap = {best_avg_gap:.4f})",
-                 fontsize=13)
-
-    for row_idx, (y_col, _, y_label) in enumerate(Y_VARS):
-        for col_idx, (x_col, x_label) in enumerate(X_VARS):
-            ax = axes[row_idx][col_idx]
-            sub = plot_df[[x_col, y_col, "dataset", "model"]].dropna(subset=[x_col, y_col])
-            if sub.empty:
-                ax.set_visible(False)
-                continue
-            for dataset, ds_grp in sub.groupby("dataset"):
-                color = DATASET_COLORS.get(dataset, "gray")
-                for mdl, mdl_grp in ds_grp.groupby("model"):
-                    ax.scatter(mdl_grp[x_col], mdl_grp[y_col],
-                               color=color, marker=MODEL_MARKERS.get(mdl, "o"),
-                               s=45, alpha=0.85, zorder=3)
-            if len(sub) >= 3:
-                r = float(np.corrcoef(sub[x_col], sub[y_col])[0, 1])
-                ax.text(0.05, 0.95, f"r={r:.2f}", transform=ax.transAxes,
-                        fontsize=8, va="top")
-            ax.axhline(0, color="black", linewidth=0.7, linestyle="--", alpha=0.5)
-            if col_idx == 0:
-                ax.set_ylabel(y_label, fontsize=9)
-            if row_idx == 0:
-                ax.set_title(x_label, fontsize=9)
-            ax.set_xlabel(x_label, fontsize=8)
-            ax.tick_params(labelsize=7)
-
-    dataset_handles = [
-        plt.Line2D([0], [0], marker="o", color="w",
-                   markerfacecolor=DATASET_COLORS.get(d, "gray"), markersize=7, label=d)
-        for d in DATASET_COLORS
-    ]
-    model_handles = [
-        plt.Line2D([0], [0], marker=mk, color="gray", markersize=7,
-                   linestyle="None", label=mdl)
-        for mdl, mk in MODEL_MARKERS.items()
-    ]
-    leg1 = fig.legend(handles=dataset_handles, loc="lower center",
-                      ncol=len(DATASET_COLORS), fontsize=7,
-                      bbox_to_anchor=(0.5, -0.02), title="Dataset")
-    fig.add_artist(leg1)
-    fig.legend(handles=model_handles, loc="lower center",
-               ncol=len(MODEL_MARKERS), fontsize=7,
-               bbox_to_anchor=(0.5, -0.07), title="Model")
-
-    plt.tight_layout(rect=[0, 0.08, 1, 1])
-    out_path = plots_dir / "predictor_gap_scatter_global_best.png"
-    plt.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"  Saved plot: {out_path}")
 
 
 def plot_predictor_gap_scatter(df: pd.DataFrame,
@@ -1067,6 +1004,106 @@ def plot_predictor_gap_scatter(df: pd.DataFrame,
     print(f"  Saved plot: {out_path}")
 
 
+def plot_global_best_method(output_df: pd.DataFrame,
+                             budget: int | None = None) -> None:
+    """
+    Find the single globally best method (across all models, metrics, axes),
+    then plot predictor vs its gap, coloring by dataset and shaping by model.
+
+    Args:
+        budget: if None, aggregate across all budgets; if int, restrict to that budget.
+    """
+    plots_dir = OUTPUT_DIR / "plots"
+    plots_dir.mkdir(exist_ok=True)
+
+    budget_label = "overall" if budget is None else f"b{budget}"
+    budget_title = "Overall (all budgets)" if budget is None else f"Budget {budget}"
+
+    print(f"  Finding globally best method ({budget_title})...")
+    best_method, best_avg_gap = find_global_best_method(output_df, budget=budget)
+    if not best_method:
+        print(f"  No data — skipping global best method plot ({budget_title}).")
+        return
+    print(f"  Globally best method ({budget_title}): {best_method} (avg gap = {best_avg_gap:.4f})")
+
+    # Build plot DataFrame: one row per (dataset, axis, model)
+    plot_rows = []
+    pred_cols = [x for x, _ in X_VARS]
+    for _, row in output_df.iterrows():
+        model = row.get("model") or None
+        if not model:
+            continue
+        prow = {c: row[c] for c in pred_cols + ["dataset", "axis", "model"] if c in row}
+        for metric in ("icc", "alpha", "mse"):
+            prow[f"avg_gap_{metric}"] = compute_gap_for_method(
+                row["dataset"], row["axis"], metric, best_method,
+                model=model, budget=budget)
+        plot_rows.append(prow)
+
+    plot_df = pd.DataFrame(plot_rows)
+
+    n_rows, n_cols = len(Y_VARS), len(X_VARS)
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(3.5 * n_cols, 3.2 * n_rows),
+                             squeeze=False)
+    fig.suptitle(
+        f"Global best method: {best_method}  (avg gap = {best_avg_gap:.4f})  [{budget_title}]",
+        fontsize=13)
+
+    for row_idx, (y_col, _, y_label) in enumerate(Y_VARS):
+        for col_idx, (x_col, x_label) in enumerate(X_VARS):
+            ax = axes[row_idx][col_idx]
+            sub = plot_df[[x_col, y_col, "dataset", "model"]].dropna(subset=[x_col, y_col])
+            if sub.empty:
+                ax.set_visible(False)
+                continue
+            for dataset, ds_grp in sub.groupby("dataset"):
+                color = DATASET_COLORS.get(dataset, "gray")
+                for mdl, mdl_grp in ds_grp.groupby("model"):
+                    ax.scatter(mdl_grp[x_col], mdl_grp[y_col],
+                               color=color, marker=MODEL_MARKERS.get(mdl, "o"),
+                               s=45, alpha=0.85, zorder=3)
+            if len(sub) >= 3:
+                r = float(np.corrcoef(sub[x_col], sub[y_col])[0, 1])
+                ax.text(0.05, 0.95, f"r={r:.2f}", transform=ax.transAxes,
+                        fontsize=8, va="top")
+            ax.axhline(0, color="black", linewidth=0.7, linestyle="--", alpha=0.5)
+            if col_idx == 0:
+                ax.set_ylabel(y_label, fontsize=9)
+            if row_idx == 0:
+                ax.set_title(x_label, fontsize=9)
+            ax.set_xlabel(x_label, fontsize=8)
+            ax.tick_params(labelsize=7)
+
+    dataset_handles = [
+        plt.Line2D([0], [0], marker="o", color="w",
+                   markerfacecolor=DATASET_COLORS.get(d, "gray"), markersize=7, label=d)
+        for d in DATASET_COLORS
+    ]
+    model_handles = [
+        plt.Line2D([0], [0], marker=mk, color="gray", markersize=7,
+                   linestyle="None", label=mdl)
+        for mdl, mk in MODEL_MARKERS.items()
+    ]
+    leg1 = fig.legend(handles=dataset_handles, loc="lower center",
+                      ncol=len(DATASET_COLORS), fontsize=7,
+                      bbox_to_anchor=(0.5, -0.02), title="Dataset")
+    fig.add_artist(leg1)
+    fig.legend(handles=model_handles, loc="lower center",
+               ncol=len(MODEL_MARKERS), fontsize=7,
+               bbox_to_anchor=(0.5, -0.07), title="Model")
+
+    plt.tight_layout(rect=[0, 0.08, 1, 1])
+    out_path = plots_dir / f"predictor_gap_scatter_global_best_{budget_label}.png"
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  Saved plot: {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 def main():
     all_results = []
     all_results.extend(process_hanna())
@@ -1089,9 +1126,9 @@ def main():
         if dataset in DATASET_AXES:
             print(f"  {dataset}/{axis}: loading scores...")
             scores_df = load_model_scores_df(dataset, axis, MODELS_TO_PLOT)
-            im_stats_per_model = compute_im_stats(scores_df)      # model -> {im_msb,...}
-            hm_stats_per_model = compute_hm_stats(scores_df)      # model -> {hm_msb_mse_ratio}
-            corr_per_model = compute_hm_ms_corr(scores_df)        # model -> (r_msb, r_mse, r_icc)
+            im_stats_per_model = compute_im_stats(scores_df)   # model -> {im_msb,...}
+            hm_stats_per_model = compute_hm_stats(scores_df)   # model -> {hm_msb_mse_ratio}
+            corr_per_model = compute_hm_ms_corr(scores_df)     # model -> (r_msb, r_mse, r_icc)
 
             for model in MODELS_TO_PLOT:
                 mrow = dict(row)
@@ -1182,8 +1219,9 @@ def main():
         plot_predictor_gap_scatter(plot_dfs[bdg], budget=bdg,
                                    method_color=shared_method_color)
 
-    print("\nGenerating global best method plot...")
-    plot_global_best_method(output_df)
+    print("\nGenerating global best method plots (overall + per budget)...")
+    for bdg in PLOT_BUDGETS:
+        plot_global_best_method(output_df, budget=bdg)
 
 
 if __name__ == "__main__":
