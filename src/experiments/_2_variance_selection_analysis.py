@@ -554,7 +554,8 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
     needs_ppi = any(imc for _, imc in [_parse_strategy(s) for s in strategy_variants])
     needs_plain = any(not imc for _, imc in [_parse_strategy(s) for s in strategy_variants])
 
-    results = {s: {"icc_errors": [], "alpha_errors": [], "mse_errors": []} for s in strategy_variants}
+    results = {s: {"icc_errors": [], "alpha_errors": [], "mse_errors": [],
+                   "icc_preds": [], "alpha_preds": []} for s in strategy_variants}
 
     actual_trials = 1 if base_strategy == "max_expand" else n_trials
 
@@ -755,9 +756,11 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             if matched_metric in (None, "icc"):
                 if est_icc is not None and np.isfinite(est_icc):
                     results[strategy]["icc_errors"].append(min(2, abs(est_icc - true_icc)))
+                    results[strategy]["icc_preds"].append(est_icc)
             if matched_metric in (None, "alpha"):
                 if est_alpha is not None and np.isfinite(est_alpha):
                     results[strategy]["alpha_errors"].append(min(2, abs(est_alpha - true_alpha)))
+                    results[strategy]["alpha_preds"].append(est_alpha)
             if matched_metric in (None, "mse"):
                 if est_mse is not None and np.isfinite(est_mse) and true_mse is not None and np.isfinite(true_mse):
                     results[strategy]["mse_errors"].append(abs(est_mse - true_mse))
@@ -901,10 +904,14 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
                 past_hm_mse_obs.extend(new_hm_mse)
 
                 for strategy, errors in trial_results.items():
-                    for error in errors["icc_errors"]:
-                        icc_results.append({"model": model, "budget": k, "method": strategy, "estimation_error": error})
-                    for error in errors["alpha_errors"]:
-                        alpha_results.append({"model": model, "budget": k, "method": strategy, "estimation_error": error})
+                    for error, pred in zip(errors["icc_errors"], errors["icc_preds"]):
+                        icc_results.append({"model": model, "budget": k, "method": strategy,
+                                            "estimation_error": error, "predicted_icc": pred,
+                                            "true_icc": true_icc})
+                    for error, pred in zip(errors["alpha_errors"], errors["alpha_preds"]):
+                        alpha_results.append({"model": model, "budget": k, "method": strategy,
+                                              "estimation_error": error, "predicted_alpha": pred,
+                                              "true_alpha": true_alpha})
                     for error in errors["mse_errors"]:
                         mse_results.append({"model": model, "budget": k, "method": strategy, "estimation_error": error})
 

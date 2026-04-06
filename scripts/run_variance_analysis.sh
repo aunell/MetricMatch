@@ -41,14 +41,14 @@ set -e  # Exit on error
 N_BOOTSTRAP=100
 N_CANDIDATES=20
 TOTAL_ANNOTATIONS=300
-PLOTS_DIR="results/03_30_deepseek_gemini"
+PLOTS_DIR="results/04_01_downstream_task_small_ensemble_and_target"
 DATA_DIR="data/judge_scores"
 COMPARISON_MODE="pairwise_average"
 ONLINE_ACQUISITION=true  # true → cumulative/incremental selection; false → batch selection
 STEP_SIZE=5              # step size for annotation budget levels (e.g. 1, 5, 10)
 MAX_BUDGET=50            # maximum annotation budget to evaluate
 DATASETS=("medval" "summeval" "mslr" "hanna") #("hanna" "medval" "mslr" "summeval")
-MODEL_NAMES=("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro")
+MODEL_NAMES=("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro" "gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")
 # MODEL_NAMES=("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")
 TARGET_MODELS=() #("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro")  # empty = use MODEL_NAMES
 ENSEMBLE_MODELS=() #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")  # empty = use MODEL_NAMES
@@ -199,7 +199,7 @@ for dataset in "${DATASETS[@]}"; do
       source \$CONDA_DIR/etc/profile.d/conda.sh
       conda activate pac_judge
       cd SmartSample_local
-      python -m src.experiments.variance_selection_analysis \
+      python -m src.experiments._2_variance_selection_analysis \
         --dataset '$dataset' \
         --model-names ${MODEL_NAMES[*]} \
         --data-dir '$DATA_DIR' \
