@@ -20,6 +20,8 @@ from src.utils.reliability_metrics import (
     compute_ms_components,
     compute_icc_pingouin,
     compute_krippendorff_alpha,
+    compute_spearman_rho,
+    compute_kendall_tau,
     compute_reliability_ppi_corrected,
 )
 from src.utils.selection_strategies import (
@@ -87,6 +89,8 @@ SAMPLING_STRATEGIES = [
     "oracle_icc",
     "oracle_alpha",
     "oracle_mean_squared_error",
+    "oracle_rho",
+    "oracle_tau",
     "metric_matched_icc",
     "metric_matched_alpha",
     "metric_matched_mse",
@@ -459,10 +463,14 @@ _ORACLE_SCORE_METHOD = {
 # oracle_icc                – matches on ICC
 # oracle_alpha              – matches on Krippendorff's alpha
 # oracle_mean_squared_error – matches on MSE (the estimation target, not the ANOVA component)
+# oracle_rho                – matches on Spearman rho
+# oracle_tau                – matches on Kendall tau
 _ORACLE_TARGET_BASES = {
     "oracle_icc":                ("icc",   "true_icc"),
     "oracle_alpha":              ("alpha", "true_alpha"),
     "oracle_mean_squared_error": ("mse",   "true_mse"),
+    "oracle_rho":                ("rho",   "true_rho"),
+    "oracle_tau":                ("tau",   "true_tau"),
 }
 
 # Base strategy names that apply adaptive bias correction to the MSB/MSE selection
@@ -479,11 +487,14 @@ _METRIC_MATCH_TARGET = {
     "oracle_icc":                "icc",
     "oracle_alpha":              "alpha",
     "oracle_mean_squared_error": "mse",
+    "oracle_rho":                "rho",
+    "oracle_tau":                "tau",
 }
 
 
 def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials,
                           hm_full_df, im_full_df, model, true_icc, true_alpha, true_mse,
+                          true_rho=None, true_tau=None,
                           im_msb_target=None, im_mse_target=None,
                           hm_msb_target=None, hm_mse_target=None,
                           im_models=None, true_im_icc=None, true_im_alpha=None,
@@ -555,7 +566,9 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
     needs_plain = any(not imc for _, imc in [_parse_strategy(s) for s in strategy_variants])
 
     results = {s: {"icc_errors": [], "alpha_errors": [], "mse_errors": [],
-                   "icc_preds": [], "alpha_preds": []} for s in strategy_variants}
+                   "rho_errors": [], "tau_errors": [],
+                   "icc_preds": [], "alpha_preds": [],
+                   "rho_preds": [], "tau_preds": []} for s in strategy_variants}
 
     actual_trials = 1 if base_strategy == "max_expand" else n_trials
 
@@ -682,12 +695,15 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             # True oracle for target metric: uses HM scores for both scoring and targeting.
             target_metric, target_attr = _ORACLE_TARGET_BASES[base_strategy]
             target_val = {"true_icc": true_icc, "true_alpha": true_alpha,
-                          "true_mse": true_mse}[target_attr]
+                          "true_mse": true_mse, "true_rho": true_rho,
+                          "true_tau": true_tau}[target_attr]
             sampled_ids = metric_matched_selection(
                 text_ids, k, hm_full_df, target_val, target_metric,
                 fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
                 seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
-                im_models=[model, "original"], forced_ids=forced_ids
+                im_models=[model, "original"], forced_ids=forced_ids,
+                compute_rho_fn=compute_spearman_rho,
+                compute_tau_fn=compute_kendall_tau,
             )
             if sampled_ids is None:
                 continue
@@ -718,13 +734,15 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             new_hm_mse_obs.append(hm_ms.mse)
 
         # ── Compute each correction type exactly once ───────────────────────
-        plain_icc = plain_alpha = None
+        plain_icc = plain_alpha = plain_rho = plain_tau = None
         ppi_icc = ppi_alpha = None
 
         try:
             if needs_plain:
                 plain_icc = compute_icc_pingouin(hm_sample, models=[model, "original"])
                 plain_alpha = compute_krippendorff_alpha(hm_sample, models=[model, "original"])
+                plain_rho = compute_spearman_rho(hm_sample, models=[model, "original"])
+                plain_tau = compute_kendall_tau(hm_sample, models=[model, "original"])
 
             if needs_ppi:
                 ppi_icc, ppi_alpha = compute_reliability_ppi_corrected(
@@ -752,6 +770,9 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             else:
                 est_icc, est_alpha = plain_icc, plain_alpha
                 est_mse = plain_mse
+            # Rho and tau use plain estimates only (no PPI correction defined)
+            est_rho = plain_rho
+            est_tau = plain_tau
 
             if matched_metric in (None, "icc"):
                 if est_icc is not None and np.isfinite(est_icc):
@@ -764,6 +785,14 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             if matched_metric in (None, "mse"):
                 if est_mse is not None and np.isfinite(est_mse) and true_mse is not None and np.isfinite(true_mse):
                     results[strategy]["mse_errors"].append(abs(est_mse - true_mse))
+            if matched_metric in (None, "rho"):
+                if est_rho is not None and np.isfinite(est_rho) and true_rho is not None and np.isfinite(true_rho):
+                    results[strategy]["rho_errors"].append(abs(est_rho - true_rho))
+                    results[strategy]["rho_preds"].append(est_rho)
+            if matched_metric in (None, "tau"):
+                if est_tau is not None and np.isfinite(est_tau) and true_tau is not None and np.isfinite(true_tau):
+                    results[strategy]["tau_errors"].append(abs(est_tau - true_tau))
+                    results[strategy]["tau_preds"].append(est_tau)
 
     return results, new_im_msb_obs, new_im_mse_obs, new_hm_msb_obs, new_hm_mse_obs, updated_selected_per_trial
 
@@ -795,6 +824,8 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
     icc_results = []
     alpha_results = []
     mse_results = []
+    rho_results = []
+    tau_results = []
     reliability_metadata = {}
 
     if n_trials is None:
@@ -824,7 +855,9 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
         true_alpha = compute_krippendorff_alpha(hm_full_df, models=[model, "original"])
         hm_ms_full = compute_ms_components(hm_full_df[hm_full_df["model_name"].isin([model, "original"])])
         true_mse = hm_ms_full.mse if hm_ms_full is not None else np.nan
-        print(f"{model}: ICC={true_icc:.4f}, Alpha={true_alpha:.4f}, MSE={true_mse:.4f}")
+        true_rho = compute_spearman_rho(hm_full_df, models=[model, "original"])
+        true_tau = compute_kendall_tau(hm_full_df, models=[model, "original"])
+        print(f"{model}: ICC={true_icc:.4f}, Alpha={true_alpha:.4f}, MSE={true_mse:.4f}, Rho={true_rho:.4f}, Tau={true_tau:.4f}")
 
         # Build inter-model DataFrame using the target + ensemble (excluding target from its own ensemble)
         eff_ensemble = [e for e in ensemble_models if e != model]
@@ -863,6 +896,8 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
             "true_hm_icc": true_icc,
             "true_hm_alpha": true_alpha,
             "true_hm_mse": true_mse,
+            "true_hm_rho": true_rho,
+            "true_hm_tau": true_tau,
             "im_icc": im_icc,
             "im_alpha": im_alpha,
             "im_mse": im_mse_target,
@@ -886,6 +921,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
                     _run_trials_for_base(
                         base_strategy, strategy_variants, text_ids, k, n_trials,
                         hm_full_df, im_full_df, model, true_icc, true_alpha, true_mse,
+                        true_rho=true_rho, true_tau=true_tau,
                         im_msb_target=im_msb_target, im_mse_target=im_mse_target,
                         hm_msb_target=hm_msb_target, hm_mse_target=hm_mse_target,
                         im_models=im_models, true_im_icc=im_icc, true_im_alpha=im_alpha,
@@ -914,8 +950,17 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
                                               "true_alpha": true_alpha})
                     for error in errors["mse_errors"]:
                         mse_results.append({"model": model, "budget": k, "method": strategy, "estimation_error": error})
+                    for error, pred in zip(errors["rho_errors"], errors["rho_preds"]):
+                        rho_results.append({"model": model, "budget": k, "method": strategy,
+                                            "estimation_error": error, "predicted_rho": pred,
+                                            "true_rho": true_rho})
+                    for error, pred in zip(errors["tau_errors"], errors["tau_preds"]):
+                        tau_results.append({"model": model, "budget": k, "method": strategy,
+                                            "estimation_error": error, "predicted_tau": pred,
+                                            "true_tau": true_tau})
 
-    return pd.DataFrame(icc_results), pd.DataFrame(alpha_results), pd.DataFrame(mse_results), reliability_metadata
+    return (pd.DataFrame(icc_results), pd.DataFrame(alpha_results), pd.DataFrame(mse_results),
+            pd.DataFrame(rho_results), pd.DataFrame(tau_results), reliability_metadata)
 
 
 # -------------------------
@@ -927,12 +972,12 @@ def _run_axis_worker(args):
     axis_per_model_variance, _ = compute_variance_alignment(
         axis_df, target_models, ensemble_models, mode=COMPARISON_MODE
     )
-    axis_icc, axis_alpha, axis_mse, axis_metadata = evaluate_reliability_estimators(
+    axis_icc, axis_alpha, axis_mse, axis_rho, axis_tau, axis_metadata = evaluate_reliability_estimators(
         axis_df, target_models, ensemble_models, axis_per_model_variance,
         budgets=range(5, MAX_BUDGET + 1, STEP_SIZE),
         online_acquisition=ONLINE_ACQUISITION
     )
-    return axis, axis_icc, axis_alpha, axis_mse, axis_metadata, axis_per_model_variance
+    return axis, axis_icc, axis_alpha, axis_mse, axis_rho, axis_tau, axis_metadata, axis_per_model_variance
 
 
 # -------------------------
@@ -978,20 +1023,27 @@ def main():
     icc_results_by_axis = {}
     alpha_results_by_axis = {}
     mse_results_by_axis = {}
+    rho_results_by_axis = {}
+    tau_results_by_axis = {}
     reliability_metadata_by_axis = {}
     per_model_variance_by_axis = {}
-    for axis, axis_icc, axis_alpha, axis_mse, axis_metadata, axis_per_model_var in axis_results:
+    for axis, axis_icc, axis_alpha, axis_mse, axis_rho, axis_tau, axis_metadata, axis_per_model_var in axis_results:
         icc_results_by_axis[axis] = axis_icc
         alpha_results_by_axis[axis] = axis_alpha
         mse_results_by_axis[axis] = axis_mse
+        rho_results_by_axis[axis] = axis_rho
+        tau_results_by_axis[axis] = axis_tau
         reliability_metadata_by_axis[axis] = axis_metadata
         per_model_variance_by_axis[axis] = axis_per_model_var
-        print(f"Collected {len(axis_icc)} ICC, {len(axis_alpha)} Alpha, {len(axis_mse)} MSE results for {axis}")
+        print(f"Collected {len(axis_icc)} ICC, {len(axis_alpha)} Alpha, {len(axis_mse)} MSE, "
+              f"{len(axis_rho)} Rho, {len(axis_tau)} Tau results for {axis}")
 
     # Combine per-axis results
     all_icc_results = []
     all_alpha_results = []
     all_mse_results = []
+    all_rho_results = []
+    all_tau_results = []
     for axis in EVALUATION_AXES[dataset]:
         if axis in icc_results_by_axis and len(icc_results_by_axis[axis]) > 0:
             axis_icc = icc_results_by_axis[axis].copy()
@@ -1005,10 +1057,20 @@ def main():
             axis_mse = mse_results_by_axis[axis].copy()
             axis_mse["axis"] = axis
             all_mse_results.append(axis_mse)
+        if axis in rho_results_by_axis and len(rho_results_by_axis[axis]) > 0:
+            axis_rho = rho_results_by_axis[axis].copy()
+            axis_rho["axis"] = axis
+            all_rho_results.append(axis_rho)
+        if axis in tau_results_by_axis and len(tau_results_by_axis[axis]) > 0:
+            axis_tau = tau_results_by_axis[axis].copy()
+            axis_tau["axis"] = axis
+            all_tau_results.append(axis_tau)
 
     icc_results = pd.concat(all_icc_results, ignore_index=True) if all_icc_results else pd.DataFrame()
     alpha_results = pd.concat(all_alpha_results, ignore_index=True) if all_alpha_results else pd.DataFrame()
     mse_results = pd.concat(all_mse_results, ignore_index=True) if all_mse_results else pd.DataFrame()
+    rho_results = pd.concat(all_rho_results, ignore_index=True) if all_rho_results else pd.DataFrame()
+    tau_results = pd.concat(all_tau_results, ignore_index=True) if all_tau_results else pd.DataFrame()
 
     # Compute aggregate reliability metadata
     reliability_metadata_all = {}
@@ -1049,11 +1111,25 @@ def main():
             if model in reliability_metadata_by_axis[ax]
             and np.isfinite(reliability_metadata_by_axis[ax][model]["im_mse"])
         ]
+        hm_rho_vals = [
+            reliability_metadata_by_axis[ax][model]["true_hm_rho"]
+            for ax in reliability_metadata_by_axis
+            if model in reliability_metadata_by_axis[ax]
+            and np.isfinite(reliability_metadata_by_axis[ax][model]["true_hm_rho"])
+        ]
+        hm_tau_vals = [
+            reliability_metadata_by_axis[ax][model]["true_hm_tau"]
+            for ax in reliability_metadata_by_axis
+            if model in reliability_metadata_by_axis[ax]
+            and np.isfinite(reliability_metadata_by_axis[ax][model]["true_hm_tau"])
+        ]
 
         reliability_metadata_all[model] = {
             "true_hm_icc": np.mean(hm_icc_vals) if hm_icc_vals else np.nan,
             "true_hm_alpha": np.mean(hm_alpha_vals) if hm_alpha_vals else np.nan,
             "true_hm_mse": np.mean(hm_mse_vals) if hm_mse_vals else np.nan,
+            "true_hm_rho": np.mean(hm_rho_vals) if hm_rho_vals else np.nan,
+            "true_hm_tau": np.mean(hm_tau_vals) if hm_tau_vals else np.nan,
             "im_icc": np.mean(im_icc_vals) if im_icc_vals else np.nan,
             "im_alpha": np.mean(im_alpha_vals) if im_alpha_vals else np.nan,
             "im_mse": np.mean(im_mse_vals) if im_mse_vals else np.nan,
@@ -1065,6 +1141,8 @@ def main():
     print(f"Total ICC results collected: {len(icc_results)}")
     print(f"Total Alpha results collected: {len(alpha_results)}")
     print(f"Total MSE results collected: {len(mse_results)}")
+    print(f"Total Rho results collected: {len(rho_results)}")
+    print(f"Total Tau results collected: {len(tau_results)}")
 
     if len(icc_results) > 0:
         print(f"ICC Results by method:")
@@ -1072,8 +1150,9 @@ def main():
             count = len(icc_results[icc_results["method"] == method])
             print(f"  {method}: {count}")
 
-    return (icc_results, alpha_results, mse_results,
+    return (icc_results, alpha_results, mse_results, rho_results, tau_results,
             icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
+            rho_results_by_axis, tau_results_by_axis,
             reliability_metadata_all, reliability_metadata_by_axis,
             axis_jobs, per_model_variance_by_axis)
 
@@ -1086,16 +1165,21 @@ if __name__ == "__main__":
         print(f"\nLoading saved results from: {args.results_dir} (dataset={dataset})")
         (icc_results, alpha_results, mse_results,
          icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
-         reliability_metadata_all, reliability_metadata_by_axis) = load_results_dataframes(args.results_dir, dataset)
+         reliability_metadata_all, reliability_metadata_by_axis,
+         rho_results_by_axis, tau_results_by_axis) = load_results_dataframes(args.results_dir, dataset)
+        rho_results = pd.DataFrame()
+        tau_results = pd.DataFrame()
     else:
-        (icc_results, alpha_results, mse_results,
+        (icc_results, alpha_results, mse_results, rho_results, tau_results,
          icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
+         rho_results_by_axis, tau_results_by_axis,
          reliability_metadata_all, reliability_metadata_by_axis,
          axis_jobs_for_predictors, per_model_variance_by_axis_for_predictors) = main()
 
     plot_all_results(
-        icc_results, alpha_results, mse_results,
+        icc_results, alpha_results, mse_results, rho_results, tau_results,
         icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
+        rho_results_by_axis, tau_results_by_axis,
         reliability_metadata_all, reliability_metadata_by_axis,
         dataset, PLOTS_DIR, COMPARISON_MODE
     )

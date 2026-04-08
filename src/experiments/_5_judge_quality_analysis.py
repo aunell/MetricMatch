@@ -70,8 +70,8 @@ ALL_MODELS = [
 DEFAULT_DATA_DIR = "data/judge_scores"
 DEFAULT_OUTPUT_DIR = "results/judge_quality_analysis"
 
-OUR_METRICS = ["icc", "krippendorff_alpha"]
-DOWNSTREAM_METRICS = ["spearman_rho", "pearson_r", "mse", "mean_acc", "icc", "krippendorff_alpha"]
+OUR_METRICS = ["icc", "krippendorff_alpha", "spearman_rho", "kendall_tau"]
+DOWNSTREAM_METRICS = ["spearman_rho", "pearson_r", "mse", "mean_acc", "icc", "krippendorff_alpha", "kendall_tau"]
 
 # True = higher is better, False = lower is better
 METRIC_HIGHER_IS_BETTER: dict[str, bool] = {
@@ -81,9 +81,10 @@ METRIC_HIGHER_IS_BETTER: dict[str, bool] = {
     "pearson_r":         True,
     "mse":               False,
     "mean_acc":          False,
+    "kendall_tau":       True,
 }
 
-CLASSIFICATION_THRESHOLD = 0.7
+CLASSIFICATION_THRESHOLD = 0.6
 
 
 # ---------------------------------------------------------------------------
@@ -131,25 +132,27 @@ def compute_icc_alpha(
     return icc, alpha
 
 
-def compute_downstream_metrics(merged: pd.DataFrame) -> tuple[float, float, float, float]:
+def compute_downstream_metrics(merged: pd.DataFrame) -> tuple[float, float, float, float, float]:
     """
-    Compute all four downstream metrics from an aligned (model_score, human_score) DataFrame.
+    Compute all downstream metrics from an aligned (model_score, human_score) DataFrame.
 
-    Returns: (spearman_rho, pearson_r, mse, mean_acc)
+    Returns: (spearman_rho, pearson_r, mse, mean_acc, kendall_tau)
       spearman_rho – rank correlation, higher = better
       pearson_r    – linear correlation, higher = better
       mse          – mean squared error per item, lower = better
       mean_acc     – |mean(model) - mean(human)|, lower = better
+      kendall_tau  – Kendall's tau-b rank correlation, higher = better
     """
     if len(merged) < 4:
-        return np.nan, np.nan, np.nan, np.nan
+        return np.nan, np.nan, np.nan, np.nan, np.nan
 
     spearman_rho, _ = stats.spearmanr(merged["model_score"], merged["human_score"])
     pearson_r, _ = stats.pearsonr(merged["model_score"], merged["human_score"])
     mse = float(np.mean((merged["model_score"] - merged["human_score"]) ** 2))
     mean_acc = float(abs(merged["model_score"].mean() - merged["human_score"].mean()))
+    kendall_tau, _ = stats.kendalltau(merged["model_score"], merged["human_score"])
 
-    return float(spearman_rho), float(pearson_r), mse, mean_acc
+    return float(spearman_rho), float(pearson_r), mse, mean_acc, float(kendall_tau)
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +200,7 @@ def run_analysis(data_dir: str, models: list[str]) -> pd.DataFrame:
 
                 capped_ids = merged["text_id"].values
                 icc, alpha = compute_icc_alpha(df, model, axis, valid_ids=capped_ids)
-                spearman, pearson, mse, mean_acc = compute_downstream_metrics(merged)
+                spearman, pearson, mse, mean_acc, kendall_tau = compute_downstream_metrics(merged)
 
                 rows.append({
                     "dataset": dataset,
@@ -209,6 +212,7 @@ def run_analysis(data_dir: str, models: list[str]) -> pd.DataFrame:
                     "pearson_r": pearson,
                     "mse": mse,
                     "mean_acc": mean_acc,
+                    "kendall_tau": kendall_tau,
                     "n_items": len(merged),
                 })
 
@@ -242,6 +246,7 @@ def _is_good(value: float, higher_is_better: bool, threshold: float) -> bool | N
 
 def compute_eval_tables(
     metrics_df: pd.DataFrame,
+    threshold: float = CLASSIFICATION_THRESHOLD,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Produce all 4 evaluation tables from the per-judge metric DataFrame.
@@ -289,9 +294,9 @@ def compute_eval_tables(
             # Table 4: classification at threshold per (dataset-axis, judge) pair
             for i in range(len(sub)):
                 om_good = _is_good(om_vals[i], METRIC_HIGHER_IS_BETTER[om],
-                                   CLASSIFICATION_THRESHOLD)
+                                   threshold)
                 dm_good = _is_good(dm_vals[i], METRIC_HIGHER_IS_BETTER[dm],
-                                   CLASSIFICATION_THRESHOLD)
+                                   threshold)
                 if om_good is not None and dm_good is not None:
                     class_acc[(om, dm)].append(float(om_good == dm_good))
 
@@ -328,16 +333,16 @@ def print_raw_upstream_values(metrics_df: pd.DataFrame) -> None:
     print(f"  Total rows: {len(metrics_df)}")
     print("=" * 90)
     display = (
-        metrics_df[["model", "dataset", "axis", "icc", "krippendorff_alpha"]]
+        metrics_df[["model", "dataset", "axis", "icc", "krippendorff_alpha", "spearman_rho", "kendall_tau"]]
         .sort_values(["model", "dataset", "axis"])
         .reset_index(drop=True)
     )
     print(display.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
     print(f"\n{'='*70}")
-    print("Per-model average ICC and Krippendorff alpha (across all dataset-axes)")
+    print("Per-model average upstream metrics (across all dataset-axes)")
     print("=" * 70)
-    avg = metrics_df.groupby("model")[["icc", "krippendorff_alpha"]].mean()
+    avg = metrics_df.groupby("model")[["icc", "krippendorff_alpha", "spearman_rho", "kendall_tau"]].mean()
     avg.insert(0, "n_dataset_axes", metrics_df.groupby("model")["icc"].count())
     print(avg.to_string(float_format=lambda x: f"{x:.4f}"))
 
@@ -427,24 +432,27 @@ VM_METHOD = "variance_matched_weighted_.9"   # representative variance-matching 
 DEFAULT_SELECTION_RESULTS_DIR = "results/04_01_downstream_task"
 
 # For METRIC_HIGHER_IS_BETTER lookups in the selection analysis
-_OM_HIGHER_IS_BETTER = {"icc": True, "alpha": True}
+_OM_HIGHER_IS_BETTER = {"icc": True, "alpha": True, "rho": True, "tau": True}
 
 
-def load_selection_results(results_dir: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_selection_results(results_dir: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Discover and load all icc_results.csv and alpha_results.csv under `results_dir`.
+    Discover and load all icc/alpha/rho/tau_results.csv under `results_dir`.
 
-    Expects files at <results_dir>/<dataset>/<dataset>/dataframes/{icc,alpha}_results.csv
-    but also falls back to <results_dir>/<dataset>/dataframes/{icc,alpha}_results.csv.
+    Expects files at <results_dir>/<dataset>/<dataset>/dataframes/{metric}_results.csv
+    but also falls back to <results_dir>/<dataset>/dataframes/{metric}_results.csv.
     Automatically discovers all datasets from the folder structure.
 
-    Returns (icc_df, alpha_df) each with an added `dataset` column.
+    Returns (icc_df, alpha_df, rho_df, tau_df) each with an added `dataset` column.
     """
     base = Path(results_dir)
-    icc_frames: list[pd.DataFrame] = []
+    icc_frames:   list[pd.DataFrame] = []
     alpha_frames: list[pd.DataFrame] = []
+    rho_frames:   list[pd.DataFrame] = []
+    tau_frames:   list[pd.DataFrame] = []
 
-    for metric, frames in [("icc", icc_frames), ("alpha", alpha_frames)]:
+    for metric, frames in [("icc", icc_frames), ("alpha", alpha_frames),
+                            ("rho", rho_frames), ("tau", tau_frames)]:
         for csv_path in sorted(base.rglob(f"{metric}_results.csv")):
             # Determine dataset from the first path component under base
             rel_parts = csv_path.relative_to(base).parts
@@ -459,6 +467,8 @@ def load_selection_results(results_dir: str) -> tuple[pd.DataFrame, pd.DataFrame
 
     icc_df   = pd.concat(icc_frames,   ignore_index=True) if icc_frames   else pd.DataFrame()
     alpha_df = pd.concat(alpha_frames, ignore_index=True) if alpha_frames else pd.DataFrame()
+    rho_df   = pd.concat(rho_frames,   ignore_index=True) if rho_frames   else pd.DataFrame()
+    tau_df   = pd.concat(tau_frames,   ignore_index=True) if tau_frames   else pd.DataFrame()
 
     if not icc_df.empty:
         print(f"  Loaded ICC results:   {len(icc_df):,} rows | "
@@ -466,8 +476,14 @@ def load_selection_results(results_dir: str) -> tuple[pd.DataFrame, pd.DataFrame
     if not alpha_df.empty:
         print(f"  Loaded Alpha results: {len(alpha_df):,} rows | "
               f"datasets={sorted(alpha_df['dataset'].unique())}")
+    if not rho_df.empty:
+        print(f"  Loaded Rho results:   {len(rho_df):,} rows | "
+              f"datasets={sorted(rho_df['dataset'].unique())}")
+    if not tau_df.empty:
+        print(f"  Loaded Tau results:   {len(tau_df):,} rows | "
+              f"datasets={sorted(tau_df['dataset'].unique())}")
 
-    return icc_df, alpha_df
+    return icc_df, alpha_df, rho_df, tau_df
 
 
 def _eval_one_cell(
@@ -476,6 +492,7 @@ def _eval_one_cell(
     om_name: str,
     dm_name: str,
     table_type: str,
+    threshold: float = CLASSIFICATION_THRESHOLD,
 ) -> float | None:
     """
     Compute one evaluation value given arrays of estimated and downstream metric
@@ -513,8 +530,8 @@ def _eval_one_cell(
     elif table_type == "classification":
         vals = []
         for i in range(len(est_vals)):
-            eg = _is_good(est_vals[i], om_hib, CLASSIFICATION_THRESHOLD)
-            dg = _is_good(dm_vals[i],  dm_hib, CLASSIFICATION_THRESHOLD)
+            eg = _is_good(est_vals[i], om_hib, threshold)
+            dg = _is_good(dm_vals[i],  dm_hib, threshold)
             if eg is not None and dg is not None:
                 vals.append(float(eg == dg))
         return float(np.mean(vals)) if vals else None
@@ -528,6 +545,7 @@ def _mean_over_runs(
     om_name: str,
     dm_name: str,
     table_type: str,
+    threshold: float = CLASSIFICATION_THRESHOLD,
 ) -> float:
     """
     For a pre-filtered (dataset, axis, budget, method) slice: compute _eval_one_cell
@@ -541,6 +559,7 @@ def _mean_over_runs(
             run_df["predicted"].values.astype(float),
             run_df[dm_name].values.astype(float),
             om_name, dm_name, table_type,
+            threshold=threshold,
         )
         if v is not None:
             run_vals.append(v)
@@ -567,6 +586,7 @@ def _std_over_runs(
     om_name: str,
     dm_name: str,
     table_type: str,
+    threshold: float = CLASSIFICATION_THRESHOLD,
 ) -> float:
     """
     Std of _eval_one_cell across runs for a pre-filtered (dataset, axis, budget, method) slice.
@@ -578,6 +598,7 @@ def _std_over_runs(
             run_df["predicted"].values.astype(float),
             run_df[dm_name].values.astype(float),
             om_name, dm_name, table_type,
+            threshold=threshold,
         )
         if v is not None:
             run_vals.append(v)
@@ -590,6 +611,9 @@ def compute_selection_eval_tables(
     downstream_df: pd.DataFrame,
     metrics_df: pd.DataFrame,
     budgets: list[int] = BUDGETS_SUBSET,
+    threshold: float = CLASSIFICATION_THRESHOLD,
+    rho_df: pd.DataFrame | None = None,
+    tau_df: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     """
     Produce 4 evaluation tables (one per table type).
@@ -610,13 +634,25 @@ def compute_selection_eval_tables(
     dm_names    = DOWNSTREAM_METRICS
 
     # Map selection om_name -> column name in metrics_df and true column in raw_df
-    _OM_TO_METRICS_COL = {"icc": "icc", "alpha": "krippendorff_alpha"}
-    _OM_TO_TRUE_COL    = {"icc": "true_icc", "alpha": "true_alpha"}
+    _OM_TO_METRICS_COL = {
+        "icc":   "icc",
+        "alpha": "krippendorff_alpha",
+        "rho":   "spearman_rho",
+        "tau":   "kendall_tau",
+    }
+    _OM_TO_TRUE_COL = {
+        "icc":   "true_icc",
+        "alpha": "true_alpha",
+        "rho":   "true_rho",
+        "tau":   "true_tau",
+    }
 
     configs = [
-        # (om_name, pred_col,        raw_df)
-        ("icc",   "predicted_icc",  icc_df),
-        ("alpha", "predicted_alpha", alpha_df),
+        # (om_name, pred_col,         raw_df)
+        ("icc",   "predicted_icc",   icc_df),
+        ("alpha", "predicted_alpha",  alpha_df),
+        ("rho",   "predicted_rho",    rho_df if rho_df is not None else pd.DataFrame()),
+        ("tau",   "predicted_tau",    tau_df if tau_df is not None else pd.DataFrame()),
     ]
 
     # Prepare per-metric merged dataframes (with run index)
@@ -670,8 +706,8 @@ def compute_selection_eval_tables(
                     if table_type == "classification":
                         true_vals_flat: list[float] = []
                         for om_v, dm_v in zip(om_vals, dm_vals):
-                            og = _is_good(om_v, om_hib, CLASSIFICATION_THRESHOLD)
-                            dg = _is_good(dm_v, dm_hib, CLASSIFICATION_THRESHOLD)
+                            og = _is_good(om_v, om_hib, threshold)
+                            dg = _is_good(dm_v, dm_hib, threshold)
                             if og is not None and dg is not None:
                                 true_vals_flat.append(float(og == dg))
                         row["true_downstream"] = float(np.mean(true_vals_flat)) if true_vals_flat else np.nan
@@ -685,8 +721,8 @@ def compute_selection_eval_tables(
                         r_data = da_df[(da_df["budget"] == budget) & (da_df["method"] == "random")]
                         v_data = da_df[(da_df["budget"] == budget) & (da_df["method"] == VM_METHOD)]
 
-                        r_val = _mean_over_runs(r_data, om_name, dm_name, table_type)
-                        v_val = _mean_over_runs(v_data, om_name, dm_name, table_type)
+                        r_val = _mean_over_runs(r_data, om_name, dm_name, table_type, threshold=threshold)
+                        v_val = _mean_over_runs(v_data, om_name, dm_name, table_type, threshold=threshold)
                         delta = (v_val - r_val) if not (np.isnan(r_val) or np.isnan(v_val)) else np.nan
 
                         row[f"random_{budget}"]        = r_val
@@ -694,8 +730,8 @@ def compute_selection_eval_tables(
                         row[f"delta_{budget}"]         = delta
                         row[f"random_est_err_{budget}"] = _est_err_over_runs(r_data, true_col)
                         row[f"vm_est_err_{budget}"]    = _est_err_over_runs(v_data, true_col)
-                        row[f"random_std_{budget}"]    = _std_over_runs(r_data, om_name, dm_name, table_type)
-                        row[f"vm_std_{budget}"]        = _std_over_runs(v_data, om_name, dm_name, table_type)
+                        row[f"random_std_{budget}"]    = _std_over_runs(r_data, om_name, dm_name, table_type, threshold=threshold)
+                        row[f"vm_std_{budget}"]        = _std_over_runs(v_data, om_name, dm_name, table_type, threshold=threshold)
 
                     rows.append(row)
 
@@ -704,10 +740,21 @@ def compute_selection_eval_tables(
     return results
 
 
+_TRUE_COL_TO_METRICS_COL = {
+    "true_icc":   "icc",
+    "true_alpha": "krippendorff_alpha",
+    "true_rho":   "spearman_rho",
+    "true_tau":   "kendall_tau",
+}
+
+
 def compute_prediction_spread(
     icc_df: pd.DataFrame,
     alpha_df: pd.DataFrame,
     budgets: list[int] = BUDGETS_SUBSET,
+    rho_df: pd.DataFrame | None = None,
+    tau_df: pd.DataFrame | None = None,
+    metrics_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     For each (metric, budget, method), compute the mean std of predicted values
@@ -716,11 +763,16 @@ def compute_prediction_spread(
     A compressed std relative to true_std indicates variance-matching is shrinking
     inter-judge discriminability, which would explain lower rank-correlation scores
     even when absolute prediction error is lower.
+
+    When true_col is absent from a results CSV (e.g. old rho/tau files), the true
+    values are pulled from metrics_df using _TRUE_COL_TO_METRICS_COL.
     """
     rows = []
     configs = [
         ("icc",   "predicted_icc",   "true_icc",   icc_df),
         ("alpha", "predicted_alpha", "true_alpha",  alpha_df),
+        ("rho",   "predicted_rho",   "true_rho",    rho_df if rho_df is not None else pd.DataFrame()),
+        ("tau",   "predicted_tau",   "true_tau",    tau_df if tau_df is not None else pd.DataFrame()),
     ]
     for om_name, pred_col, true_col, raw_df in configs:
         if raw_df.empty:
@@ -728,15 +780,27 @@ def compute_prediction_spread(
         df = raw_df.copy()
         df["run"] = df.groupby(["dataset", "axis", "model", "budget", "method"]).cumcount()
 
+        # If true_col is missing (old results file), backfill from metrics_df.
+        if true_col not in df.columns and metrics_df is not None:
+            src_col = _TRUE_COL_TO_METRICS_COL.get(true_col)
+            if src_col is not None and src_col in metrics_df.columns:
+                lookup = metrics_df[["dataset", "axis", "model", src_col]].rename(
+                    columns={src_col: true_col}
+                )
+                df = df.merge(lookup, on=["dataset", "axis", "model"], how="left")
+
         # True std: std of true metric across judges per (dataset, axis)
-        true_std_vals = (
-            df.groupby(["dataset", "axis", "model"])[[true_col]]
-            .first()
-            .reset_index()
-            .groupby(["dataset", "axis"])[true_col]
-            .std()
-        )
-        true_std = float(np.nanmean(true_std_vals.values))
+        if true_col not in df.columns:
+            true_std = np.nan
+        else:
+            true_std_vals = (
+                df.groupby(["dataset", "axis", "model"])[[true_col]]
+                .first()
+                .reset_index()
+                .groupby(["dataset", "axis"])[true_col]
+                .std()
+            )
+            true_std = float(np.nanmean(true_std_vals.values))
 
         for budget in budgets:
             for method in df["method"].unique():
@@ -809,22 +873,96 @@ def save_selection_results(tables: dict[str, pd.DataFrame], output_dir: str) -> 
         print(f"Saved {fname} → {out / fname}")
 
 
+def _plot_convergence_table(
+    df: pd.DataFrame,
+    title: str,
+    valid_budgets: list[int],
+    out: Path,
+    fname: str,
+) -> None:
+    """Render one convergence figure (mean + std rows) for a single table DataFrame."""
+    our_metrics = sorted(df["our_metric"].unique())
+    ncols = len(DOWNSTREAM_METRICS)
+    nrows = 2 * len(our_metrics)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.5, nrows * 2.8), squeeze=False)
+
+    for om_idx, om in enumerate(our_metrics):
+        mean_row = 2 * om_idx
+        std_row  = 2 * om_idx + 1
+
+        for col_idx, dm in enumerate(DOWNSTREAM_METRICS):
+            ax_mean = axes[mean_row][col_idx]
+            ax_std  = axes[std_row][col_idx]
+
+            sub = df[(df["our_metric"] == om) & (df["downstream_metric"] == dm)]
+            if sub.empty:
+                ax_mean.set_visible(False)
+                ax_std.set_visible(False)
+                continue
+
+            plot_budgets = [b for b in valid_budgets if f"random_{b}" in sub.columns]
+
+            # ---- top: mean eval metric ----
+            true_val  = sub["true_downstream"].mean()
+            rand_vals = [sub[f"random_{b}"].mean() for b in plot_budgets]
+            vm_vals   = [sub[f"vm_{b}"].mean()     for b in plot_budgets]
+
+            ax_mean.axhline(true_val, color="gray", linestyle="--", linewidth=1.2,
+                            label="true (full data)")
+            ax_mean.plot(plot_budgets, rand_vals, marker="o", color="steelblue",
+                         linewidth=1.5, label="random")
+            ax_mean.plot(plot_budgets, vm_vals, marker="s", color="darkorange",
+                         linewidth=1.5, label="vm")
+            ax_mean.set_title(f"{om} → {dm}", fontsize=8)
+            ax_mean.set_xticks(plot_budgets)
+            ax_mean.tick_params(labelsize=7)
+            ax_mean.set_xticklabels([])
+            if col_idx == 0 and om_idx == 0:
+                ax_mean.legend(fontsize=7)
+
+            # ---- bottom: std across runs ----
+            rand_stds = [sub[f"random_std_{b}"].mean() for b in plot_budgets
+                         if f"random_std_{b}" in sub.columns]
+            vm_stds   = [sub[f"vm_std_{b}"].mean()     for b in plot_budgets
+                         if f"vm_std_{b}"     in sub.columns]
+
+            ax_std.plot(plot_budgets, rand_stds, marker="o", color="steelblue",
+                        linewidth=1.5, linestyle="--")
+            ax_std.plot(plot_budgets, vm_stds, marker="s", color="darkorange",
+                        linewidth=1.5, linestyle="--")
+            ax_std.set_title(f"std ({om} → {dm})", fontsize=7)
+            ax_std.set_xticks(plot_budgets)
+            ax_std.tick_params(labelsize=7)
+            if std_row == nrows - 1:
+                ax_std.set_xlabel("budget", fontsize=8)
+
+    fig.suptitle(title, fontsize=12, y=1.01)
+    plt.tight_layout()
+    path = out / fname
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved plot → {path}")
+
+
 def plot_selection_convergence(
     tables: dict[str, pd.DataFrame],
     budgets: list[int],
     output_dir: str,
+    classification_by_threshold: dict[float, pd.DataFrame] | None = None,
 ) -> None:
     """
-    For each table type, plot random_B and vm_B vs budget alongside the constant
-    true_downstream line, averaged over (dataset, axis).
+    For each non-classification table type, plot random_B and vm_B vs budget alongside
+    the constant true_downstream line, averaged over (dataset, axis).
 
-    One figure per table type; one subplot per (our_metric × downstream_metric) pair.
+    For classification, generate one separate plot per threshold in
+    classification_by_threshold (keys are threshold values).
+
+    One figure per table type / threshold; one subplot per (our_metric × downstream_metric) pair.
     """
     _TABLE_TITLES = {
-        "spearman":       "Spearman ρ across judges",
-        "pearson":        "Pearson r across judges",
-        "best_judge":     "Best judge identification (frac correct)",
-        "classification": f"Classification agreement (T={CLASSIFICATION_THRESHOLD})",
+        "spearman":   "Spearman ρ across judges",
+        "pearson":    "Pearson r across judges",
+        "best_judge": "Best judge identification (frac correct)",
     }
 
     out = Path(output_dir) / "plots"
@@ -832,75 +970,82 @@ def plot_selection_convergence(
 
     valid_budgets = [b for b in budgets if b > 0]
 
+    # --- Non-classification tables ---
     for ttype, title in _TABLE_TITLES.items():
         if ttype not in tables:
             continue
+        _plot_convergence_table(
+            tables[ttype], title, valid_budgets, out,
+            fname=f"convergence_{ttype}.png",
+        )
 
-        df = tables[ttype]
-        our_metrics = sorted(df["our_metric"].unique())  # e.g. ["alpha", "icc"]
+    # --- Classification: one plot per threshold ---
+    if classification_by_threshold:
+        for t, df in sorted(classification_by_threshold.items()):
+            t_str = f"{t:.2f}".rstrip("0").rstrip(".")
+            _plot_convergence_table(
+                df,
+                title=f"Classification agreement (T={t})",
+                valid_budgets=valid_budgets,
+                out=out,
+                fname=f"convergence_classification_T{t_str}.png",
+            )
+    elif "classification" in tables:
+        # Fallback: single plot using whatever threshold was baked into the table
+        _plot_convergence_table(
+            tables["classification"],
+            title=f"Classification agreement (T={CLASSIFICATION_THRESHOLD})",
+            valid_budgets=valid_budgets,
+            out=out,
+            fname="convergence_classification.png",
+        )
 
-        ncols = len(DOWNSTREAM_METRICS)
-        # Two rows per our_metric: top = mean eval metric, bottom = std across runs
-        nrows = 2 * len(our_metrics)
-        fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.5, nrows * 2.8),
-                                 squeeze=False)
+    # --- Per-dataset disaggregated plots ---
+    all_datasets = sorted(
+        set().union(*[
+            set(df["dataset"].unique())
+            for df in list(tables.values()) + list((classification_by_threshold or {}).values())
+            if not df.empty and "dataset" in df.columns
+        ])
+    )
+    for dataset in all_datasets:
+        ds_out = out / dataset
+        ds_out.mkdir(parents=True, exist_ok=True)
 
-        for om_idx, om in enumerate(our_metrics):
-            mean_row = 2 * om_idx
-            std_row  = 2 * om_idx + 1
+        for ttype, title in _TABLE_TITLES.items():
+            if ttype not in tables:
+                continue
+            ds_df = tables[ttype][tables[ttype]["dataset"] == dataset]
+            if ds_df.empty:
+                continue
+            _plot_convergence_table(
+                ds_df, f"{title} — {dataset}", valid_budgets, ds_out,
+                fname=f"convergence_{ttype}.png",
+            )
 
-            for col_idx, dm in enumerate(DOWNSTREAM_METRICS):
-                ax_mean = axes[mean_row][col_idx]
-                ax_std  = axes[std_row][col_idx]
-
-                sub = df[(df["our_metric"] == om) & (df["downstream_metric"] == dm)]
-                if sub.empty:
-                    ax_mean.set_visible(False)
-                    ax_std.set_visible(False)
+        if classification_by_threshold:
+            for t, df in sorted(classification_by_threshold.items()):
+                t_str = f"{t:.2f}".rstrip("0").rstrip(".")
+                ds_df = df[df["dataset"] == dataset]
+                if ds_df.empty:
                     continue
-
-                plot_budgets = [b for b in valid_budgets if f"random_{b}" in sub.columns]
-
-                # ---- top: mean eval metric ----
-                true_val  = sub["true_downstream"].mean()
-                rand_vals = [sub[f"random_{b}"].mean() for b in plot_budgets]
-                vm_vals   = [sub[f"vm_{b}"].mean()     for b in plot_budgets]
-
-                ax_mean.axhline(true_val, color="gray", linestyle="--", linewidth=1.2,
-                                label="true (full data)")
-                ax_mean.plot(plot_budgets, rand_vals, marker="o", color="steelblue",
-                             linewidth=1.5, label="random")
-                ax_mean.plot(plot_budgets, vm_vals, marker="s", color="darkorange",
-                             linewidth=1.5, label="vm")
-                ax_mean.set_title(f"{om} → {dm}", fontsize=8)
-                ax_mean.set_xticks(plot_budgets)
-                ax_mean.tick_params(labelsize=7)
-                ax_mean.set_xticklabels([])
-                if col_idx == 0 and om_idx == 0:
-                    ax_mean.legend(fontsize=7)
-
-                # ---- bottom: std across runs ----
-                rand_stds = [sub[f"random_std_{b}"].mean() for b in plot_budgets
-                             if f"random_std_{b}" in sub.columns]
-                vm_stds   = [sub[f"vm_std_{b}"].mean()     for b in plot_budgets
-                             if f"vm_std_{b}"     in sub.columns]
-
-                ax_std.plot(plot_budgets, rand_stds, marker="o", color="steelblue",
-                            linewidth=1.5, linestyle="--")
-                ax_std.plot(plot_budgets, vm_stds, marker="s", color="darkorange",
-                            linewidth=1.5, linestyle="--")
-                ax_std.set_title(f"std ({om} → {dm})", fontsize=7)
-                ax_std.set_xticks(plot_budgets)
-                ax_std.tick_params(labelsize=7)
-                if std_row == nrows - 1:
-                    ax_std.set_xlabel("budget", fontsize=8)
-
-        fig.suptitle(title, fontsize=12, y=1.01)
-        plt.tight_layout()
-        fname = out / f"convergence_{ttype}.png"
-        fig.savefig(fname, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        print(f"Saved plot → {fname}")
+                _plot_convergence_table(
+                    ds_df,
+                    title=f"Classification agreement (T={t}) — {dataset}",
+                    valid_budgets=valid_budgets,
+                    out=ds_out,
+                    fname=f"convergence_classification_T{t_str}.png",
+                )
+        elif "classification" in tables:
+            ds_df = tables["classification"][tables["classification"]["dataset"] == dataset]
+            if not ds_df.empty:
+                _plot_convergence_table(
+                    ds_df,
+                    title=f"Classification agreement (T={CLASSIFICATION_THRESHOLD}) — {dataset}",
+                    valid_budgets=valid_budgets,
+                    out=ds_out,
+                    fname="convergence_classification.png",
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -979,6 +1124,11 @@ def parse_args() -> argparse.Namespace:
         "--vm-method", default=VM_METHOD,
         help=f"Variance-matching method name to compare against random (default: {VM_METHOD})",
     )
+    parser.add_argument(
+        "--thresholds", nargs="+", type=float, default=[0.6, 0.7, 0.8],
+        help="Classification thresholds; one convergence_classification plot is produced per "
+             "threshold (default: 0.6 0.7 0.8)",
+    )
     return parser.parse_args()
 
 
@@ -991,7 +1141,7 @@ def main() -> None:
 
     print(f"Datasets : {DATASETS}")
     print(f"Models   : {args.models}")
-    print(f"Classification threshold: T={CLASSIFICATION_THRESHOLD}")
+    print(f"Classification thresholds: {args.thresholds}")
 
     metrics_df = run_analysis(data_dir=args.data_dir, models=args.models)
 
@@ -1010,8 +1160,9 @@ def main() -> None:
     print(metrics_df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
     print("\nComputing evaluation tables...")
-    spearman_table, pearson_table, best_judge_table, classification_table = \
-        compute_eval_tables(metrics_df)
+    # Non-classification tables don't depend on threshold — compute once
+    spearman_table, pearson_table, best_judge_table, _ = \
+        compute_eval_tables(metrics_df, threshold=args.thresholds[0])
 
     _print_pivot(
         spearman_table, "avg_spearman_rho",
@@ -1028,20 +1179,46 @@ def main() -> None:
         "Table 3 — Best judge identification: fraction of dataset-axes where "
         "argbest(our metric) == argbest(downstream metric)",
     )
-    _print_pivot(
-        classification_table, "frac_classification_agree",
-        f"Table 4 — Classification (T={CLASSIFICATION_THRESHOLD}): fraction of "
-        "(dataset-axis, judge) pairs where our metric and downstream metric agree "
-        "on above/below threshold",
-    )
 
-    save_results(
-        metrics_df, spearman_table, pearson_table,
-        best_judge_table, classification_table,
-        args.output_dir,
-        nonagg_corr=nonagg_corr,
-        agg_corr=agg_corr,
-    )
+    # Classification table: one per threshold
+    eval_class_by_threshold: dict[float, pd.DataFrame] = {}
+    for t in args.thresholds:
+        _, _, _, class_table_t = compute_eval_tables(metrics_df, threshold=t)
+        eval_class_by_threshold[t] = class_table_t
+        _print_pivot(
+            class_table_t, "frac_classification_agree",
+            f"Table 4 — Classification (T={t}): fraction of "
+            "(dataset-axis, judge) pairs where our metric and downstream metric agree "
+            "on above/below threshold",
+        )
+
+    # Save non-classification tables + per-threshold classification CSVs
+    out_df = Path(args.output_dir) / "dataframes"
+    out_df.mkdir(parents=True, exist_ok=True)
+
+    metrics_df.to_csv(out_df / "per_judge_metrics.csv", index=False)
+    print(f"\nSaved per-judge metrics → {out_df / 'per_judge_metrics.csv'}")
+
+    for fname, df in [
+        ("eval_spearman.csv",   spearman_table),
+        ("eval_pearson.csv",    pearson_table),
+        ("eval_best_judge.csv", best_judge_table),
+    ]:
+        df.to_csv(out_df / fname, index=False)
+        print(f"Saved {fname} → {out_df / fname}")
+
+    for t, df_t in eval_class_by_threshold.items():
+        t_str = f"{t:.2f}".rstrip("0").rstrip(".")
+        fname = f"eval_classification_T{t_str}.csv"
+        df_t.to_csv(out_df / fname, index=False)
+        print(f"Saved {fname} → {out_df / fname}")
+
+    if nonagg_corr is not None:
+        nonagg_corr.to_csv(out_df / "corpus_corr_nonagg.csv", index=False)
+        print(f"Saved corpus_corr_nonagg.csv → {out_df / 'corpus_corr_nonagg.csv'}")
+    if agg_corr is not None:
+        agg_corr.to_csv(out_df / "corpus_corr_agg.csv", index=False)
+        print(f"Saved corpus_corr_agg.csv → {out_df / 'corpus_corr_agg.csv'}")
 
     # ---- Selection-method analysis (8 additional tables) --------------------
     sel_dir = args.selection_results_dir
@@ -1058,9 +1235,9 @@ def main() -> None:
     print(f"VM method   : {VM_METHOD}")
     print("=" * 70)
 
-    icc_sel_df, alpha_sel_df = load_selection_results(sel_dir)
+    icc_sel_df, alpha_sel_df, rho_sel_df, tau_sel_df = load_selection_results(sel_dir)
 
-    if icc_sel_df.empty and alpha_sel_df.empty:
+    if icc_sel_df.empty and alpha_sel_df.empty and rho_sel_df.empty and tau_sel_df.empty:
         print("No selection results found. Skipping selection analysis.")
         return
 
@@ -1069,26 +1246,64 @@ def main() -> None:
     downstream_df = metrics_df[
         ["dataset", "axis", "model",
          "spearman_rho", "pearson_r", "mse", "mean_acc",
-         "icc", "krippendorff_alpha"]
+         "icc", "krippendorff_alpha", "kendall_tau"]
     ].copy()
 
     print("\nComputing prediction spread diagnostic...")
-    spread_df = compute_prediction_spread(icc_sel_df, alpha_sel_df, budgets=args.budgets)
+    spread_df = compute_prediction_spread(
+        icc_sel_df, alpha_sel_df, budgets=args.budgets,
+        rho_df=rho_sel_df if not rho_sel_df.empty else None,
+        tau_df=tau_sel_df if not tau_sel_df.empty else None,
+        metrics_df=metrics_df,
+    )
     print_prediction_spread(spread_df)
     spread_out = Path(args.output_dir) / "dataframes" / "selection_prediction_spread.csv"
     spread_out.parent.mkdir(parents=True, exist_ok=True)
     spread_df.to_csv(spread_out, index=False)
     print(f"Saved prediction spread → {spread_out}")
 
-    print("\nComputing selection evaluation tables (8 tables)...")
+    thresholds = args.thresholds
+    print(f"Classification thresholds: {thresholds}")
+
+    _rho_arg = rho_sel_df if not rho_sel_df.empty else None
+    _tau_arg = tau_sel_df if not tau_sel_df.empty else None
+
+    print("\nComputing selection evaluation tables (non-classification)...")
     selection_tables = compute_selection_eval_tables(
-        icc_sel_df, alpha_sel_df, downstream_df, metrics_df, budgets=args.budgets
+        icc_sel_df, alpha_sel_df, downstream_df, metrics_df, budgets=args.budgets,
+        threshold=thresholds[0],  # threshold only affects classification table
+        rho_df=_rho_arg, tau_df=_tau_arg,
     )
+    non_class_tables = {k: v for k, v in selection_tables.items() if k != "classification"}
+
+    print(f"\nComputing classification tables for {len(thresholds)} threshold(s): {thresholds}")
+    classification_by_threshold: dict[float, pd.DataFrame] = {}
+    for t in thresholds:
+        tables_t = compute_selection_eval_tables(
+            icc_sel_df, alpha_sel_df, downstream_df, metrics_df, budgets=args.budgets,
+            threshold=t, rho_df=_rho_arg, tau_df=_tau_arg,
+        )
+        classification_by_threshold[t] = tables_t["classification"]
+        print(f"  T={t}: {len(tables_t['classification'])} rows")
 
     print_selection_tables(selection_tables, budgets=args.budgets)
     save_selection_results(selection_tables, args.output_dir)
+    # Also save per-threshold classification CSVs
+    class_out = Path(args.output_dir) / "dataframes"
+    class_out.mkdir(parents=True, exist_ok=True)
+    for t, df_t in classification_by_threshold.items():
+        t_str = f"{t:.2f}".rstrip("0").rstrip(".")
+        fname = class_out / f"selection_classification_T{t_str}.csv"
+        df_t.to_csv(fname, index=False)
+        print(f"Saved classification T={t} → {fname}")
+
     print("\nGenerating convergence plots...")
-    plot_selection_convergence(selection_tables, budgets=args.budgets, output_dir=args.output_dir)
+    plot_selection_convergence(
+        non_class_tables,
+        budgets=args.budgets,
+        output_dir=args.output_dir,
+        classification_by_threshold=classification_by_threshold,
+    )
     print("\nSelection analysis complete.")
 
 

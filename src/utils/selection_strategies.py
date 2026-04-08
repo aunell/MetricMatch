@@ -417,19 +417,21 @@ def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse
 def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metric,
                               compute_ms_fn, compute_icc_fn, compute_alpha_fn,
                               seed=42, n_candidates=20, im_models=None,
-                              forced_ids=None):
+                              forced_ids=None,
+                              compute_rho_fn=None, compute_tau_fn=None):
     """
     Select subset whose inter-model metric best matches a target value.
 
     Analogous to variance_matched_selection_ms but matches on a scalar reliability
-    metric (ICC, Krippendorff's alpha, or MSE) rather than MSB/MSE components.
+    metric (ICC, Krippendorff's alpha, MSE, Spearman rho, or Kendall tau) rather than
+    MSB/MSE components.
 
     Args:
         text_ids: Array of text IDs to sample from
         k: Number of items to select
         im_full_df: DataFrame with inter-model data (text_id, model_name, evaluation_score)
         target_value: Target metric value to match (e.g. full-dataset IM ICC)
-        target_metric: Which metric to match — "icc", "alpha", or "mse"
+        target_metric: Which metric to match — "icc", "alpha", "mse", "rho", or "tau"
         compute_ms_fn: Function that returns a PointwiseICC object (for MSE)
         compute_icc_fn: Function to compute ICC given a DataFrame and models kwarg
         compute_alpha_fn: Function to compute Krippendorff's alpha given a DataFrame and models kwarg
@@ -477,6 +479,14 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
         elif target_metric == "mse":
             ms_obj = compute_ms_fn(im_candidate)
             cand_value = ms_obj.mse if ms_obj is not None else np.nan
+        elif target_metric == "rho":
+            if compute_rho_fn is None:
+                continue
+            cand_value = compute_rho_fn(im_candidate, models=im_models)
+        elif target_metric == "tau":
+            if compute_tau_fn is None:
+                continue
+            cand_value = compute_tau_fn(im_candidate, models=im_models)
         else:
             continue
 

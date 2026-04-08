@@ -177,6 +177,8 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
                                icc_results_by_axis, im_df_builder,
                                alpha_results_by_axis=None,
                                mse_results_by_axis=None,
+                               rho_results_by_axis=None,
+                               tau_results_by_axis=None,
                                n_samples=500, sample_size=10,
                                pairwise_stats_builder=None):
     """
@@ -192,6 +194,10 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
                                 (only if alpha_results_by_axis is provided)
         mse_gap_<method>      – mean_MSE_error(method) − mean_MSE_error(random)
                                 (only if mse_results_by_axis is provided)
+        rho_gap_<method>      – mean_Rho_error(method) − mean_Rho_error(random)
+                                (only if rho_results_by_axis is provided)
+        tau_gap_<method>      – mean_Tau_error(method) − mean_Tau_error(random)
+                                (only if tau_results_by_axis is provided)
 
     Args:
         axis_jobs: List of (axis, axis_df) pairs from the experiment run.
@@ -203,6 +209,8 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
         im_df_builder: Callable(axis_df, model) -> im_full_df.
         alpha_results_by_axis: Optional dict mapping axis -> Alpha results DataFrame.
         mse_results_by_axis: Optional dict mapping axis -> MSE results DataFrame.
+        rho_results_by_axis: Optional dict mapping axis -> Spearman rho results DataFrame.
+        tau_results_by_axis: Optional dict mapping axis -> Kendall tau results DataFrame.
         n_samples: Bootstrap samples for the correlation predictor.
         sample_size: Items per bootstrap sample.
 
@@ -211,7 +219,8 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
     """
     # Discover all non-random methods present across all axes (union across all metrics)
     all_methods: set = set()
-    for results_by_axis in [icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis]:
+    for results_by_axis in [icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
+                            rho_results_by_axis, tau_results_by_axis]:
         if results_by_axis is None:
             continue
         for axis, _ in axis_jobs:
@@ -231,6 +240,8 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
 
         axis_alpha = alpha_results_by_axis.get(axis) if alpha_results_by_axis else None
         axis_mse = mse_results_by_axis.get(axis) if mse_results_by_axis else None
+        axis_rho = rho_results_by_axis.get(axis) if rho_results_by_axis else None
+        axis_tau = tau_results_by_axis.get(axis) if tau_results_by_axis else None
 
         for model, var_info in per_model_var.items():
             im_msb = var_info.get("im_msb", np.nan)
@@ -322,6 +333,8 @@ def compute_predictor_records(axis_jobs, per_model_variance_by_axis,
                 ("icc",   axis_icc),
                 ("alpha", axis_alpha),
                 ("mse",   axis_mse),
+                ("rho",   axis_rho),
+                ("tau",   axis_tau),
             ]
             for metric_name, axis_res in metric_results:
                 if axis_res is None or len(axis_res) == 0:

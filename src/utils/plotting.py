@@ -35,7 +35,9 @@ class _NumpyEncoder(json.JSONEncoder):
 def save_results_dataframes(plots_dir, icc_results, alpha_results, mse_results,
                              icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
                              reliability_metadata_all, reliability_metadata_by_axis,
-                             dataset=None):
+                             dataset=None,
+                             rho_results=None, tau_results=None,
+                             rho_results_by_axis=None, tau_results_by_axis=None):
     """
     Save all result DataFrames and metadata dicts to disk for later reloading.
 
@@ -60,6 +62,10 @@ def save_results_dataframes(plots_dir, icc_results, alpha_results, mse_results,
     icc_results.to_csv(os.path.join(df_dir, "icc_results.csv"), index=False)
     alpha_results.to_csv(os.path.join(df_dir, "alpha_results.csv"), index=False)
     mse_results.to_csv(os.path.join(df_dir, "mse_results.csv"), index=False)
+    if rho_results is not None and len(rho_results) > 0:
+        rho_results.to_csv(os.path.join(df_dir, "rho_results.csv"), index=False)
+    if tau_results is not None and len(tau_results) > 0:
+        tau_results.to_csv(os.path.join(df_dir, "tau_results.csv"), index=False)
 
     axes = list(icc_results_by_axis.keys())
     with open(os.path.join(df_dir, "axes.json"), "w") as f:
@@ -77,6 +83,16 @@ def save_results_dataframes(plots_dir, icc_results, alpha_results, mse_results,
         safe_axis = axis.replace("/", "-").replace("\\", "-").replace(" ", "_")
         if df is not None and len(df) > 0:
             df.to_csv(os.path.join(df_dir, f"mse_by_axis_{safe_axis}.csv"), index=False)
+    if rho_results_by_axis:
+        for axis, df in rho_results_by_axis.items():
+            safe_axis = axis.replace("/", "-").replace("\\", "-").replace(" ", "_")
+            if df is not None and len(df) > 0:
+                df.to_csv(os.path.join(df_dir, f"rho_by_axis_{safe_axis}.csv"), index=False)
+    if tau_results_by_axis:
+        for axis, df in tau_results_by_axis.items():
+            safe_axis = axis.replace("/", "-").replace("\\", "-").replace(" ", "_")
+            if df is not None and len(df) > 0:
+                df.to_csv(os.path.join(df_dir, f"tau_by_axis_{safe_axis}.csv"), index=False)
 
     with open(os.path.join(df_dir, "reliability_metadata_all.json"), "w") as f:
         json.dump(reliability_metadata_all, f, cls=_NumpyEncoder)
@@ -122,20 +138,31 @@ def load_results_dataframes(results_dir, dataset=None):
     alpha_results = pd.read_csv(os.path.join(meta_dir, "alpha_results.csv"))
     mse_results = pd.read_csv(os.path.join(meta_dir, "mse_results.csv"))
 
+    rho_path = os.path.join(meta_dir, "rho_results.csv")
+    tau_path = os.path.join(meta_dir, "tau_results.csv")
+    rho_results = pd.read_csv(rho_path) if os.path.exists(rho_path) else pd.DataFrame()
+    tau_results = pd.read_csv(tau_path) if os.path.exists(tau_path) else pd.DataFrame()
+
     with open(os.path.join(meta_dir, "axes.json")) as f:
         axes = json.load(f)
 
     icc_results_by_axis = {}
     alpha_results_by_axis = {}
     mse_results_by_axis = {}
+    rho_results_by_axis = {}
+    tau_results_by_axis = {}
     for axis in axes:
         safe_axis = axis.replace("/", "-").replace("\\", "-").replace(" ", "_")
         icc_path = os.path.join(meta_dir, f"icc_by_axis_{safe_axis}.csv")
         alpha_path = os.path.join(meta_dir, f"alpha_by_axis_{safe_axis}.csv")
         mse_path = os.path.join(meta_dir, f"mse_by_axis_{safe_axis}.csv")
+        rho_ax_path = os.path.join(meta_dir, f"rho_by_axis_{safe_axis}.csv")
+        tau_ax_path = os.path.join(meta_dir, f"tau_by_axis_{safe_axis}.csv")
         icc_results_by_axis[axis] = pd.read_csv(icc_path) if os.path.exists(icc_path) else pd.DataFrame()
         alpha_results_by_axis[axis] = pd.read_csv(alpha_path) if os.path.exists(alpha_path) else pd.DataFrame()
         mse_results_by_axis[axis] = pd.read_csv(mse_path) if os.path.exists(mse_path) else pd.DataFrame()
+        rho_results_by_axis[axis] = pd.read_csv(rho_ax_path) if os.path.exists(rho_ax_path) else pd.DataFrame()
+        tau_results_by_axis[axis] = pd.read_csv(tau_ax_path) if os.path.exists(tau_ax_path) else pd.DataFrame()
 
     with open(os.path.join(meta_dir, "reliability_metadata_all.json")) as f:
         reliability_metadata_all = json.load(f)
@@ -145,7 +172,8 @@ def load_results_dataframes(results_dir, dataset=None):
     print(f"Dataframes loaded from: {meta_dir}")
     return (icc_results, alpha_results, mse_results,
             icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
-            reliability_metadata_all, reliability_metadata_by_axis)
+            reliability_metadata_all, reliability_metadata_by_axis,
+            rho_results_by_axis, tau_results_by_axis)
 
 
 def compute_variance_by_method(results_df):
@@ -566,21 +594,26 @@ def plot_metric_results(results, results_by_axis, metadata_all, metadata_by_axis
             print(f"  Budget {int(row['budget']):2d}: {row['formatted']}")
 
 
-def plot_all_results(icc_results, alpha_results, mse_results,
+def plot_all_results(icc_results, alpha_results, mse_results, rho_results, tau_results,
                      icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
+                     rho_results_by_axis, tau_results_by_axis,
                      reliability_metadata_all, reliability_metadata_by_axis,
                      dataset, plots_dir, comparison_mode):
     """
-    Generate plots for ICC, Krippendorff's Alpha, and MSE estimation errors.
-    Also saves all DataFrames and metadata to plots_dir/dataframes/ for later reuse.
+    Generate plots for ICC, Krippendorff's Alpha, MSE, Spearman's Rho, and Kendall's Tau
+    estimation errors. Also saves all DataFrames and metadata to plots_dir/dataframes/.
 
     Args:
         icc_results: DataFrame with ICC estimation errors
         alpha_results: DataFrame with Alpha estimation errors
         mse_results: DataFrame with MSE estimation errors
+        rho_results: DataFrame with Spearman's rho estimation errors
+        tau_results: DataFrame with Kendall's tau estimation errors
         icc_results_by_axis: Dict mapping axis -> ICC results DataFrame
         alpha_results_by_axis: Dict mapping axis -> Alpha results DataFrame
         mse_results_by_axis: Dict mapping axis -> MSE results DataFrame
+        rho_results_by_axis: Dict mapping axis -> Rho results DataFrame
+        tau_results_by_axis: Dict mapping axis -> Tau results DataFrame
         reliability_metadata_all: Dict mapping model -> aggregated metadata
         reliability_metadata_by_axis: Dict mapping axis -> model -> metadata
         dataset: Dataset name
@@ -591,7 +624,9 @@ def plot_all_results(icc_results, alpha_results, mse_results,
         plots_dir, icc_results, alpha_results, mse_results,
         icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
         reliability_metadata_all, reliability_metadata_by_axis,
-        dataset=dataset
+        dataset=dataset,
+        rho_results=rho_results, tau_results=tau_results,
+        rho_results_by_axis=rho_results_by_axis, tau_results_by_axis=tau_results_by_axis,
     )
     print("\n" + "=" * 60)
     print("PLOTTING ICC ESTIMATION ERROR RESULTS")
@@ -640,6 +675,40 @@ def plot_all_results(icc_results, alpha_results, mse_results,
         hm_key="true_hm_mse",
         im_key="im_mse"
     )
+
+    if rho_results is not None and len(rho_results) > 0:
+        print("\n" + "=" * 60)
+        print("PLOTTING SPEARMAN'S RHO ESTIMATION ERROR RESULTS")
+        print("=" * 60)
+        plot_metric_results(
+            rho_results,
+            rho_results_by_axis,
+            reliability_metadata_all,
+            reliability_metadata_by_axis,
+            dataset,
+            plots_dir,
+            comparison_mode,
+            metric_name="Rho",
+            hm_key="true_hm_rho",
+            im_key="im_icc"  # no IM rho computed; fall back to im_icc for metadata display
+        )
+
+    if tau_results is not None and len(tau_results) > 0:
+        print("\n" + "=" * 60)
+        print("PLOTTING KENDALL'S TAU ESTIMATION ERROR RESULTS")
+        print("=" * 60)
+        plot_metric_results(
+            tau_results,
+            tau_results_by_axis,
+            reliability_metadata_all,
+            reliability_metadata_by_axis,
+            dataset,
+            plots_dir,
+            comparison_mode,
+            metric_name="Tau",
+            hm_key="true_hm_tau",
+            im_key="im_icc"  # no IM tau computed; fall back to im_icc for metadata display
+        )
 
 
 def save_predictor_inputs(plots_dir, dataset, axis_jobs,

@@ -149,6 +149,8 @@ def _plot_predictor_scatter(df, output_dir, title_suffix="", filename_suffix="")
         ("icc",   "ICC",   "ICC error gap vs random\n(method − random; negative = better)"),
         ("alpha", "Alpha", "Alpha error gap vs random\n(method − random; negative = better)"),
         ("mse",   "MSE",   "MSE error gap vs random\n(method − random; negative = better)"),
+        ("rho",   "Spearman's Rho", "Rho error gap vs random\n(method − random; negative = better)"),
+        ("tau",   "Kendall's Tau",  "Tau error gap vs random\n(method − random; negative = better)"),
     ]
     available_metrics = [
         (key, label, xlabel) for key, label, xlabel in metric_info
@@ -325,7 +327,9 @@ def _collect_budget_correlations(axis_jobs, im_df_builder, dataset,
         {dataset, axis, model, budget, metric, im_val, hm_val}
     """
     from src.utils.predictor_analysis import compute_ms_budget_samples
-    from src.utils.reliability_metrics import compute_krippendorff_alpha
+    from src.utils.reliability_metrics import (compute_krippendorff_alpha,
+                                               compute_spearman_rho,
+                                               compute_kendall_tau)
 
     budgets = list(budgets)
     records = []
@@ -384,6 +388,38 @@ def _collect_budget_correlations(axis_jobs, im_df_builder, dataset,
                     except Exception:
                         continue
 
+            # Rho and Tau — bootstrap manually
+            rng_rt = np.random.RandomState(seed + 2)
+            for budget in budgets:
+                if len(shared_ids) < budget:
+                    continue
+                for _ in range(n_samples):
+                    sample_ids = rng_rt.choice(shared_ids, size=budget, replace=False)
+                    im_sub = im_full_df[im_full_df["text_id"].isin(sample_ids)]
+                    hm_sub = hm_full_df[hm_full_df["text_id"].isin(sample_ids)]
+                    try:
+                        im_rho = compute_spearman_rho(im_sub)
+                        hm_rho = compute_spearman_rho(hm_sub)
+                        if np.isfinite(im_rho) and np.isfinite(hm_rho):
+                            records.append({
+                                "dataset": dataset, "axis": axis, "model": model,
+                                "budget": budget, "metric": "rho",
+                                "im_val": float(im_rho), "hm_val": float(hm_rho),
+                            })
+                    except Exception:
+                        pass
+                    try:
+                        im_tau = compute_kendall_tau(im_sub)
+                        hm_tau = compute_kendall_tau(hm_sub)
+                        if np.isfinite(im_tau) and np.isfinite(hm_tau):
+                            records.append({
+                                "dataset": dataset, "axis": axis, "model": model,
+                                "budget": budget, "metric": "tau",
+                                "im_val": float(im_tau), "hm_val": float(hm_tau),
+                            })
+                    except Exception:
+                        pass
+
             print(f"    Budget corr collected: axis={axis}, model={model}")
 
     return records
@@ -418,14 +454,18 @@ def _plot_budget_correlation_overview(all_budget_records, output_dir):
         "mse":   "MSE",
         "icc":   "ICC",
         "alpha": "Alpha (Krippendorff)",
+        "rho":   "Spearman's Rho",
+        "tau":   "Kendall's Tau",
     }
     metric_axis_labels = {
         "msb":   ("Model-Model MSB (IM)", "Model-Human MSB (HM)"),
         "mse":   ("Model-Model MSE (IM)", "Model-Human MSE (HM)"),
         "icc":   ("Model-Model ICC (IM)", "Model-Human ICC (HM)"),
         "alpha": ("Model-Model Alpha (IM)", "Model-Human Alpha (HM)"),
+        "rho":   ("Model-Model Rho (IM)", "Model-Human Rho (HM)"),
+        "tau":   ("Model-Model Tau (IM)", "Model-Human Tau (HM)"),
     }
-    metrics = [m for m in ("msb", "mse", "icc", "alpha") if m in df["metric"].unique()]
+    metrics = [m for m in ("msb", "mse", "icc", "alpha", "rho", "tau") if m in df["metric"].unique()]
     if not metrics:
         print("No metrics found in budget correlation records; skipping overview plot.")
         return
@@ -596,7 +636,8 @@ def main():
             )
             (_, _, _,
              icc_results_by_axis, alpha_results_by_axis, mse_results_by_axis,
-             _, reliability_metadata_by_axis) = load_results_dataframes(args.results_dir, dataset)
+             _, reliability_metadata_by_axis,
+             rho_results_by_axis, tau_results_by_axis) = load_results_dataframes(args.results_dir, dataset)
         except FileNotFoundError as e:
             print(f"  Skipping {dataset}: {e}")
             continue
@@ -617,6 +658,8 @@ def main():
                 im_df_builder,
                 alpha_results_by_axis=alpha_results_by_axis,
                 mse_results_by_axis=mse_results_by_axis,
+                rho_results_by_axis=rho_results_by_axis,
+                tau_results_by_axis=tau_results_by_axis,
                 n_samples=args.n_samples, sample_size=args.sample_size,
                 pairwise_stats_builder=pairwise_stats_builder,
             )
