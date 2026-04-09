@@ -413,6 +413,69 @@ def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse
 
     return best_ids
 
+def dev_metric_matched_selection(text_ids, k, im_full_df, target_metric_values, compute_metric_fns, alpha_weight, seed=42, n_candidates=20):
+    """
+    Select subset that best matches target inter-model metric.
+
+    Tries multiple random subsets and picks the one with metric value closest to target.
+    Used for reliability estimation experiments where we want to match the metric
+    structure of inter-model comparisons.
+
+    Args:
+        text_ids: Array of text IDs to sample from
+        k: Number of items to select
+        im_full_df: DataFrame with inter-model data (text_id, model_name, evaluation_score)
+        target_metric_values: Array of target metric values
+        compute_metric_fns: Function to compute metric value given a subset of data (must be same size as target metric values)
+        alpha_weight: weighting of metrics to match to target (must be same size as target metric values and sum to 1, will be normalized to sum to 1 otherwise)
+        seed: Random seed for reproducibility
+        n_candidates: Number of candidate subsets to try (default: 20)
+
+    Returns:
+        Array of selected text_ids, or None if no valid subset found
+    """
+
+    if isinstance(target_metric_values, list):
+        assert isinstance(compute_metric_fns, list)
+        assert isinstance(alpha_weight, list)
+        assert len(target_metric_values) == len(compute_metric_fns) and len(target_metric_values) == len(alpha_weight), \
+        "Each metric to match must have an associated function and relative weight."
+    else:
+        target_metric_values = [target_metric_values]
+        compute_metric_fns = [compute_metric_fns]
+        alpha_weight = [alpha_weight]
+    
+    if np.abs(1 - np.sum(alpha_weight)) > 1e-3:
+        print("WARNING: Given alpha weight does not sum to 1, will be re-normalized.")
+        alpha_weight = alpha_weight / np.sum(alpha_weight)
+    
+    rng = np.random.RandomState(seed)
+    best_ids = None
+    best_score = float('inf')
+
+    for _ in range(n_candidates):
+        candidate_ids = rng.choice(text_ids, size=min(k, len(text_ids)), replace=False)
+        im_candidate = im_full_df[im_full_df["text_id"].isin(candidate_ids)]
+
+        if len(im_candidate) == 0:
+            continue
+        
+        cand_metrics = []
+        for compute_metric_fn in compute_metric_fns:
+            cand_metric = compute_metric_fn(im_candidate)
+            cand_metrics.append(cand_metric)
+
+        if not (np.isfinite(np.all(cand_metrics)) and np.isfinite(np.all(cand_metrics))):
+            continue
+
+        score = np.array(alpha_weight).T @ np.abs(np.array(target_metric_values) - np.array(cand_metrics))
+
+        if score < best_score:
+            best_score = score
+            best_ids = candidate_ids
+
+    return best_ids
+
 
 def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metric,
                               compute_ms_fn, compute_icc_fn, compute_alpha_fn,
