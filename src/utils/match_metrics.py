@@ -129,7 +129,7 @@ def compute_mean_sq_err(data: pd.DataFrame):
     if n_raters != 2:
         print("Mean squared error can only be computed on two raters, returning nan")
         return np.nan
-    
+
     data_filtered = (
         data.groupby('text_id')
             .filter(lambda x: x['model_name'].nunique() == n_raters)
@@ -137,15 +137,70 @@ def compute_mean_sq_err(data: pd.DataFrame):
 
     if len(data_filtered) == 0:
         return np.nan
-    
+
     data_filtered = data_filtered.groupby(
             by=['text_id', 'model_name']
         )["evaluation_score"].mean().reset_index()
-    
+
     mse = mean_squared_error(y_true=data_filtered.loc[data_filtered["model_name"] == model_names[0]]["evaluation_score"].values,
                                                y_pred=data_filtered.loc[data_filtered["model_name"] == model_names[1]]["evaluation_score"].values)
 
     return mse
+
+
+def compute_mean_sq_err_multi(data: pd.DataFrame, models=None):
+    """Compute MSE for inter-rater reliability.
+
+    For two raters, computes MSE between their score vectors.
+    For k > 2 raters, computes average pairwise MSE across all model pairs.
+
+    Args:
+        data: DataFrame with columns: text_id, model_name, evaluation_score
+        models: Optional list of model names to include. If None, uses all models in data.
+
+    Returns:
+        MSE value or np.nan if computation fails
+    """
+    if len(data) == 0:
+        return np.nan
+
+    if models is not None:
+        data = data[data["model_name"].isin(models)].copy()
+
+    if len(data) == 0:
+        return np.nan
+
+    required_raters = data["model_name"].unique()
+    n_raters = len(required_raters)
+
+    if n_raters < 2:
+        return np.nan
+
+    data_filtered = (
+        data.groupby('text_id')
+            .filter(lambda x: x['model_name'].nunique() == n_raters)
+    )
+
+    if len(data_filtered) == 0:
+        return np.nan
+
+    try:
+        data_filtered = data_filtered.drop_duplicates(subset=['text_id', 'model_name'], keep='first')
+        pivot = data_filtered.pivot(index='text_id', columns='model_name', values='evaluation_score')
+
+        if n_raters == 2:
+            return float(mean_squared_error(pivot.iloc[:, 0], pivot.iloc[:, 1]))
+
+        rater_list = list(pivot.columns)
+        mse_vals = []
+        for i in range(len(rater_list)):
+            for j in range(i + 1, len(rater_list)):
+                mse_val = mean_squared_error(pivot[rater_list[i]], pivot[rater_list[j]])
+                if np.isfinite(mse_val):
+                    mse_vals.append(float(mse_val))
+        return float(np.nanmean(mse_vals)) if mse_vals else np.nan
+    except Exception:
+        return np.nan
 
 def compute_icc_pingouin(data, models=None):
     """

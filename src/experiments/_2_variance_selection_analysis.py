@@ -28,7 +28,9 @@ from src.utils.selection_strategies import (
     variance_matched_selection_ms,
     metric_matched_selection,
     max_expand_selection,
+    stratified_target_selection,
 )
+from src.utils.match_metrics import compute_mean_sq_err_multi, compute_mean_sq_err
 from src.utils.plotting import plot_all_results, load_results_dataframes, save_predictor_inputs
 # Set random seed for reproducibility
 np.random.seed(42)
@@ -64,7 +66,8 @@ DEFAULT_MAX_BUDGET = 50
 #               "_tc" and "_imc" can be combined (e.g. "variance_matched_combined_tc_imc").
 SAMPLING_STRATEGIES = [
     "random",
-    # "random_imc",
+    "random_imc",
+    "stratified",
     "variance_matched_combined",
     # "variance_matched_combined_imc",
     # "variance_matched_combined_tc",
@@ -562,6 +565,17 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
     if fast_ms_fn is None:
         fast_ms_fn = compute_ms_components
 
+    im_standalone_mse = (
+        compute_mean_sq_err_multi(im_full_df, models=im_models)
+        if base_strategy == "metric_matched_mse" else None
+    )
+
+    target_scores_for_stratified = (
+        hm_full_df[hm_full_df["model_name"] == model]
+        .groupby("text_id")["evaluation_score"].mean()
+        if base_strategy == "stratified" else None
+    )
+
     needs_ppi = any(imc for _, imc in [_parse_strategy(s) for s in strategy_variants])
     needs_plain = any(not imc for _, imc in [_parse_strategy(s) for s in strategy_variants])
 
@@ -632,6 +646,10 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                 sampled_ids = np.concatenate([forced_ids, new_ids]) if len(forced_ids) > 0 else new_ids
             else:
                 sampled_ids = forced_ids[:k]
+        elif base_strategy == "stratified":
+            sampled_ids = stratified_target_selection(
+                text_ids, k, target_scores_for_stratified, seed=seed, forced_ids=forced_ids
+            )
         elif base_strategy in _SCORE_METHOD_MAP:
             sampled_ids = variance_matched_selection_ms(
                 text_ids, k, im_full_df, effective_msb_target, effective_mse_target,
@@ -662,7 +680,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                 continue
         elif base_strategy == "metric_matched_mse":
             sampled_ids = metric_matched_selection(
-                text_ids, k, im_full_df, im_mse_target, "mse",
+                text_ids, k, im_full_df, im_standalone_mse, "mse",
                 fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
                 seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
                 forced_ids=forced_ids
@@ -854,7 +872,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
         print(f"\nComputing true Krippendorff's alpha for model: {model}")
         true_alpha = compute_krippendorff_alpha(hm_full_df, models=[model, "original"])
         hm_ms_full = compute_ms_components(hm_full_df[hm_full_df["model_name"].isin([model, "original"])])
-        true_mse = hm_ms_full.mse if hm_ms_full is not None else np.nan
+        true_mse = compute_mean_sq_err(hm_full_df[hm_full_df["model_name"].isin([model, "original"])])
         true_rho = compute_spearman_rho(hm_full_df, models=[model, "original"])
         true_tau = compute_kendall_tau(hm_full_df, models=[model, "original"])
         print(f"{model}: ICC={true_icc:.4f}, Alpha={true_alpha:.4f}, MSE={true_mse:.4f}, Rho={true_rho:.4f}, Tau={true_tau:.4f}")

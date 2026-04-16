@@ -841,6 +841,7 @@ def plot_predictor_scatter(predictor_records, dataset, plots_dir):
         "oracle":                           "Oracle",
         "oracle_imc":                       "Oracle+IMC",
         "random_imc":                       "Random+IMC",
+        "stratified":                       "Stratified",
         "metric_matched_icc":               "Metric (ICC)",
         "metric_matched_alpha":             "Metric (Alpha)",
         "metric_matched_mse":               "Metric (MSE)",
