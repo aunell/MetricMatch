@@ -30,14 +30,14 @@
 set -e  # Exit on error
 
 # Default values
-OUTPUT_DIR="results/04_07_kendall_spearman"
+OUTPUT_DIR="results/04_08_kendall_spearman_jqa_threshold"
 DATA_DIR="data/judge_scores"
 SELECTION_RESULTS_DIR="results/04_07_kendall_spearman"
 MODELS=("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro")
 DATASETS=("hanna" "medval" "mslr" "summeval")
 BUDGETS=(5 10 15 20 25 30 35 40 45 50)
 VM_METHOD="variance_matched_weighted_.9"
-THRESHOLDS=(0.7) #(0.6 0.7 0.8 0.9)
+THRESHOLDS=(0.6 0.7 0.8 0.9)
 
 # Parse command-line arguments
 while [[ $# -gt 0 ]]; do
@@ -127,7 +127,7 @@ sbatch \
   --nodelist=secure-gpu-14 \
   --gres=gpu:1 \
   --mem=100G \
-  --time=4:00:00 \
+  --time=12:00:00 \
   --ntasks=1 \
   --output="${OUTPUT_DIR}/slurm_%j.out" \
   --error="${OUTPUT_DIR}/slurm_%j.err" \

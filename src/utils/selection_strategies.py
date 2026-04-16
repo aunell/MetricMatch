@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
+from src.utils.reliability_metrics import compute_pairwise_mean_squared_error
 
 def random_selection(cheap_ratings, n_expensive, seed):
     """Random selection strategy."""
@@ -418,21 +419,25 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
                               compute_ms_fn, compute_icc_fn, compute_alpha_fn,
                               seed=42, n_candidates=20, im_models=None,
                               forced_ids=None,
-                              compute_rho_fn=None, compute_tau_fn=None):
+                              compute_rho_fn=None, compute_tau_fn=None,
+                              target_model=None):
     """
     Select subset whose inter-model metric best matches a target value.
 
     Analogous to variance_matched_selection_ms but matches on a scalar reliability
-    metric (ICC, Krippendorff's alpha, MSE, Spearman rho, or Kendall tau) rather than
-    MSB/MSE components.
+    metric (ICC, Krippendorff's alpha, mean_squared_error, Spearman rho, or Kendall tau)
+    rather than MSB/MSE components.
 
     Args:
         text_ids: Array of text IDs to sample from
         k: Number of items to select
         im_full_df: DataFrame with inter-model data (text_id, model_name, evaluation_score)
         target_value: Target metric value to match (e.g. full-dataset IM ICC)
-        target_metric: Which metric to match — "icc", "alpha", "mse", "rho", or "tau"
-        compute_ms_fn: Function that returns a PointwiseICC object (for MSE)
+        target_metric: Which metric to match — "icc", "alpha", "mean_squared_error", "mse",
+                       "rho", or "tau". Use "mean_squared_error" for average pairwise
+                       prediction error between target_model and each other model;
+                       "mse" for the ANOVA mean-square-error component.
+        compute_ms_fn: Function that returns a PointwiseICC object (for ANOVA mse/icc)
         compute_icc_fn: Function to compute ICC given a DataFrame and models kwarg
         compute_alpha_fn: Function to compute Krippendorff's alpha given a DataFrame and models kwarg
         seed: Base random seed
@@ -443,6 +448,8 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
                     incremental IDs needed to reach k are sampled from the remaining pool.
                     The score is computed on the full combined set (forced + new).
                     Pass None or an empty array for batch/independent selection.
+        target_model: Required when target_metric == "mean_squared_error". The model whose
+                      scores are compared pairwise against all other models in the candidate subset.
 
     Returns:
         Array of selected text_ids, or None if no valid subset found
@@ -479,6 +486,8 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
         elif target_metric == "mse":
             ms_obj = compute_ms_fn(im_candidate)
             cand_value = ms_obj.mse if ms_obj is not None else np.nan
+        elif target_metric == "mean_squared_error":
+            cand_value = compute_pairwise_mean_squared_error(im_candidate, target_model)
         elif target_metric == "rho":
             if compute_rho_fn is None:
                 continue

@@ -740,6 +740,160 @@ def compute_selection_eval_tables(
     return results
 
 
+def compute_total_performance_comparison(
+    icc_df: pd.DataFrame,
+    alpha_df: pd.DataFrame,
+    downstream_df: pd.DataFrame,
+    metrics_df: pd.DataFrame,
+    budgets: list[int] = BUDGETS_SUBSET,
+    thresholds: list[float] | None = None,
+    rho_df: pd.DataFrame | None = None,
+    tau_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """
+    For every (dataset, axis, model, metric, budget, threshold) combination, compute
+    whether VM beats random in terms of classification accuracy for that individual model.
+
+    For each model at a given (budget, threshold, metric):
+      - vm_value:     fraction of runs where VM's predicted metric correctly classifies the model
+      - random_value: same for random sampling
+      - delta:        vm_value - random_value  (positive → VM is better)
+      - vm_wins:      delta > 0
+
+    Covers:
+      15 dataset-axis combos × 4 metrics × 10 budgets × 4 thresholds × 5 models = 12,000 rows
+
+    Returns a long-form DataFrame with one row per unique combination.
+    """
+    if thresholds is None:
+        thresholds = [0.6, 0.7, 0.8, 0.9]
+
+    _OM_TO_METRICS_COL = {
+        "icc":   "icc",
+        "alpha": "krippendorff_alpha",
+        "rho":   "spearman_rho",
+        "tau":   "kendall_tau",
+    }
+
+    configs = [
+        ("icc",   "predicted_icc",   icc_df),
+        ("alpha", "predicted_alpha", alpha_df),
+        ("rho",   "predicted_rho",   rho_df if rho_df is not None else pd.DataFrame()),
+        ("tau",   "predicted_tau",   tau_df if tau_df is not None else pd.DataFrame()),
+    ]
+
+    rows = []
+
+    for om_name, pred_col, raw_df in configs:
+        if raw_df.empty:
+            continue
+
+        om_hib = _OM_HIGHER_IS_BETTER.get(om_name, True)
+        metrics_col = _OM_TO_METRICS_COL[om_name]
+
+        df = raw_df.copy()
+        df["run"] = df.groupby(["dataset", "axis", "model", "budget", "method"]).cumcount()
+        df = df.rename(columns={pred_col: "predicted"})
+
+        # Attach each model's true (full-data) metric value.
+        df = df.merge(
+            downstream_df[["dataset", "axis", "model", metrics_col]].rename(
+                columns={metrics_col: "true_metric"}
+            ),
+            on=["dataset", "axis", "model"], how="inner"
+        )
+        if df.empty:
+            continue
+
+        dataset_axes_models = df[["dataset", "axis", "model"]].drop_duplicates().values.tolist()
+
+        for dataset, axis, model in dataset_axes_models:
+            sub = df[
+                (df["dataset"] == dataset) &
+                (df["axis"]    == axis)    &
+                (df["model"]   == model)
+            ]
+            if sub.empty:
+                continue
+
+            true_val = sub["true_metric"].iloc[0]
+
+            for threshold in thresholds:
+                true_good = _is_good(true_val, om_hib, threshold)
+                if true_good is None:
+                    continue
+
+                for budget in budgets:
+                    r_runs = sub[(sub["budget"] == budget) & (sub["method"] == "random")]
+                    v_runs = sub[(sub["budget"] == budget) & (sub["method"] == VM_METHOD)]
+
+                    if r_runs.empty or v_runs.empty:
+                        continue
+
+                    def _frac_correct(run_rows):
+                        correct = []
+                        for pred in run_rows["predicted"].values:
+                            if np.isnan(pred):
+                                continue
+                            pred_good = _is_good(float(pred), om_hib, threshold)
+                            if pred_good is not None:
+                                correct.append(float(pred_good == true_good))
+                        return float(np.mean(correct)) if correct else np.nan
+
+                    r_val = _frac_correct(r_runs)
+                    v_val = _frac_correct(v_runs)
+
+                    if np.isnan(r_val) or np.isnan(v_val):
+                        continue
+
+                    delta = v_val - r_val
+                    rows.append({
+                        "dataset":      dataset,
+                        "axis":         axis,
+                        "model":        model,
+                        "metric":       om_name,
+                        "budget":       budget,
+                        "threshold":    threshold,
+                        "vm_value":     v_val,
+                        "random_value": r_val,
+                        "delta":        delta,
+                        "vm_wins":      delta > 0,
+                    })
+
+    return pd.DataFrame(rows)
+
+
+def compute_performance_comparison_summary(detail_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate total_performance_comparison into overall win/loss/gain statistics.
+
+    Columns:
+      n_vm_wins                   – rows where delta > 0
+      n_random_wins               – rows where delta < 0
+      n_ties                      – rows where delta == 0
+      total_comparisons           – total non-NaN rows
+      avg_vm_gain_when_winning    – mean(delta | delta > 0)
+      avg_random_gain_when_winning– mean(-delta | delta < 0)
+      overall_avg_diff            – mean(delta) across all rows
+    """
+    if detail_df.empty:
+        return pd.DataFrame()
+
+    wins   = detail_df[detail_df["delta"] > 0]
+    losses = detail_df[detail_df["delta"] < 0]
+    ties   = detail_df[detail_df["delta"] == 0]
+
+    return pd.DataFrame([{
+        "n_vm_wins":                    len(wins),
+        "n_random_wins":                len(losses),
+        "n_ties":                       len(ties),
+        "total_comparisons":            len(detail_df),
+        "avg_vm_gain_when_winning":     float(wins["delta"].mean())        if len(wins)   > 0 else np.nan,
+        "avg_random_gain_when_winning": float((-losses["delta"]).mean())   if len(losses) > 0 else np.nan,
+        "overall_avg_diff":             float(detail_df["delta"].mean()),
+    }])
+
+
 _TRUE_COL_TO_METRICS_COL = {
     "true_icc":   "icc",
     "true_alpha": "krippendorff_alpha",
@@ -1304,6 +1458,27 @@ def main() -> None:
         output_dir=args.output_dir,
         classification_by_threshold=classification_by_threshold,
     )
+
+    print("\nComputing total performance comparison (VM vs random per model)...")
+    total_perf_df = compute_total_performance_comparison(
+        icc_sel_df, alpha_sel_df, downstream_df, metrics_df,
+        budgets=args.budgets,
+        thresholds=thresholds,
+        rho_df=_rho_arg,
+        tau_df=_tau_arg,
+    )
+    if not total_perf_df.empty:
+        total_perf_path = class_out / "total_performance_comparison.csv"
+        total_perf_df.to_csv(total_perf_path, index=False)
+        print(f"Saved total_performance_comparison.csv → {total_perf_path}")
+
+        summary_df = compute_performance_comparison_summary(total_perf_df)
+        summary_path = class_out / "total_performance_comparison_summary.csv"
+        summary_df.to_csv(summary_path, index=False)
+        print(f"Saved total_performance_comparison_summary.csv → {summary_path}")
+    else:
+        print("  WARNING: total_performance_comparison is empty — no rows produced.")
+
     print("\nSelection analysis complete.")
 
 

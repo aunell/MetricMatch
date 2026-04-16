@@ -256,7 +256,8 @@ def compute_bootstrap_cis(results_df, n_bootstrap=1000):
 
 def create_estimation_error_plot(avg_results, title, ylabel, filename, legend_text=""):
     """
-    Create a single estimation error plot with confidence intervals.
+    Create a side-by-side estimation error plot: left panel shows non-oracle methods,
+    right panel shows oracle methods. Both panels share a y-axis.
 
     Args:
         avg_results: DataFrame from compute_bootstrap_cis with method, budget, mean, ci_half_width
@@ -268,30 +269,39 @@ def create_estimation_error_plot(avg_results, title, ylabel, filename, legend_te
     Returns:
         Path to saved file
     """
-    fig, ax = plt.subplots(figsize=(11, 6))
+    all_methods = list(avg_results["method"].unique())
+    oracle_methods = [m for m in all_methods if m.startswith("oracle_")]
+    non_oracle_methods = [m for m in all_methods if not m.startswith("oracle_")]
 
-    methods = list(avg_results["method"].unique())
-    colors = _get_colors_for_methods(methods)
-    for method in methods:
-        method_data = avg_results[avg_results["method"] == method]
-        ax.errorbar(
-            method_data["budget"],
-            method_data["mean"],
-            yerr=method_data["ci_half_width"],
-            marker='o',
-            linewidth=2.5,
-            capsize=5,
-            capthick=2,
-            label=method,
-            color=colors[method],
-            alpha=0.8
-        )
+    colors = _get_colors_for_methods(all_methods)
 
-    ax.set_ylabel(ylabel, fontsize=12)
-    ax.set_xlabel("Human Annotation Budget", fontsize=12)
-    ax.set_title(f"{title}{legend_text}", fontsize=11)
-    ax.legend(title="Method", fontsize=10, bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0)
-    ax.grid(alpha=0.3)
+    fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(20, 6), sharey=True)
+
+    def _plot_methods(ax, methods, panel_title):
+        for method in methods:
+            method_data = avg_results[avg_results["method"] == method]
+            ax.errorbar(
+                method_data["budget"],
+                method_data["mean"],
+                yerr=method_data["ci_half_width"],
+                marker='o',
+                linewidth=2.5,
+                capsize=5,
+                capthick=2,
+                label=method,
+                color=colors[method],
+                alpha=0.8
+            )
+        ax.set_xlabel("Human Annotation Budget", fontsize=12)
+        ax.set_title(panel_title, fontsize=11)
+        ax.legend(title="Method", fontsize=9, bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0)
+        ax.grid(alpha=0.3)
+
+    _plot_methods(ax_left,  non_oracle_methods, f"{title} — Our Methods{legend_text}")
+    _plot_methods(ax_right, oracle_methods,     f"{title} — Oracle Methods{legend_text}")
+
+    ax_left.set_ylabel(ylabel, fontsize=12)
+
     fig.tight_layout()
     fig.savefig(filename, dpi=300, bbox_inches='tight')
     plt.close(fig)

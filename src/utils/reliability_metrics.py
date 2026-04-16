@@ -550,3 +550,33 @@ def compute_krippendorff_alpha(data, models=None):
         return alphas
     else:
         return _compute_single_krippendorff_alpha(data)
+
+
+def compute_pairwise_mean_squared_error(data, target_model):
+    """
+    Compute average pairwise MSE between a target model and each other model.
+
+    For each other model in the DataFrame, computes MSE = mean((target_scores - other_scores)^2)
+    over shared text_ids, then returns the average across all other models.
+
+    Args:
+        data: DataFrame with columns: text_id, model_name, evaluation_score
+        target_model: Name of the target model to compare against all others
+
+    Returns:
+        float: Average pairwise MSE, or np.nan if not computable
+    """
+    pivot = data.pivot_table(index="text_id", columns="model_name", values="evaluation_score", aggfunc="first")
+    if target_model not in pivot.columns:
+        return np.nan
+    other_models = [c for c in pivot.columns if c != target_model]
+    if not other_models:
+        return np.nan
+    mse_list = []
+    for m in other_models:
+        shared = pivot[[target_model, m]].dropna()
+        if len(shared) == 0:
+            continue
+        mse = np.mean((shared[target_model] - shared[m]) ** 2)
+        mse_list.append(mse)
+    return np.nanmean(mse_list) if mse_list else np.nan
