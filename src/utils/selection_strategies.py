@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
-from src.utils.reliability_metrics import compute_pairwise_mean_squared_error
+from src.utils.match_metrics import compute_mean_sq_err_multi
 
 def random_selection(cheap_ratings, n_expensive, seed):
     """Random selection strategy."""
@@ -57,6 +57,67 @@ def hybrid_selection(cheap_ratings, cheap_ratings_2, n_expensive, seed):
     disagreement[strat_indices] = -1  # Use -1 instead of -inf to avoid overflow
     disagree_indices = np.argsort(disagreement)[-(n_expensive - n_strat):]
     return np.concatenate([strat_indices, disagree_indices])
+
+def stratified_target_selection(text_ids, k, target_scores, seed=42, n_strata=4, forced_ids=None):
+    """Select k items stratified by target model score quantiles.
+
+    Splits the target model's scores into n_strata equal-probability quantile bins
+    and selects k // n_strata items from each bin (remainder distributed to first bins).
+    Uses only the target model's own scores — no ensemble involved.
+
+    Args:
+        text_ids: Array of text IDs to sample from
+        k: Number of items to select
+        target_scores: pandas Series indexed by text_id with the target model's scores
+        seed: Random seed
+        n_strata: Number of quantile bins (default 4)
+        forced_ids: IDs that must be included (online acquisition mode)
+
+    Returns:
+        Array of selected text_ids
+    """
+    rng = np.random.RandomState(seed)
+
+    forced_ids = np.asarray(forced_ids) if forced_ids is not None and len(forced_ids) > 0 else np.array([], dtype=text_ids.dtype)
+    available_ids = np.setdiff1d(text_ids, forced_ids)
+    n_new = min(k - len(forced_ids), len(available_ids))
+
+    if n_new <= 0:
+        return forced_ids[:k]
+
+    scores = target_scores.reindex(available_ids)
+    valid_mask = scores.notna().values
+    valid_ids = available_ids[valid_mask]
+    valid_scores = scores.values[valid_mask]
+
+    if len(valid_ids) == 0:
+        chosen = rng.choice(available_ids, size=n_new, replace=False)
+        return np.concatenate([forced_ids, chosen]) if len(forced_ids) > 0 else chosen
+
+    quantile_edges = np.quantile(valid_scores, np.linspace(0, 1, n_strata + 1))
+    bin_indices = np.digitize(valid_scores, quantile_edges[1:-1])  # 0-indexed 0..n_strata-1
+
+    per_stratum = n_new // n_strata
+    remainder = n_new % n_strata
+
+    selected = []
+    for stratum in range(n_strata):
+        stratum_ids = valid_ids[bin_indices == stratum]
+        n_select = min(per_stratum + (1 if stratum < remainder else 0), len(stratum_ids))
+        if n_select > 0:
+            selected.extend(rng.choice(stratum_ids, size=n_select, replace=False).tolist())
+
+    selected = np.array(selected)
+
+    if len(selected) < n_new:
+        used = set(selected.tolist())
+        remaining = np.array([tid for tid in available_ids if tid not in used])
+        shortfall = n_new - len(selected)
+        extra = rng.choice(remaining, size=min(shortfall, len(remaining)), replace=False)
+        selected = np.concatenate([selected, extra])
+
+    return np.concatenate([forced_ids, selected]) if len(forced_ids) > 0 else selected
+
 
 def cluster_selection(cheap_ratings, n_expensive, seed, random_state=None, epsilon=0.1, k=10):
     """
@@ -547,10 +608,7 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
         elif target_metric == "alpha":
             cand_value = compute_alpha_fn(im_candidate, models=im_models)
         elif target_metric == "mse":
-            ms_obj = compute_ms_fn(im_candidate)
-            cand_value = ms_obj.mse if ms_obj is not None else np.nan
-        elif target_metric == "mean_squared_error":
-            cand_value = compute_pairwise_mean_squared_error(im_candidate, target_model)
+            cand_value = compute_mean_sq_err_multi(im_candidate, models=im_models)
         elif target_metric == "rho":
             if compute_rho_fn is None:
                 continue
