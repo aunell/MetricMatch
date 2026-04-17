@@ -1,9 +1,9 @@
+import argparse
 import os
 import pandas as pd
 import numpy as np
 
-RESULTS_DIR = "/share/pi/nigam/users/aunell/SmartSample_local/results/04_07_kendall_spearman"
-THRESHOLD_DIR = "/share/pi/nigam/users/aunell/SmartSample_local/results/04_08_kendall_spearman_jqa_threshold/dataframes"
+RESULTS_DIR = "/Users/alyssaunell/code/SmartSample_local/results/04_01_downstream_task_small_ensemble_and_target"
 DATASETS = ["hanna", "medval", "mslr", "summeval"]
 METRICS = ["alpha", "icc", "rho", "tau"]
 OUR_METHOD = "variance_matched_weighted_.9"
@@ -16,14 +16,17 @@ THRESHOLDS = [0.6, 0.7, 0.8, 0.9]
 # Estimation helpers
 # ---------------------------------------------------------------------------
 
-def load_estimation_data():
+def load_estimation_data(results_dir=RESULTS_DIR):
     """Load {metric}_results.csv for each dataset and metric, return combined df."""
     frames = []
     for dataset in DATASETS:
         for metric in METRICS:
             csv_path = os.path.join(
-                RESULTS_DIR, dataset, dataset, "dataframes", f"{metric}_results.csv"
+                results_dir, dataset, dataset, "dataframes", f"{metric}_results.csv"
             )
+            if not os.path.exists(csv_path):
+                print(f"  Skipping {metric} | {dataset}: file not found")
+                continue
             df = pd.read_csv(csv_path)
             df = df[df["method"].isin([OUR_METHOD, BASELINE])][
                 ["model", "budget", "method", "estimation_error", "axis"]
@@ -53,7 +56,8 @@ def _estimation_pivot(merged):
         .rename(columns={"win": "win_rate"})
     )
     result = win_rates.pivot(index="budget", columns="metric", values="win_rate")
-    result = result[METRICS]
+    available = [m for m in METRICS if m in result.columns]
+    result = result[available]
     result.index.name = "budget"
     result.columns.name = None
     return result.sort_index()
@@ -89,18 +93,25 @@ def _micro_merge(df):
 # Threshold helpers
 # ---------------------------------------------------------------------------
 
-def load_threshold_raw_data():
+def load_threshold_raw_data(results_dir=RESULTS_DIR):
     """Load raw metric results with predicted and true values for threshold analysis."""
     frames = []
     for dataset in DATASETS:
         for metric in METRICS:
             csv_path = os.path.join(
-                RESULTS_DIR, dataset, dataset, "dataframes", f"{metric}_results.csv"
+                results_dir, dataset, dataset, "dataframes", f"{metric}_results.csv"
             )
+            if not os.path.exists(csv_path):
+                print(f"  Skipping {metric} | {dataset}: file not found")
+                continue
             df = pd.read_csv(csv_path)
+            pred_col, true_col = f"predicted_{metric}", f"true_{metric}"
+            if pred_col not in df.columns or true_col not in df.columns:
+                print(f"  Skipping {metric} | {dataset}: missing columns {pred_col}/{true_col}")
+                continue
             df = df[df["method"].isin([OUR_METHOD, BASELINE])][
-                ["model", "budget", "method", f"predicted_{metric}", f"true_{metric}", "axis"]
-            ].rename(columns={f"predicted_{metric}": "predicted", f"true_{metric}": "true_val"})
+                ["model", "budget", "method", pred_col, true_col, "axis"]
+            ].rename(columns={pred_col: "predicted", true_col: "true_val"})
             df["dataset"] = dataset
             df["metric"] = metric
             frames.append(df)
@@ -172,7 +183,8 @@ def _threshold_pivot(merged):
         .rename(columns={"win": "win_rate"})
     )
     result = win_rates.pivot(index="budget", columns="metric", values="win_rate")
-    result = result[METRICS]
+    available = [m for m in METRICS if m in result.columns]
+    result = result[available]
     result.index.name = "budget"
     result.columns.name = None
     return result.sort_index()
@@ -197,7 +209,7 @@ def main(results_dir=RESULTS_DIR):
 
     # -- Estimation --
     print("Loading estimation data...")
-    est_df = load_estimation_data()
+    est_df = load_estimation_data(results_dir)
 
     print("\n--- Macro estimation win rates ---")
     macro_merged = _macro_merge(est_df)
@@ -231,7 +243,7 @@ def main(results_dir=RESULTS_DIR):
 
     # -- Threshold --
     print("Loading raw data for threshold analysis...")
-    thr_raw = load_threshold_raw_data()
+    thr_raw = load_threshold_raw_data(results_dir)
 
     for threshold in THRESHOLDS:
         t_str = f"T{threshold}"
@@ -257,4 +269,7 @@ def main(results_dir=RESULTS_DIR):
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Win rates and threshold analysis")
+    parser.add_argument("--folder", default=RESULTS_DIR, help="Results directory")
+    args = parser.parse_args()
+    main(results_dir=args.folder)

@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).parents[2]))
 # Configuration
 # ---------------------------------------------------------------------------
 
-DEFAULT_OUTPUT = "results/06_selection_method_downstream"
+DEFAULT_OUTPUT = "results/04_01_downstream_task_small_ensemble_and_target"
 
 ORACLE_METHODS = {"oracle_msb_mse", "oracle_msb", "oracle_mse", "oracle_icc", "oracle_alpha"}
 

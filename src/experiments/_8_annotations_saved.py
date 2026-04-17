@@ -1,9 +1,10 @@
+import argparse
 import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-RESULTS_DIR = "/share/pi/nigam/users/aunell/SmartSample_local/results/04_07_kendall_spearman"
+RESULTS_DIR = "/Users/alyssaunell/code/SmartSample_local/results/04_01_downstream_task_small_ensemble_and_target"
 DATASETS = ["hanna", "medval", "mslr", "summeval"]
 METRICS = ["alpha", "icc", "rho", "tau"]
 OUR_METHOD = "variance_matched_weighted_.9"
@@ -12,13 +13,16 @@ BUDGETS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
 BASELINE_BUDGET = 50
 
 
-def load_data():
+def load_data(results_dir=RESULTS_DIR):
     frames = []
     for dataset in DATASETS:
         for metric in METRICS:
             csv_path = os.path.join(
-                RESULTS_DIR, dataset, dataset, "dataframes", f"{metric}_results.csv"
+                results_dir, dataset, dataset, "dataframes", f"{metric}_results.csv"
             )
+            if not os.path.exists(csv_path):
+                print(f"  Skipping {metric} | {dataset}: file not found")
+                continue
             df = pd.read_csv(csv_path)
             df = df[df["method"].isin([OUR_METHOD, BASELINE])][
                 ["model", "budget", "method", "estimation_error", "axis"]
@@ -170,7 +174,7 @@ def main(results_dir=RESULTS_DIR):
     os.makedirs(out_dir, exist_ok=True)
 
     print("Loading data...")
-    df = load_data()
+    df = load_data(results_dir)
 
     print("Computing annotations saved...")
     detail = compute_annotations_saved(df)
@@ -184,14 +188,15 @@ def main(results_dir=RESULTS_DIR):
     print(f"Saved: {detail_path}")
 
     # Summary by dataset x metric
-    by_dataset = summary_table(detail, "dataset", col_order=METRICS)
+    available_metrics = [m for m in METRICS if m in detail["metric"].unique()]
+    by_dataset = summary_table(detail, "dataset", col_order=available_metrics)
     ds_path = os.path.join(out_dir, "annotations_saved_by_dataset.csv")
     by_dataset.to_csv(ds_path)
     print(f"\nSaved: {ds_path}")
     print(by_dataset.round(2).to_string())
 
     # Summary by model x metric
-    by_model = summary_table(detail, "model", col_order=METRICS)
+    by_model = summary_table(detail, "model", col_order=available_metrics)
     model_path = os.path.join(out_dir, "annotations_saved_by_model.csv")
     by_model.to_csv(model_path)
     print(f"\nSaved: {model_path}")
@@ -247,4 +252,7 @@ def main(results_dir=RESULTS_DIR):
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Annotations saved analysis")
+    parser.add_argument("--folder", default=RESULTS_DIR, help="Results directory")
+    args = parser.parse_args()
+    main(results_dir=args.folder)
