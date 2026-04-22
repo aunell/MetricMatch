@@ -46,7 +46,10 @@ def compute_ms_components(data: pd.DataFrame, targets: str = "text_id", raters: 
     if n <= 1 or k <= 1:
         return None
     
-    icc_obj = PointwiseICC(n=n, k=k, data=data, normalize=True, targets=targets, raters=raters, ratings=ratings)
+    try:
+        icc_obj = PointwiseICC(n=n, k=k, data=data, normalize=True, targets=targets, raters=raters, ratings=ratings)
+    except:
+        icc_obj = None
 
     return icc_obj
 
@@ -89,9 +92,12 @@ def compute_pearson(data: pd.DataFrame):
             by=['text_id', 'model_name']
         )["evaluation_score"].mean().reset_index()
     
-    pearson_r, pearson_p = stats.pearsonr(data_filtered.loc[data_filtered["model_name"] == model_names[0]]["evaluation_score"].values,
+    try:
+        pearson_r, pearson_p = stats.pearsonr(data_filtered.loc[data_filtered["model_name"] == model_names[0]]["evaluation_score"].values,
                                                data_filtered.loc[data_filtered["model_name"] == model_names[1]]["evaluation_score"].values)
 
+    except:
+        pearson_r = np.nan
     # print(f"\n  Correlation Results:")
     # print(f"    Pearson r = {pearson_r:.4f} (p = {pearson_p:.6f})")
     
@@ -116,10 +122,13 @@ def compute_spearman(data: pd.DataFrame):
             by=['text_id', 'model_name']
         )["evaluation_score"].mean().reset_index()
     
-    spearman_r, spearman_p = stats.spearmanr(data_filtered.loc[data_filtered["model_name"] == model_names[0]]["evaluation_score"].values,
+    try:
+        spearman_r, spearman_p = stats.spearmanr(data_filtered.loc[data_filtered["model_name"] == model_names[0]]["evaluation_score"].values,
                                                data_filtered.loc[data_filtered["model_name"] == model_names[1]]["evaluation_score"].values)
     # print(f"\n  Correlation Results:")
     # print(f"    Spearman rank r = {spearman_r:.4f} (p = {spearman_p:.6f})")
+    except:
+        spearman_r = np.nan
 
     return spearman_r
 
