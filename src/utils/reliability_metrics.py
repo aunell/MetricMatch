@@ -357,9 +357,10 @@ def compute_krippendorff_alpha_bias_corrected(data, models=None, n_bootstrap=30,
 
 
 def compute_reliability_ppi_corrected(hm_data, im_data, true_im_icc, true_im_alpha,
-                                       hm_models=None, im_models=None):
+                                       hm_models=None, im_models=None,
+                                       true_im_rho=None, true_im_tau=None):
     """
-    Compute PPI-corrected ICC and Krippendorff's alpha.
+    Compute PPI-corrected ICC, Krippendorff's alpha, Spearman rho, and Kendall tau.
 
     Following the Post-Prediction Inference framework, the correction is:
 
@@ -370,7 +371,7 @@ def compute_reliability_ppi_corrected(hm_data, im_data, true_im_icc, true_im_alp
         - hm_subset   = metric on the human-model subsample
         - im_subset   = metric on the inter-model data for the same subset items
 
-    The intuition: the inter-model ICC on the subset tells us how biased the
+    The intuition: the inter-model metric on the subset tells us how biased the
     subset is relative to the full population, and we use that same bias to
     correct the human-model estimate. No bootstrapping is needed.
 
@@ -381,10 +382,14 @@ def compute_reliability_ppi_corrected(hm_data, im_data, true_im_icc, true_im_alp
         true_im_alpha: Krippendorff's alpha on the full inter-model dataset
         hm_models: Optional model names to include for HM computation
         im_models: Optional model names to include for IM computation
+        true_im_rho: Spearman rho on the full inter-model dataset (optional)
+        true_im_tau: Kendall tau on the full inter-model dataset (optional)
 
     Returns:
-        (corrected_icc, corrected_alpha): PPI-corrected estimates. Falls back
-        to the raw HM estimate for each metric if the IM reference is not finite.
+        (corrected_icc, corrected_alpha, corrected_rho, corrected_tau): PPI-corrected
+        estimates. Falls back to the raw HM estimate for each metric if the IM
+        reference is not finite. corrected_rho and corrected_tau are None if the
+        corresponding true_im value is not provided.
     """
     hm_icc = compute_icc_pingouin(hm_data, models=hm_models)
     hm_alpha = compute_krippendorff_alpha(hm_data, models=hm_models)
@@ -407,7 +412,27 @@ def compute_reliability_ppi_corrected(hm_data, im_data, true_im_icc, true_im_alp
         else hm_alpha
     )
 
-    return corrected_icc, corrected_alpha
+    corrected_rho = None
+    if true_im_rho is not None:
+        hm_rho = compute_spearman_rho(hm_data, models=hm_models)
+        im_subset_rho = compute_spearman_rho(im_subset, models=im_models)
+        corrected_rho = (
+            true_im_rho + (hm_rho - im_subset_rho)
+            if np.isfinite(hm_rho) and np.isfinite(im_subset_rho) and np.isfinite(true_im_rho)
+            else hm_rho
+        )
+
+    corrected_tau = None
+    if true_im_tau is not None:
+        hm_tau = compute_kendall_tau(hm_data, models=hm_models)
+        im_subset_tau = compute_kendall_tau(im_subset, models=im_models)
+        corrected_tau = (
+            true_im_tau + (hm_tau - im_subset_tau)
+            if np.isfinite(hm_tau) and np.isfinite(im_subset_tau) and np.isfinite(true_im_tau)
+            else hm_tau
+        )
+
+    return corrected_icc, corrected_alpha, corrected_rho, corrected_tau
 
 
 def compute_spearman_rho(data, models=None):

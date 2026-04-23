@@ -557,10 +557,9 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
         k: Number of items to select
         im_full_df: DataFrame with inter-model data (text_id, model_name, evaluation_score)
         target_value: Target metric value to match (e.g. full-dataset IM ICC)
-        target_metric: Which metric to match — "icc", "alpha", "mean_squared_error", "mse",
+        target_metric: Which metric to match — "icc", "alpha", "mean_squared_error",
                        "rho", or "tau". Use "mean_squared_error" for average pairwise
-                       prediction error between target_model and each other model;
-                       "mse" for the ANOVA mean-square-error component.
+                       sklearn mean squared error between raters.
         compute_ms_fn: Function that returns a PointwiseICC object (for ANOVA mse/icc)
         compute_icc_fn: Function to compute ICC given a DataFrame and models kwarg
         compute_alpha_fn: Function to compute Krippendorff's alpha given a DataFrame and models kwarg
@@ -607,7 +606,7 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
             cand_value = ms_obj.icc if (ms_obj is not None and ms_obj.icc is not None) else np.nan
         elif target_metric == "alpha":
             cand_value = compute_alpha_fn(im_candidate, models=im_models)
-        elif target_metric == "mse":
+        elif target_metric == "mean_squared_error":
             cand_value = compute_mean_sq_err_multi(im_candidate, models=im_models)
         elif target_metric == "rho":
             if compute_rho_fn is None:

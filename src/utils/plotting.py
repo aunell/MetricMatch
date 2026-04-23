@@ -682,7 +682,7 @@ def plot_all_results(icc_results, alpha_results, mse_results, rho_results, tau_r
         plots_dir,
         comparison_mode,
         metric_name="MSE",
-        hm_key="true_hm_mse",
+        hm_key="true_hm_mean_squared_error",
         im_key="im_mse"
     )
 
@@ -700,7 +700,7 @@ def plot_all_results(icc_results, alpha_results, mse_results, rho_results, tau_r
             comparison_mode,
             metric_name="Rho",
             hm_key="true_hm_rho",
-            im_key="im_icc"  # no IM rho computed; fall back to im_icc for metadata display
+            im_key="im_rho"
         )
 
     if tau_results is not None and len(tau_results) > 0:
@@ -717,7 +717,7 @@ def plot_all_results(icc_results, alpha_results, mse_results, rho_results, tau_r
             comparison_mode,
             metric_name="Tau",
             hm_key="true_hm_tau",
-            im_key="im_icc"  # no IM tau computed; fall back to im_icc for metadata display
+            im_key="im_tau"
         )
 
 
