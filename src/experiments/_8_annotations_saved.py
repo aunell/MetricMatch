@@ -8,13 +8,14 @@ RESULTS_DIR = "/share/pi/nigam/users/aunell/SmartSample_local/results/04_16_new_
 DATASETS = ["hanna", "medval", "mslr", "summeval"]
 METRICS = ["alpha", "icc", "rho", "tau"]
 OUR_METHOD = "variance_matched_weighted_.9"
+MEAN_SQUARED_ERROR_METHOD = "metric_matched_mean_squared_error"
 BASELINE = "random"
 BUDGETS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
 PLOT_BUDGETS = [b for b in BUDGETS if b >= 10]  # rb=5 excluded: no vm budgets below 5 to observe
 BASELINE_BUDGET = 50
 
 
-def load_data(results_dir=RESULTS_DIR):
+def load_data(results_dir=RESULTS_DIR, track_mse_match=False):
     frames = []
     for dataset in DATASETS:
         for metric in METRICS:
@@ -30,7 +31,23 @@ def load_data(results_dir=RESULTS_DIR):
             ]
             df["dataset"] = dataset
             df["metric"] = metric
+            df["is_ours"] = df["method"] == OUR_METHOD
             frames.append(df)
+        if track_mse_match:
+            csv_path = os.path.join(
+                results_dir, dataset, dataset, "dataframes", "mse_results.csv"
+            )
+            if not os.path.exists(csv_path):
+                print(f"  Skipping mean_squared_error | {dataset}: file not found")
+            else:
+                df = pd.read_csv(csv_path)
+                df = df[df["method"].isin([MEAN_SQUARED_ERROR_METHOD, BASELINE])][
+                    ["model", "budget", "method", "estimation_error", "axis"]
+                ]
+                df["dataset"] = dataset
+                df["metric"] = "mean_squared_error"
+                df["is_ours"] = df["method"] == MEAN_SQUARED_ERROR_METHOD
+                frames.append(df)
     return pd.concat(frames, ignore_index=True)
 
 
@@ -45,13 +62,13 @@ def compute_annotations_saved(df):
     Returns a detail DataFrame with one row per (dataset, axis, model, metric).
     """
     avg = (
-        df.groupby(["dataset", "axis", "model", "budget", "method", "metric"])["estimation_error"]
+        df.groupby(["dataset", "axis", "model", "budget", "method", "metric", "is_ours"])["estimation_error"]
         .mean()
         .reset_index()
         .rename(columns={"estimation_error": "mean_error"})
     )
 
-    random_all = avg[avg["method"] == BASELINE][
+    random_all = avg[~avg["is_ours"]][
         ["dataset", "axis", "model", "budget", "metric", "mean_error"]
     ].rename(columns={"mean_error": "random_error"})
 
@@ -59,7 +76,7 @@ def compute_annotations_saved(df):
         ["dataset", "axis", "model", "metric", "random_error"]
     ].rename(columns={"random_error": "random_error_50"})
 
-    ours = avg[avg["method"] == OUR_METHOD][
+    ours = avg[avg["is_ours"]][
         ["dataset", "axis", "model", "budget", "metric", "mean_error"]
     ].rename(columns={"mean_error": "our_error"})
 
@@ -68,7 +85,7 @@ def compute_annotations_saved(df):
 
     # Also prepare random at all budgets for the reverse calculation
     our_baseline = avg[
-        (avg["method"] == OUR_METHOD) & (avg["budget"] == BASELINE_BUDGET)
+        avg["is_ours"] & (avg["budget"] == BASELINE_BUDGET)
     ][["dataset", "axis", "model", "metric", "mean_error"]].rename(
         columns={"mean_error": "our_error_50"}
     )
@@ -153,19 +170,19 @@ def compute_budget_equivalence(df):
       Returns NaN where the crossover falls outside [5, 50].
     """
     avg = (
-        df.groupby(["dataset", "axis", "model", "budget", "method", "metric"])["estimation_error"]
+        df.groupby(["dataset", "axis", "model", "budget", "method", "metric", "is_ours"])["estimation_error"]
         .mean()
         .reset_index()
         .rename(columns={"estimation_error": "mean_error"})
     )
 
     random_avg = (
-        avg[avg["method"] == BASELINE]
+        avg[~avg["is_ours"]]
         [["dataset", "axis", "model", "metric", "budget", "mean_error"]]
         .rename(columns={"budget": "random_budget", "mean_error": "random_error"})
     )
     vm_avg = (
-        avg[avg["method"] == OUR_METHOD]
+        avg[avg["is_ours"]]
         [["dataset", "axis", "model", "metric", "budget", "mean_error"]]
         .sort_values(["dataset", "axis", "model", "metric", "budget"])
     )
@@ -263,10 +280,11 @@ def plot_budget_equiv_summary(equivs, out_dir):
     """One plot: lines = metrics, averaged over all datasets/axes/models."""
     equivs = equivs[equivs["random_budget"].isin(PLOT_BUDGETS)]
     avg = equivs.groupby(["metric", "random_budget"])["equivalent_budget"].mean().reset_index()
+    active_metrics = sorted(equivs["metric"].unique())
     fig, ax = plt.subplots(figsize=(8, 6))
     _style_equiv_ax(ax, PLOT_BUDGETS)
-    colors = plt.cm.tab10(np.linspace(0, 0.4, len(METRICS)))
-    for color, metric in zip(colors, METRICS):
+    colors = plt.cm.tab10(np.linspace(0, 0.4, len(active_metrics)))
+    for color, metric in zip(colors, active_metrics):
         mdata = avg[avg["metric"] == metric].sort_values("random_budget")
         label = _savings_label(metric, mdata["random_budget"].values, mdata["equivalent_budget"].values)
         ax.plot(mdata["random_budget"], mdata["equivalent_budget"], marker="o", color=color, label=label)
@@ -282,13 +300,14 @@ def plot_budget_equiv_summary(equivs, out_dir):
 def plot_budget_equiv_by_dataset(equivs, out_dir):
     """4 plots (one per dataset): lines = metrics, averaged over axes/models."""
     equivs = equivs[equivs["random_budget"].isin(PLOT_BUDGETS)]
-    colors = plt.cm.tab10(np.linspace(0, 0.4, len(METRICS)))
+    active_metrics = sorted(equivs["metric"].unique())
+    colors = plt.cm.tab10(np.linspace(0, 0.4, len(active_metrics)))
     for dataset in DATASETS:
         ddata = equivs[equivs["dataset"] == dataset]
         avg = ddata.groupby(["metric", "random_budget"])["equivalent_budget"].mean().reset_index()
         fig, ax = plt.subplots(figsize=(8, 6))
         _style_equiv_ax(ax, PLOT_BUDGETS)
-        for color, metric in zip(colors, METRICS):
+        for color, metric in zip(colors, active_metrics):
             mdata = avg[avg["metric"] == metric].sort_values("random_budget")
             label = _savings_label(metric, mdata["random_budget"].values, mdata["equivalent_budget"].values)
             ax.plot(mdata["random_budget"], mdata["equivalent_budget"], marker="o", color=color, label=label)
@@ -302,14 +321,14 @@ def plot_budget_equiv_by_dataset(equivs, out_dir):
 
 
 def plot_budget_equiv_by_metric(equivs, out_dir):
-    """4 plots (one per metric): lines = dataset-axis combos, averaged over models."""
+    """One plot per metric: lines = dataset-axis combos, averaged over models."""
     equivs = equivs[equivs["random_budget"].isin(PLOT_BUDGETS)]
     da_combos = sorted(
         equivs[["dataset", "axis"]].drop_duplicates().itertuples(index=False, name=None)
     )
     cmap = plt.cm.tab20
     colors = [cmap(i / max(len(da_combos) - 1, 1)) for i in range(len(da_combos))]
-    for metric in METRICS:
+    for metric in sorted(equivs["metric"].unique()):
         mdata = equivs[equivs["metric"] == metric]
         avg = mdata.groupby(["dataset", "axis", "random_budget"])["equivalent_budget"].mean().reset_index()
         fig, ax = plt.subplots(figsize=(11, 7))
@@ -332,12 +351,12 @@ def plot_budget_equiv_by_metric(equivs, out_dir):
         print(f"Saved: {out_path}")
 
 
-def main(results_dir=RESULTS_DIR):
+def main(results_dir=RESULTS_DIR, track_mse_match=False):
     out_dir = os.path.join(results_dir, "annotations_saved")
     os.makedirs(out_dir, exist_ok=True)
 
     print("Loading data...")
-    df = load_data(results_dir)
+    df = load_data(results_dir, track_mse_match=track_mse_match)
 
     print("Computing annotations saved...")
     detail = compute_annotations_saved(df)
@@ -351,7 +370,8 @@ def main(results_dir=RESULTS_DIR):
     print(f"Saved: {detail_path}")
 
     # Summary by dataset x metric
-    available_metrics = [m for m in METRICS if m in detail["metric"].unique()]
+    active_metrics = METRICS + (["mean_squared_error"] if track_mse_match else [])
+    available_metrics = [m for m in active_metrics if m in detail["metric"].unique()]
     by_dataset = summary_table(detail, "dataset", col_order=available_metrics)
     ds_path = os.path.join(out_dir, "annotations_saved_by_dataset.csv")
     by_dataset.to_csv(ds_path)
@@ -429,5 +449,9 @@ def main(results_dir=RESULTS_DIR):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Annotations saved analysis")
     parser.add_argument("--folder", default=RESULTS_DIR, help="Results directory")
+    parser.add_argument(
+        "--track_mse_match", action="store_true",
+        help="Also track metric_matched_mean_squared_error for the mean_squared_error metric",
+    )
     args = parser.parse_args()
-    main(results_dir=args.folder)
+    main(results_dir=args.folder, track_mse_match=args.track_mse_match)

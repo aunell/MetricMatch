@@ -11,6 +11,7 @@ RESULTS_DIR = "/Users/alyssaunell/code/SmartSample_local/results/04_01_downstrea
 DATASETS = ["hanna", "medval", "mslr", "summeval"]
 METRICS = ["alpha", "icc", "rho", "tau"]
 OUR_METHOD = "variance_matched_weighted_.9"
+MEAN_SQUARED_ERROR_METHOD = "metric_matched_mean_squared_error"
 BASELINE = "random"
 BUDGETS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
 THRESHOLDS = [0.7]
@@ -20,7 +21,7 @@ THRESHOLDS = [0.7]
 # Estimation helpers
 # ---------------------------------------------------------------------------
 
-def load_estimation_data(results_dir=RESULTS_DIR):
+def load_estimation_data(results_dir=RESULTS_DIR, track_mse_match=False):
     """Load {metric}_results.csv for each dataset and metric, return combined df."""
     frames = []
     for dataset in DATASETS:
@@ -37,7 +38,23 @@ def load_estimation_data(results_dir=RESULTS_DIR):
             ]
             df["dataset"] = dataset
             df["metric"] = metric
+            df["is_ours"] = df["method"] == OUR_METHOD
             frames.append(df)
+        if track_mse_match:
+            csv_path = os.path.join(
+                results_dir, dataset, dataset, "dataframes", "mse_results.csv"
+            )
+            if not os.path.exists(csv_path):
+                print(f"  Skipping mean_squared_error | {dataset}: file not found")
+            else:
+                df = pd.read_csv(csv_path)
+                df = df[df["method"].isin([MEAN_SQUARED_ERROR_METHOD, BASELINE])][
+                    ["model", "budget", "method", "estimation_error", "axis"]
+                ]
+                df["dataset"] = dataset
+                df["metric"] = "mean_squared_error"
+                df["is_ours"] = df["method"] == MEAN_SQUARED_ERROR_METHOD
+                frames.append(df)
     return pd.concat(frames, ignore_index=True)
 
 
@@ -60,7 +77,7 @@ def _estimation_pivot(merged):
         .rename(columns={"win": "win_rate"})
     )
     result = win_rates.pivot(index="budget", columns="metric", values="win_rate")
-    available = [m for m in METRICS if m in result.columns]
+    available = [m for m in METRICS + ["mean_squared_error"] if m in result.columns]
     result = result[available]
     result.index.name = "budget"
     result.columns.name = None
@@ -70,14 +87,14 @@ def _estimation_pivot(merged):
 def _macro_merge(df):
     """Average over runs then compare our method vs random."""
     avg = (
-        df.groupby(["dataset", "axis", "model", "budget", "method", "metric"])[
+        df.groupby(["dataset", "axis", "model", "budget", "method", "metric", "is_ours"])[
             "estimation_error"
         ]
         .mean()
         .reset_index()
     )
-    ours = avg[avg["method"] == OUR_METHOD].rename(columns={"estimation_error": "our_err"})
-    base = avg[avg["method"] == BASELINE].rename(columns={"estimation_error": "random_err"})
+    ours = avg[avg["is_ours"]].rename(columns={"estimation_error": "our_err"})
+    base = avg[~avg["is_ours"]].rename(columns={"estimation_error": "random_err"})
     merged = ours.merge(base, on=["dataset", "axis", "model", "budget", "metric"])
     merged["win"] = merged["our_err"] < merged["random_err"]
     return merged
@@ -86,8 +103,8 @@ def _macro_merge(df):
 def _micro_merge(df):
     """Pair runs by position then compare our method vs random."""
     df = assign_run_index(df)
-    ours = df[df["method"] == OUR_METHOD].rename(columns={"estimation_error": "our_err"})
-    base = df[df["method"] == BASELINE].rename(columns={"estimation_error": "random_err"})
+    ours = df[df["is_ours"]].rename(columns={"estimation_error": "our_err"})
+    base = df[~df["is_ours"]].rename(columns={"estimation_error": "random_err"})
     merged = ours.merge(base, on=["dataset", "axis", "model", "budget", "metric", "run"])
     merged["win"] = merged["our_err"] < merged["random_err"]
     return merged
@@ -118,6 +135,7 @@ def load_threshold_raw_data(results_dir=RESULTS_DIR):
             ].rename(columns={pred_col: "predicted", true_col: "true_val"})
             df["dataset"] = dataset
             df["metric"] = metric
+            df["is_ours"] = df["method"] == OUR_METHOD
             frames.append(df)
     return pd.concat(frames, ignore_index=True)
 
@@ -138,8 +156,8 @@ def _threshold_micro_merge(df, threshold):
     df = df.sort_values(["dataset", "metric", "axis", "model", "budget", "method"])
     df["run"] = df.groupby(["dataset", "metric", "axis", "model", "budget", "method"]).cumcount()
 
-    ours = df[df["method"] == OUR_METHOD].rename(columns={"correct": "our_correct"})
-    base = df[df["method"] == BASELINE].rename(columns={"correct": "random_correct"})
+    ours = df[df["is_ours"]].rename(columns={"correct": "our_correct"})
+    base = df[~df["is_ours"]].rename(columns={"correct": "random_correct"})
     merged = ours.merge(base, on=["dataset", "axis", "model", "budget", "metric", "run"])
 
     n_total = len(merged)
@@ -162,13 +180,13 @@ def _threshold_macro_merge(df, threshold):
     df["run"] = df.groupby(["dataset", "metric", "axis", "model", "budget", "method"]).cumcount()
 
     avg = (
-        df.groupby(["dataset", "axis", "model", "budget", "method", "metric"])["correct"]
+        df.groupby(["dataset", "axis", "model", "budget", "method", "metric", "is_ours"])["correct"]
         .mean()
         .reset_index()
     )
 
-    ours = avg[avg["method"] == OUR_METHOD].rename(columns={"correct": "our_acc"})
-    base = avg[avg["method"] == BASELINE].rename(columns={"correct": "random_acc"})
+    ours = avg[avg["is_ours"]].rename(columns={"correct": "our_acc"})
+    base = avg[~avg["is_ours"]].rename(columns={"correct": "random_acc"})
     merged = ours.merge(base, on=["dataset", "axis", "model", "budget", "metric"])
 
     n_total = len(merged)
@@ -239,7 +257,7 @@ def _threshold_pivot(merged):
         .rename(columns={"win": "win_rate"})
     )
     result = win_rates.pivot(index="budget", columns="metric", values="win_rate")
-    available = [m for m in METRICS if m in result.columns]
+    available = [m for m in METRICS + ["mean_squared_error"] if m in result.columns]
     result = result[available]
     result.index.name = "budget"
     result.columns.name = None
@@ -320,7 +338,7 @@ def save(df, path):
     print()
 
 
-def main(results_dir=RESULTS_DIR):
+def main(results_dir=RESULTS_DIR, track_mse_match=False):
     est_dir = os.path.join(results_dir, "win_rates", "estimation")
     thr_dir = os.path.join(results_dir, "win_rates", "threshold")
     disagg_ds_dir = os.path.join(results_dir, "win_rates", "disaggregated_by_dataset")
@@ -330,9 +348,11 @@ def main(results_dir=RESULTS_DIR):
     os.makedirs(disagg_ds_dir, exist_ok=True)
     os.makedirs(disagg_metric_dir, exist_ok=True)
 
+    active_metrics = METRICS + (["mean_squared_error"] if track_mse_match else [])
+
     # -- Estimation --
     print("Loading estimation data...")
-    est_df = load_estimation_data(results_dir)
+    est_df = load_estimation_data(results_dir, track_mse_match=track_mse_match)
     print(f"  Loaded {len(est_df)} rows | datasets: {sorted(est_df['dataset'].unique())} | "
           f"metrics: {sorted(est_df['metric'].unique())} | models: {sorted(est_df['model'].unique())} | "
           f"budgets: {sorted(est_df['budget'].unique())}")
@@ -429,7 +449,7 @@ def main(results_dir=RESULTS_DIR):
 
     # -- Win rates by dataset-axis, one plot per metric --
     print("\n--- Win rates by metric ---")
-    for metric in METRICS:
+    for metric in active_metrics:
         print(f"  Plotting metric: {metric}")
         macro_m = est_macro_merged[est_macro_merged["metric"] == metric]
         micro_m = est_micro_merged[est_micro_merged["metric"] == metric]
@@ -447,5 +467,9 @@ def main(results_dir=RESULTS_DIR):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Win rates and threshold analysis")
     parser.add_argument("--folder", default=RESULTS_DIR, help="Results directory")
+    parser.add_argument(
+        "--track_mse_match", action="store_true",
+        help="Also track metric_matched_mean_squared_error for the mean_squared_error metric",
+    )
     args = parser.parse_args()
-    main(results_dir=args.folder)
+    main(results_dir=args.folder, track_mse_match=args.track_mse_match)

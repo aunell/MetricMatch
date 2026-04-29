@@ -6,7 +6,8 @@
 #   ./scripts/run_annotations_saved.sh [OPTIONS]
 #
 # Options (all optional, defaults shown):
-#   --folder DIR    Results directory containing per-dataset dataframes (default: results/04_16_new_baselines_small_only)
+#   --folder DIR         Results directory containing per-dataset dataframes (default: results/04_22_add_metric_match)
+#   --track_mse_match    Also track metric_matched_mean_squared_error for the mean_squared_error metric
 #
 # Examples:
 #
@@ -15,10 +16,14 @@
 #
 #   Custom results folder
 #   ./scripts/run_annotations_saved.sh --folder results/my_run
+#
+#   Include mean_squared_error metric tracking
+#   ./scripts/run_annotations_saved.sh --track_mse_match
 
 
 # Default values
-FOLDER="results/04_22_add_metric_match"
+FOLDER="results/04_28_batch"
+TRACK_MSE_MATCH=false
 
 # Parse command-line arguments
 while [[ $# -gt 0 ]]; do
@@ -27,8 +32,12 @@ while [[ $# -gt 0 ]]; do
       FOLDER="$2"
       shift 2
       ;;
+    --track_mse_match)
+      TRACK_MSE_MATCH=true
+      shift
+      ;;
     -h|--help)
-      head -20 "$0" | tail -18
+      head -26 "$0" | tail -24
       ;;
     *)
       echo "Unknown option: $1"
@@ -36,11 +45,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Build optional flags
+EXTRA_FLAGS=""
+if [ "$TRACK_MSE_MATCH" = true ]; then
+  EXTRA_FLAGS="--track_mse_match"
+fi
+
 # Print configuration
 echo "=============================================="
 echo "Annotations Saved Analysis - Configuration"
 echo "=============================================="
-echo "FOLDER: $FOLDER"
+echo "FOLDER:           $FOLDER"
+echo "TRACK_MSE_MATCH:  $TRACK_MSE_MATCH"
 echo "=============================================="
 echo
 
@@ -63,7 +79,8 @@ sbatch \
     conda activate pac_judge
     cd /share/pi/nigam/users/aunell/SmartSample_local
     python -m src.experiments._8_annotations_saved \
-      --folder '$FOLDER'
+      --folder '$FOLDER' \
+      $EXTRA_FLAGS
   "
 
 echo "  → Job submitted"

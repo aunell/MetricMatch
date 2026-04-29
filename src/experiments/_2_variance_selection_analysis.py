@@ -55,7 +55,7 @@ DEFAULT_COMPARISON_MODE = "average_pairwise"
 #                            annotation session where labels already collected are reused).
 # ONLINE_ACQUISITION=False → batch selection: each budget level independently samples k
 #                            items from scratch without any carryover.
-DEFAULT_ONLINE_ACQUISITION = True
+DEFAULT_ONLINE_ACQUISITION = False
 DEFAULT_STEP_SIZE = 5
 DEFAULT_MAX_BUDGET = 50
 
@@ -607,7 +607,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
 
     results = {s: {"icc_errors": [], "alpha_errors": [], "mean_squared_error_errors": [],
                    "rho_errors": [], "tau_errors": [],
-                   "icc_preds": [], "alpha_preds": [],
+                   "icc_preds": [], "alpha_preds": [], "mean_squared_error_preds": [],
                    "rho_preds": [], "tau_preds": []} for s in strategy_variants}
 
     actual_trials = 1 if base_strategy == "max_expand" else n_trials
@@ -851,6 +851,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             if matched_metric in (None, "mean_squared_error"):
                 if est_mean_squared_error is not None and np.isfinite(est_mean_squared_error) and true_mean_squared_error is not None and np.isfinite(true_mean_squared_error):
                     results[strategy]["mean_squared_error_errors"].append(abs(est_mean_squared_error - true_mean_squared_error))
+                    results[strategy]["mean_squared_error_preds"].append(est_mean_squared_error)
             if matched_metric in (None, "rho"):
                 if est_rho is not None and np.isfinite(est_rho) and true_rho is not None and np.isfinite(true_rho):
                     results[strategy]["rho_errors"].append(abs(est_rho - true_rho))
@@ -1033,8 +1034,10 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
                         alpha_results.append({"model": model, "budget": k, "method": strategy,
                                               "estimation_error": error, "predicted_alpha": pred,
                                               "true_alpha": true_alpha})
-                    for error in errors["mean_squared_error_errors"]:
-                        mean_squared_error_results.append({"model": model, "budget": k, "method": strategy, "estimation_error": error})
+                    for error, pred in zip(errors["mean_squared_error_errors"], errors["mean_squared_error_preds"]):
+                        mean_squared_error_results.append({"model": model, "budget": k, "method": strategy,
+                                                           "estimation_error": error, "predicted_mean_squared_error": pred,
+                                                           "true_mean_squared_error": true_mean_squared_error})
                     for error, pred in zip(errors["rho_errors"], errors["rho_preds"]):
                         rho_results.append({"model": model, "budget": k, "method": strategy,
                                             "estimation_error": error, "predicted_rho": pred,

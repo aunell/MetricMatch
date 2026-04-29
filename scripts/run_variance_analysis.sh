@@ -41,14 +41,14 @@ set -e  # Exit on error
 N_BOOTSTRAP=100
 N_CANDIDATES=20
 TOTAL_ANNOTATIONS=300
-PLOTS_DIR="results/04_22_add_metric_match"
+PLOTS_DIR="results/04_29_batch_full"
 DATA_DIR="data/judge_scores"
 COMPARISON_MODE="pairwise_average"
-ONLINE_ACQUISITION=true  # true → cumulative/incremental selection; false → batch selection
+ONLINE_ACQUISITION=false  # true → cumulative/incremental selection; false → batch selection
 STEP_SIZE=5              # step size for annotation budget levels (e.g. 1, 5, 10)
 MAX_BUDGET=50            # maximum annotation budget to evaluate
 DATASETS=("medval" "summeval" "mslr" "hanna") #("hanna" "medval" "mslr" "summeval")
-MODEL_NAMES=("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro") #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct") 
+MODEL_NAMES=("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro") #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct") #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct") #("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro") #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct") 
 # MODEL_NAMES=("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")
 TARGET_MODELS=() #("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro")  # empty = use MODEL_NAMES
 ENSEMBLE_MODELS=() #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")  # empty = use MODEL_NAMES
@@ -181,7 +181,8 @@ EXTRA_ARGS+=(--max-budget "$MAX_BUDGET")
 # Loop through datasets — submit each as its own sbatch job
 for dataset in "${DATASETS[@]}"; do
   echo "Submitting sbatch job for dataset: $dataset"
-
+  EXTRA_ARGS_STR="${EXTRA_ARGS[*]}"
+  echo "  → Extra args: $EXTRA_ARGS_STR"
   # Create per-dataset output directory
   mkdir -p "$PLOTS_DIR/$dataset"
 

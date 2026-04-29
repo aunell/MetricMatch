@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-DEFAULT_RESULTS_DIR = "/share/pi/nigam/users/aunell/SmartSample_local/results/04_16_new_baselines"
+DEFAULT_RESULTS_DIR = "/share/pi/nigam/users/aunell/SmartSample_local/results/04_28_batch"
 
 # Base methods always included (resolved per-metric below for metric_matched)
 BASE_METHODS = [
@@ -33,6 +33,7 @@ METRIC_MATCHED = {
     "alpha": "metric_matched_alpha",
     "rho": "metric_matched_rho",
     "tau": "metric_matched_tau",
+    "mse": "metric_matched_mean_squared_error",
 }
 
 METRIC_YLABELS = {
@@ -40,6 +41,7 @@ METRIC_YLABELS = {
     "alpha": "Absolute Alpha Error",
     "rho": "Absolute Rho Error",
     "tau": "Absolute Tau Error",
+    "mse": "Absolute MSE Error",
 }
 
 # Canonical display labels (metric_matched_* all display as "metric_matched")
@@ -51,6 +53,7 @@ METHOD_DISPLAY = {
     "metric_matched_alpha": "metric_matched",
     "metric_matched_rho": "metric_matched",
     "metric_matched_tau": "metric_matched",
+    "metric_matched_mean_squared_error": "metric_matched",
     "variance_matched_msb": "variance_matched_msb",
     "variance_matched_weighted_.9": "variance_matched_weighted_.9",
 }
@@ -89,6 +92,8 @@ def compute_bootstrap_cis(df, n_bootstrap=1000, seed=42):
     for method in df["method"].unique():
         for budget in sorted(df["budget"].unique()):
             errors = df[(df["method"] == method) & (df["budget"] == budget)]["estimation_error"].values
+            # Clip errors between 0 and 2
+            errors = np.clip(errors, 0, 2)
             if len(errors) == 0:
                 continue
             mean = errors.mean()
@@ -102,8 +107,10 @@ def compute_bootstrap_cis(df, n_bootstrap=1000, seed=42):
     return pd.DataFrame(records)
 
 
-def plot_metric(all_df, metric, methods, output_dir, datasets_used):
+def plot_metric(all_df, metric, methods, output_dir, datasets_used, dataset_filter=None):
     df = all_df[all_df["method"].isin(methods)].copy()
+    if dataset_filter:
+        df = df[df["dataset"] == dataset_filter].copy()
     if df.empty:
         print(f"  No data found, skipping {metric}")
         return
@@ -128,17 +135,24 @@ def plot_metric(all_df, metric, methods, output_dir, datasets_used):
 
     ax.set_xlabel("Human Annotation Budget", fontsize=13)
     ax.set_ylabel(METRIC_YLABELS.get(metric, f"Absolute {metric.upper()} Error"), fontsize=13)
-    datasets_str = ", ".join(datasets_used)
+    if dataset_filter:
+        datasets_str = dataset_filter
+        title_suffix = f"Dataset: {datasets_str} | Averaged over all models & axes with 95% CI"
+    else:
+        datasets_str = ", ".join(datasets_used)
+        title_suffix = f"Datasets: {datasets_str} | Averaged over all models & axes with 95% CI"
     ax.set_title(
-        f"{metric.upper()} Estimation Error — Selected Methods\n"
-        f"Datasets: {datasets_str} | Averaged over all models & axes with 95% CI",
+        f"{metric.upper()} Estimation Error — Selected Methods\n{title_suffix}",
         fontsize=11,
     )
     ax.legend(title="Method", fontsize=10, bbox_to_anchor=(1.02, 1), loc="upper left", borderaxespad=0)
     ax.grid(alpha=0.3)
     fig.tight_layout()
 
-    out_path = os.path.join(output_dir, f"{metric}_estimation_error_selected_methods.jpg")
+    if dataset_filter:
+        out_path = os.path.join(output_dir, f"{metric}_estimation_error_selected_methods_{dataset_filter}.jpg")
+    else:
+        out_path = os.path.join(output_dir, f"{metric}_estimation_error_selected_methods.jpg")
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved: {out_path}")
@@ -162,7 +176,7 @@ def main():
         sys.exit(1)
     print(f"Found datasets: {[d[0] for d in datasets]}")
 
-    for metric in ["icc", "alpha", "rho", "tau"]:
+    for metric in ["icc", "alpha", "rho", "tau", "mse"]:
         print(f"\nProcessing: {metric}")
         frames = []
         for dataset_name, df_dir in datasets:
@@ -188,7 +202,13 @@ def main():
             print(f"  Methods not found in data (skipped): {missing}")
         print(f"  Plotting methods: {methods}")
 
+        # Plot averaged over all datasets
         plot_metric(all_df, metric, methods, output_dir, [d[0] for d in datasets])
+
+        # For alpha metric, also create a plot for just the hanna dataset
+        if metric == "alpha" and "hanna" in all_df["dataset"].values:
+            print(f"  Creating additional hanna-only plot for alpha")
+            plot_metric(all_df, metric, methods, output_dir, [d[0] for d in datasets], dataset_filter="hanna")
 
     print(f"\nAll plots saved to: {output_dir}")
 
