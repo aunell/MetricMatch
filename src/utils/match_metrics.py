@@ -12,6 +12,8 @@ import pandas as pd
 import pingouin as pg
 import krippendorff
 
+from types import SimpleNamespace
+
 from scipy import stats
 from sklearn.metrics import mean_squared_error
 
@@ -49,9 +51,51 @@ def compute_ms_components(data: pd.DataFrame, targets: str = "text_id", raters: 
     try:
         icc_obj = PointwiseICC(n=n, k=k, data=data, normalize=True, targets=targets, raters=raters, ratings=ratings)
     except:
-        icc_obj = None
+        try:
+            icc_obj = {}
+            icc = pg.intraclass_corr(data=data,
+                targets=targets,
+                raters=raters,
+                ratings=ratings, nan_policy="omit")
+            icc_obj["icc"] = icc
+            anova = pg.anova(data=data, between=[targets, raters], dv=ratings, ss_type=2)
+            icc_obj["msb"] = anova.at[0, "MS"]
+            icc_obj["mse"] = anova.at[2, "MS"]
+            icc_obj = SimpleNamespace(**icc_obj)
+        except:
+            icc_obj = None
 
     return icc_obj
+
+def compute_kendall_tau(data: pd.DataFrame):
+    model_names = data["model_name"].unique()
+    n_raters = len(model_names)
+    if n_raters != 2:
+        print("Pearson correlation can only be computed on two raters, returning nan")
+        return np.nan
+    
+    data_filtered = (
+        data.groupby('text_id')
+            .filter(lambda x: x['model_name'].nunique() == n_raters)
+    )
+
+    if len(data_filtered) == 0:
+        return np.nan
+    
+    data_filtered = data_filtered.groupby(
+            by=['text_id', 'model_name']
+        )["evaluation_score"].mean().reset_index()
+    
+    try:
+        tau_r, tau_p = stats.kendalltau(data_filtered.loc[data_filtered["model_name"] == model_names[0]]["evaluation_score"].values,
+                                               data_filtered.loc[data_filtered["model_name"] == model_names[1]]["evaluation_score"].values, nan_policy="omit")
+
+    except:
+        tau_r = np.nan
+    # print(f"\n  Correlation Results:")
+    # print(f"    Kendall tau = {tau_r:.4f} (p = {tau_p:.6f})")
+    
+    return tau_r
 
 def compute_msb(data: pd.DataFrame):
     icc_obj = compute_ms_components(data)
@@ -70,6 +114,16 @@ def compute_msre(data: pd.DataFrame):
     if mse is None:
         return np.nan
     return mse
+
+def compute_weighted_msb_msre(data: pd.DataFrame, alpha: list = [0.9, 0.1]):
+    icc_obj = compute_ms_components(data)
+    if icc_obj is None:
+        return np.nan
+    msb = icc_obj.msb
+    mse = icc_obj.mse
+    if msb is None or mse is None:
+        return np.nan
+    return alpha[0] * msb + alpha[1] * mse
 
 # targets: str = "text_id", raters: str = "model_name", ratings: str = "evaluation_score"
 
@@ -93,8 +147,11 @@ def compute_pearson(data: pd.DataFrame):
         )["evaluation_score"].mean().reset_index()
     
     try:
-        pearson_r, pearson_p = stats.pearsonr(data_filtered.loc[data_filtered["model_name"] == model_names[0]]["evaluation_score"].values,
-                                               data_filtered.loc[data_filtered["model_name"] == model_names[1]]["evaluation_score"].values)
+        target_values = data_filtered.loc[data_filtered["model_name"] == model_names[0]]["evaluation_score"].values
+        other_values = data_filtered.loc[data_filtered["model_name"] == model_names[1]]["evaluation_score"].values
+
+        mask = ~np.isnan(target_values) & ~np.isnan(other_values)
+        pearson_r, pearson_p = stats.pearsonr(target_values[mask], other_values[mask])
 
     except:
         pearson_r = np.nan
@@ -124,7 +181,7 @@ def compute_spearman(data: pd.DataFrame):
     
     try:
         spearman_r, spearman_p = stats.spearmanr(data_filtered.loc[data_filtered["model_name"] == model_names[0]]["evaluation_score"].values,
-                                               data_filtered.loc[data_filtered["model_name"] == model_names[1]]["evaluation_score"].values)
+                                               data_filtered.loc[data_filtered["model_name"] == model_names[1]]["evaluation_score"].values, nan_policy="omit")
     # print(f"\n  Correlation Results:")
     # print(f"    Spearman rank r = {spearman_r:.4f} (p = {spearman_p:.6f})")
     except:
@@ -151,8 +208,11 @@ def compute_mean_sq_err(data: pd.DataFrame):
             by=['text_id', 'model_name']
         )["evaluation_score"].mean().reset_index()
 
-    mse = mean_squared_error(y_true=data_filtered.loc[data_filtered["model_name"] == model_names[0]]["evaluation_score"].values,
-                                               y_pred=data_filtered.loc[data_filtered["model_name"] == model_names[1]]["evaluation_score"].values)
+    target_values = data_filtered.loc[data_filtered["model_name"] == model_names[0]]["evaluation_score"].values
+    other_values = data_filtered.loc[data_filtered["model_name"] == model_names[1]]["evaluation_score"].values
+
+    mask = ~np.isnan(target_values) & ~np.isnan(other_values)
+    mse = mean_squared_error(target_values[mask], other_values[mask])
 
     return mse
 

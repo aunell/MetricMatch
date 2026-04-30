@@ -20,11 +20,13 @@ from src.utils.data_loading import load_judge_scores
 from src.utils.match_metrics import (
     compute_msb,
     compute_msre,
+    compute_weighted_msb_msre,
     compute_mean_sq_err,
     compute_icc_pingouin,
     compute_krippendorff_alpha,
     compute_spearman,
-    compute_pearson
+    compute_pearson,
+    compute_kendall_tau
 )
 from src.utils.selection_strategies import dev_metric_matched_selection as metric_matched_selection
 
@@ -48,38 +50,46 @@ EVALUATION_AXES = {
 METRIC_NAMES = [
     "msb",
     "msre",
+    "msb+msre",
     "mean_sq_error",
     "icc",
     "alpha",
     "spearman",
-    "pearson"
+    "pearson",
+    "kendalltau"
 ]
 METRIC_FNS = [
     compute_msb,
     compute_msre,
+    compute_weighted_msb_msre,
     compute_mean_sq_err,
     compute_icc_pingouin,
     compute_krippendorff_alpha,
     compute_spearman,
-    compute_pearson
+    compute_pearson,
+    compute_kendall_tau
 ]
 EXCLUDE_EST = [
     "msb",
     "msre",
-    # "mean_sq_error",
+    "msb+msre",
+    "mean_sq_error",
     # "icc",
     # "alpha",
     # "spearman",
-    # "pearson"
+    # "pearson",
+    # "kendalltau"
 ]
 EXCLUDE_MATCH = [
-    "msb",
+    # "msb",
     "msre",
+    "msb+msre",
     "mean_sq_error",
-    # "icc",
+    "icc",
     "alpha",
     "spearman",
-    "pearson"
+    "pearson",
+    "kendalltau"
 ]
 
 # Runtime configuration
@@ -87,9 +97,9 @@ EXCLUDE_MATCH = [
 datasets = ["medval", "mslr", "summeval", "hanna"]
 # model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "gpt-5", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
 # model_names = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
-model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5"]
+model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "gemini-2.5-pro", "deepseek-r1"]
 DATA_DIR = "data/judge_scores"
-PLOTS_DIR = "results/04_07/metric_matched_subsets"
+PLOTS_DIR = "results/04_29/metric_matched_subsets"
 COMPARISON_MODE = "pairwise"  # "pairwise" or "aggregate"
 
 # os.makedirs(os.path.join(PLOTS_DIR, dataset), exist_ok=True)
@@ -245,7 +255,9 @@ def _run_random_trials(text_ids, k, n_trials, hm_full_df, model, metric_names, h
                         "model": model, "budget": k, "method": "random",
                         "match_metric": None,
                         "est_metric": metric_name,
-                        "est_error": abs(est_metric - hm_target)
+                        "est_error": abs(est_metric - hm_target),
+                        # "sp_corr": np.nan,
+                        # "sp_corr_diff": np.nan
                     })
             except Exception:
                 pass
@@ -257,11 +269,19 @@ def _run_metric_matched_trials(text_ids, k, n_trials, hm_full_df, im_full_df,
                                   model, metric_names, hm_targets, im_targets, compute_metric_fns, exclude_match=[], exclude_est=[]):
     """Run variance-matched sampling trials and collect estimation errors for given model."""
 
+    # est_compute_metric_fns = {est_metric_name: fn for est_metric_name, fn in zip(metric_names, compute_metric_fns) \
+    #                           if est_metric_name not in exclude_est}
+    # hm_targets_dict = {est_metric_name: hm_target for est_metric_name, hm_target in zip(metric_names, hm_targets) \
+    #                           if est_metric_name not in exclude_est}
     errors_dict_list = []
     for match_metric_name, im_target, match_compute_metric_fn in zip(metric_names, im_targets, compute_metric_fns):
         if match_metric_name in exclude_match:
             continue
         for trial_idx in range(n_trials): # tqdm(range(n_trials), f"Running metric matched trials on {match_metric_name}..."):
+            # best_ids, metadata = metric_matched_selection(
+            #     text_ids, k, im_full_df, hm_full_df, im_target, hm_targets_dict,
+            #     match_compute_metric_fn, est_compute_metric_fns, alpha_weight=1., seed=42 + trial_idx, n_candidates=N_CANDIDATE_SUBSETS
+            # )
             best_ids = metric_matched_selection(
                 text_ids, k, im_full_df, im_target,
                 match_compute_metric_fn, alpha_weight=1., seed=42 + trial_idx, n_candidates=N_CANDIDATE_SUBSETS
@@ -280,7 +300,9 @@ def _run_metric_matched_trials(text_ids, k, n_trials, hm_full_df, im_full_df,
                                 "model": model, "budget": k, "method": "metric_match",
                                 "match_metric": match_metric_name,
                                 "est_metric": est_metric_name,
-                                "est_error": abs(est_metric - hm_target)
+                                "est_error": abs(est_metric - hm_target),
+                                # "sp_corr": metadata[est_metric_name]["sp_corr"],
+                                # "sp_corr_diff": metadata[est_metric_name]["sp_corr_diff"],
                             })
                     except Exception:
                         pass
@@ -323,11 +345,10 @@ def evaluate_cross_metric_matching(df, model_names, per_model_metric, metric_nam
 
         for k in budgets:
             # Random baseline
-            # excluded for now because already done
-            random_error_dict_list = []
-            # random_error_dict_list = _run_random_trials(
-            #     text_ids, k, n_trials, hm_full_df, model, metric_names, hm_targets, compute_metric_fns, exclude_est=exclude_est
-            # )
+            # random_error_dict_list = []
+            random_error_dict_list = _run_random_trials(
+                text_ids, k, n_trials, hm_full_df, model, metric_names, hm_targets, compute_metric_fns, exclude_est=exclude_est
+            )
 
             # Variance-matched
             matched_error_dict_list = _run_metric_matched_trials(
@@ -366,6 +387,11 @@ def main(dataset):
 
         axis_df = df.loc[df["evaluation_axis"] == axis]
 
+        num_models = axis_df["model_name"].nunique()
+        texts_per_model = axis_df.groupby("text_id")["model_name"].nunique()
+        shared_text_ids = texts_per_model[texts_per_model == num_models].index[:300]
+        axis_df = axis_df[axis_df["text_id"].isin(shared_text_ids)]
+
         # Recompute metric components for this axis
         axis_per_model_metric, _ = compute_metric_alignment(
             axis_df, model_names, compute_metric_fns=METRIC_FNS, mode=COMPARISON_MODE
@@ -400,6 +426,6 @@ if __name__ == "__main__":
 
         os.makedirs(os.path.join(PLOTS_DIR, dataset), exist_ok=True)
         metrics_for_match = [mn for mn in METRIC_NAMES if mn not in EXCLUDE_MATCH]
-        multiple_metric = "__".join(metrics_for_match)
-        output_path = os.path.join(PLOTS_DIR, dataset, f"cross_metric_{multiple_metric}_match_results.csv")
-        results.to_csv(output_path, index=False)
+        for metric_matched in metrics_for_match:
+            output_path = os.path.join(PLOTS_DIR, dataset, f"cross_metric_{metric_matched}_match_results.csv")
+            results.loc[np.logical_or(results["method"] == "random", results["match_metric"] == metric_matched)].to_csv(output_path, index=False) # save ones that are random AND metric matched for each metric matched
