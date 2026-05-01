@@ -22,20 +22,20 @@ def process_dataset(dataset_name):
     output_dir = Path("/Users/alyssaunell/code/SmartSample_local/data/metric_matched_subsets")
 
     # Read the msb+msre file - we want ALL rows from this file
-    msb_msre_file = data_dir / "cross_metric_msb+msre_match_results.csv"
-    print(f"Reading {msb_msre_file}...")
-    msb_msre_df = pd.read_csv(msb_msre_file)
+    # msb_msre_file = data_dir / "cross_metric_msb+msre_match_results.csv"
+    # print(f"Reading {msb_msre_file}...")
+    # msb_msre_df = pd.read_csv(msb_msre_file)
 
     # Get only the random rows from msb+msre
-    random_rows = msb_msre_df[msb_msre_df['method'] == 'random'].copy()
-    print(f"Found {len(random_rows)} random rows from msb+msre")
+    # random_rows = msb_msre_df[msb_msre_df['method'] == 'random'].copy()
+    # print(f"Found {len(random_rows)} random rows from msb+msre")
 
     # Get ALL other rows from msb+msre (the metric_match rows)
-    all_msb_msre_rows = msb_msre_df.copy()
-    print(f"Total rows from msb+msre: {len(all_msb_msre_rows)}")
+    # all_msb_msre_rows = msb_msre_df.copy()
+    # print(f"Total rows from msb+msre: {len(all_msb_msre_rows)}")
 
     # Initialize list to collect all dataframes
-    all_dfs = [all_msb_msre_rows]
+    all_dfs = []
 
     # Define the OTHER cross-metric files (not msb+msre)
     cross_metric_files = {
@@ -74,7 +74,7 @@ def process_dataset(dataset_name):
     print("="*60)
 
     # Determine the correct path for 04_30 results
-    baseline_dir = Path(f"/Users/alyssaunell/code/SmartSample_local/results/04_30_{dataset_name}/{dataset_name}/dataframes")
+    baseline_dir = Path(f"/Users/alyssaunell/code/SmartSample_local/results/04_32_{dataset_name}/{dataset_name}/dataframes")
 
     # Define the metric result files
     metric_files = {
@@ -86,7 +86,7 @@ def process_dataset(dataset_name):
     }
 
     # Methods to extract
-    baseline_methods = ['random_imc', 'stratified', 'variance_matched_msb']
+    baseline_methods = ['random','random_imc', 'stratified']
 
     for est_metric, filename in metric_files.items():
         file_path = baseline_dir / filename
@@ -131,31 +131,31 @@ def process_dataset(dataset_name):
     print("Adding updated random_imc and stratified from 04_31 results (MSE only)")
     print("="*60)
 
-    baseline_04_31_dir = Path(f"/Users/alyssaunell/code/SmartSample_local/results/04_31_{dataset_name}/{dataset_name}/dataframes")
-    mse_file_path = baseline_04_31_dir / "mse_results.csv"
+    baseline_04_32_dir = Path(f"/Users/alyssaunell/code/SmartSample_local/results/04_32_{dataset_name}/{dataset_name}/dataframes")
+    # mse_file_path = baseline_04_32_dir / "mse_results.csv"
 
-    if mse_file_path.exists():
-        print(f"\nReading {mse_file_path.name}...")
-        df = pd.read_csv(mse_file_path)
+    # if mse_file_path.exists():
+    #     print(f"\nReading {mse_file_path.name}...")
+    #     df = pd.read_csv(mse_file_path)
 
-        # Filter for random_imc and stratified only
-        baseline_04_31_df = df[df['method'].isin(['random_imc', 'stratified'])].copy()
+    #     # Filter for random_imc and stratified only
+    #     baseline_04_31_df = df[df['method'].isin(['random_imc', 'stratified'])].copy()
 
-        if len(baseline_04_31_df) > 0:
-            # Rename and format columns
-            baseline_04_31_df = baseline_04_31_df.rename(columns={'estimation_error': 'est_error'})
-            baseline_04_31_df['est_metric'] = 'mean_sq_error'
-            baseline_04_31_df['match_metric'] = ''
-            baseline_04_31_df = baseline_04_31_df[['model', 'budget', 'method', 'match_metric', 'est_metric', 'est_error', 'axis']]
+    #     if len(baseline_04_31_df) > 0:
+    #         # Rename and format columns
+    #         baseline_04_31_df = baseline_04_31_df.rename(columns={'estimation_error': 'est_error'})
+    #         baseline_04_31_df['est_metric'] = 'mean_sq_error'
+    #         baseline_04_31_df['match_metric'] = ''
+    #         baseline_04_31_df = baseline_04_31_df[['model', 'budget', 'method', 'match_metric', 'est_metric', 'est_error', 'axis']]
 
-            print(f"  Found {len(baseline_04_31_df)} rows for MSE from 04_31")
-            print(f"    Method breakdown: {baseline_04_31_df['method'].value_counts().to_dict()}")
+    #         print(f"  Found {len(baseline_04_31_df)} rows for MSE from 04_31")
+    #         print(f"    Method breakdown: {baseline_04_31_df['method'].value_counts().to_dict()}")
 
-            all_dfs.append(baseline_04_31_df)
-        else:
-            print(f"  No random_imc or stratified methods found in {mse_file_path.name}")
-    else:
-        print(f"Warning: {mse_file_path} does not exist, skipping 04_31 MSE update...")
+    #         all_dfs.append(baseline_04_31_df)
+    #     else:
+    #         print(f"  No random_imc or stratified methods found in {mse_file_path.name}")
+    # else:
+    #     print(f"Warning: {mse_file_path} does not exist, skipping 04_31 MSE update...")
 
     # Combine all dataframes
     print("\n" + "="*60)
@@ -165,7 +165,7 @@ def process_dataset(dataset_name):
     print(f"Total combined rows: {len(combined_df)}")
 
     # Save the combined file
-    output_file = output_dir / f"{dataset_name}_combined_results.csv"
+    output_file = output_dir / f"{dataset_name}_combined_results2.csv"
     combined_df.to_csv(output_file, index=False)
     print(f"\nSaved combined results to: {output_file}")
 

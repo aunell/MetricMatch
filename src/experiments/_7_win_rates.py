@@ -9,7 +9,7 @@ METRICS = ["alpha", "icc", "rho", "tau"]
 OUR_METHOD = "variance_matched_weighted_.9"
 BASELINE = "random"
 BUDGETS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
-THRESHOLDS = [0.6, 0.7, 0.8, 0.9]
+THRESHOLDS = [.7]
 
 
 # ---------------------------------------------------------------------------

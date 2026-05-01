@@ -4,71 +4,89 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-RESULTS_DIR = "/share/pi/nigam/users/aunell/SmartSample_local/results/04_16_new_baselines"
+DATA_DIR = "/Users/alyssaunell/code/SmartSample_local/data/metric_matched_subsets"
 DATASETS = ["hanna", "medval", "mslr", "summeval"]
-METRICS = ["alpha", "icc", "rho", "tau"]
-OUR_METHOD = "variance_matched_weighted_.9"
-MEAN_SQUARED_ERROR_METHOD = "metric_matched_mean_squared_error"
-BASELINE = "random"
+METRICS = ["alpha", "icc", "kendalltau", "mean_sq_error", "spearman"]
 BUDGETS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
 PLOT_BUDGETS = [b for b in BUDGETS if b >= 10]  # rb=5 excluded: no vm budgets below 5 to observe
 BASELINE_BUDGET = 50
+OUR_METHOD = "metric_match_aligned"
 
 
-def load_data(results_dir=RESULTS_DIR, track_mse_match=False):
+def load_metric_matched_data(data_dir=DATA_DIR):
+    """Load dataset_combined_results2.csv for each dataset and return combined df."""
     frames = []
     for dataset in DATASETS:
-        for metric in METRICS:
-            csv_path = os.path.join(
-                results_dir, dataset, dataset, "dataframes", f"{metric}_results.csv"
-            )
-            if not os.path.exists(csv_path):
-                print(f"  Skipping {metric} | {dataset}: file not found")
-                continue
-            df = pd.read_csv(csv_path)
-            df = df[df["method"].isin([OUR_METHOD, BASELINE])][
-                ["model", "budget", "method", "estimation_error", "axis"]
-            ]
-            df["dataset"] = dataset
-            df["metric"] = metric
-            df["is_ours"] = df["method"] == OUR_METHOD
-            frames.append(df)
-        if track_mse_match:
-            csv_path = os.path.join(
-                results_dir, dataset, dataset, "dataframes", "mse_results.csv"
-            )
-            if not os.path.exists(csv_path):
-                print(f"  Skipping mean_squared_error | {dataset}: file not found")
-            else:
-                df = pd.read_csv(csv_path)
-                df = df[df["method"].isin([MEAN_SQUARED_ERROR_METHOD, BASELINE])][
-                    ["model", "budget", "method", "estimation_error", "axis"]
-                ]
-                df["dataset"] = dataset
-                df["metric"] = "mean_squared_error"
-                df["is_ours"] = df["method"] == MEAN_SQUARED_ERROR_METHOD
-                frames.append(df)
-    return pd.concat(frames, ignore_index=True)
+        csv_path = os.path.join(data_dir, f"{dataset}_combined_results2.csv")
+        if not os.path.exists(csv_path):
+            print(f"  Skipping {dataset}: file not found")
+            continue
+        df = pd.read_csv(csv_path, low_memory=False)
+        df["dataset"] = dataset
+        frames.append(df)
+
+    if not frames:
+        raise ValueError("No data files found")
+
+    combined = pd.concat(frames, ignore_index=True)
+    return combined
+
+
+def prepare_data(df, add_is_ours=False):
+    """
+    Filter data for our method vs random comparison.
+    Our method: method='metric_match' AND match_metric==est_metric
+    Baseline: method='random'
+    """
+    # Filter for our method: metric_match where match_metric == est_metric
+    our_method = df[
+        (df["method"] == "metric_match") &
+        (df["match_metric"] == df["est_metric"])
+    ].copy()
+    our_method["comparison_method"] = "metric_match_aligned"
+
+    # Filter for baseline: random
+    baseline = df[df["method"] == "random"].copy()
+    baseline["comparison_method"] = "random"
+
+    # Combine both
+    combined = pd.concat([our_method, baseline], ignore_index=True)
+
+    # Rename columns to match original script naming
+    combined = combined.rename(columns={
+        "est_error": "estimation_error",
+        "est_metric": "metric"
+    })
+
+    # Select relevant columns
+    combined = combined[["dataset", "model", "budget", "comparison_method",
+                        "estimation_error", "axis", "metric"]]
+
+    # Add is_ours flag for budget equivalence computation
+    if add_is_ours:
+        combined["is_ours"] = combined["comparison_method"] == "metric_match_aligned"
+
+    return combined
 
 
 def compute_annotations_saved(df):
     """
     For each (dataset, axis, model, metric):
-      1. Compute random's mean error at BASELINE_BUDGET (averaged over 100 runs).
-      2. For each budget of our method, compute mean error over 100 runs.
+      1. Compute random's mean error at BASELINE_BUDGET (averaged over runs).
+      2. For each budget of our method, compute mean error over runs.
       3. Find the smallest budget where our mean error <= random's baseline error.
       4. annotations_saved = BASELINE_BUDGET - that budget.
          If our method never achieves the target, annotations_saved = NaN.
     Returns a detail DataFrame with one row per (dataset, axis, model, metric).
     """
     avg = (
-        df.groupby(["dataset", "axis", "model", "budget", "method", "metric", "is_ours"])["estimation_error"]
+        df.groupby(["dataset", "axis", "model", "budget", "comparison_method", "metric"])["estimation_error"]
         .mean()
         .reset_index()
         .rename(columns={"estimation_error": "mean_error"})
     )
 
-    random_all = avg[~avg["is_ours"]][
+    random_all = avg[avg["comparison_method"] == "random"][
         ["dataset", "axis", "model", "budget", "metric", "mean_error"]
     ].rename(columns={"mean_error": "random_error"})
 
@@ -76,7 +94,7 @@ def compute_annotations_saved(df):
         ["dataset", "axis", "model", "metric", "random_error"]
     ].rename(columns={"random_error": "random_error_50"})
 
-    ours = avg[avg["is_ours"]][
+    ours = avg[avg["comparison_method"] == "metric_match_aligned"][
         ["dataset", "axis", "model", "budget", "metric", "mean_error"]
     ].rename(columns={"mean_error": "our_error"})
 
@@ -85,7 +103,7 @@ def compute_annotations_saved(df):
 
     # Also prepare random at all budgets for the reverse calculation
     our_baseline = avg[
-        avg["is_ours"] & (avg["budget"] == BASELINE_BUDGET)
+        (avg["comparison_method"] == "metric_match_aligned") & (avg["budget"] == BASELINE_BUDGET)
     ][["dataset", "axis", "model", "metric", "mean_error"]].rename(
         columns={"mean_error": "our_error_50"}
     )
@@ -97,7 +115,12 @@ def compute_annotations_saved(df):
     for key, grp in combined.groupby(group_cols):
         grp_sorted = grp.sort_values("budget")
         random_err_50 = grp_sorted["random_error_50"].iloc[0]
-        our_err_50 = grp_sorted.loc[grp_sorted["budget"] == BASELINE_BUDGET, "our_error"].iloc[0]
+        our_err_50 = grp_sorted.loc[grp_sorted["budget"] == BASELINE_BUDGET, "our_error"]
+
+        if our_err_50.empty:
+            # Skip if we don't have data at budget 50
+            continue
+        our_err_50 = our_err_50.iloc[0]
 
         # Our method: minimum budget to match random@50
         beats = grp_sorted[grp_sorted["beats_baseline"]]
@@ -139,6 +162,22 @@ def compute_annotations_saved(df):
     return pd.DataFrame(records)
 
 
+def summary_table(detail, index_col, col_order=None):
+    """Mean annotations saved (excluding NaN) pivoted by metric."""
+    tbl = (
+        detail.groupby([index_col, "metric"])["annotations_saved"]
+        .mean()
+        .reset_index()
+        .pivot(index=index_col, columns="metric", values="annotations_saved")
+    )
+    if col_order:
+        available_cols = [c for c in col_order if c in tbl.columns]
+        tbl = tbl[available_cols]
+    tbl.columns.name = None
+    tbl["mean"] = tbl.mean(axis=1)
+    return tbl
+
+
 def _interpolate_crossing(target_error, vm_budgets, vm_errors):
     """
     Find the smallest vm budget (via linear interpolation between adjacent points) where
@@ -170,7 +209,7 @@ def compute_budget_equivalence(df):
       Returns NaN where the crossover falls outside [5, 50].
     """
     avg = (
-        df.groupby(["dataset", "axis", "model", "budget", "method", "metric", "is_ours"])["estimation_error"]
+        df.groupby(["dataset", "axis", "model", "budget", "comparison_method", "metric", "is_ours"])["estimation_error"]
         .mean()
         .reset_index()
         .rename(columns={"estimation_error": "mean_error"})
@@ -206,23 +245,7 @@ def compute_budget_equivalence(df):
     return pd.DataFrame(records)
 
 
-def summary_table(detail, index_col, col_order=None):
-    """Mean annotations saved (excluding NaN) pivoted by metric."""
-    tbl = (
-        detail.groupby([index_col, "metric"])["annotations_saved"]
-        .mean()
-        .reset_index()
-        .pivot(index=index_col, columns="metric", values="annotations_saved")
-    )
-    if col_order:
-        tbl = tbl[col_order]
-    tbl.columns.name = None
-    tbl["mean"] = tbl.mean(axis=1)
-    return tbl
-
-
 def plot_distribution(detail, out_path, col="annotations_saved", title_suffix="", subtitle=""):
-    """Bar plot of annotation savings distribution in bins of 10."""
     """Bar plot of annotation savings distribution in bins of 10."""
     bins = [0, 10, 20, 30, 40, 50]
     labels = ["0–10", "10–20", "20–30", "30–40", "40–50"]
@@ -351,36 +374,47 @@ def plot_budget_equiv_by_metric(equivs, out_dir):
         print(f"Saved: {out_path}")
 
 
-def main(results_dir=RESULTS_DIR, track_mse_match=False):
-    out_dir = os.path.join(results_dir, "annotations_saved")
-    os.makedirs(out_dir, exist_ok=True)
+def main(data_dir=DATA_DIR, output_dir=None):
+    if output_dir is None:
+        output_dir = os.path.join(data_dir, "annotations_saved")
 
-    print("Loading data...")
-    df = load_data(results_dir, track_mse_match=track_mse_match)
+    os.makedirs(output_dir, exist_ok=True)
 
-    print("Computing annotations saved...")
+    print("Loading metric-matched data...")
+    raw_df = load_metric_matched_data(data_dir)
+
+    print("Preparing data for comparison (metric_match_aligned vs random)...")
+    df = prepare_data(raw_df, add_is_ours=True)
+
+    print(f"\nData summary:")
+    print(f"  Total rows: {len(df)}")
+    print(f"  Datasets: {df['dataset'].unique()}")
+    print(f"  Methods: {df['comparison_method'].unique()}")
+    print(f"  Metrics: {df['metric'].unique()}")
+    print(f"  Budgets: {sorted(df['budget'].unique())}")
+
+    print("\nComputing annotations saved...")
     detail = compute_annotations_saved(df)
 
     never_achieved = detail["annotations_saved"].isna().sum()
     print(f"Combos where our method never reached random@50 error: {never_achieved} / {len(detail)}")
 
     # Save full detail
-    detail_path = os.path.join(out_dir, "annotations_saved_detail.csv")
+    detail_path = os.path.join(output_dir, "annotations_saved_detail.csv")
     detail.to_csv(detail_path, index=False)
     print(f"Saved: {detail_path}")
 
     # Summary by dataset x metric
-    active_metrics = METRICS + (["mean_squared_error"] if track_mse_match else [])
-    available_metrics = [m for m in active_metrics if m in detail["metric"].unique()]
+    available_metrics = [m for m in METRICS if m in detail["metric"].unique()]
     by_dataset = summary_table(detail, "dataset", col_order=available_metrics)
-    ds_path = os.path.join(out_dir, "annotations_saved_by_dataset.csv")
+    ds_path = os.path.join(output_dir, "annotations_saved_by_dataset.csv")
     by_dataset.to_csv(ds_path)
     print(f"\nSaved: {ds_path}")
     print(by_dataset.round(2).to_string())
 
     # Summary by model x metric
     by_model = summary_table(detail, "model", col_order=available_metrics)
-    model_path = os.path.join(out_dir, "annotations_saved_by_model.csv")
+    model_path = os.path.join(output_dir, "annotations_saved_by_model.csv")
     by_model.to_csv(model_path)
     print(f"\nSaved: {model_path}")
     print(by_model.round(2).to_string())
@@ -393,7 +427,7 @@ def main(results_dir=RESULTS_DIR, track_mse_match=False):
         "mean_annotations_saved": detail["annotations_saved"].mean(),
         "median_annotations_saved": detail["annotations_saved"].median(),
     }])
-    overall_path = os.path.join(out_dir, "annotations_saved_overall.csv")
+    overall_path = os.path.join(output_dir, "annotations_saved_overall.csv")
     overall.to_csv(overall_path, index=False)
     print(f"\nSaved: {overall_path}")
     print(overall.round(2).to_string())
@@ -409,7 +443,7 @@ def main(results_dir=RESULTS_DIR, track_mse_match=False):
         )
         .round(2)
     )
-    metric_path = os.path.join(out_dir, "annotations_saved_by_metric.csv")
+    metric_path = os.path.join(output_dir, "annotations_saved_by_metric.csv")
     per_metric.to_csv(metric_path)
     print(f"\nSaved: {metric_path}")
     print(per_metric.to_string())
@@ -417,26 +451,27 @@ def main(results_dir=RESULTS_DIR, track_mse_match=False):
     # Bar plot — our method wins
     plot_distribution(
         detail,
-        os.path.join(out_dir, "annotations_saved_distribution.jpg"),
+        os.path.join(output_dir, "annotations_saved_distribution.jpg"),
         col="annotations_saved",
-        title_suffix=" — Our Method vs Random@50",
-        subtitle=f"variance_matched_weighted_.9 matches random at budget 50",
+        title_suffix=" — Metric-Matched vs Random@50",
+        subtitle=f"metric_match_aligned matches random at budget 50",
     )
 
-    # Bar plot — random wins (63 losing combos): how many annotations random saves vs our_method@50
+    # Bar plot — random wins (losing combos): how many annotations random saves vs our_method@50
     losing = detail[detail["annotations_saved"].isna()].copy()
-    plot_distribution(
-        losing,
-        os.path.join(out_dir, "annotations_saved_distribution_losing.jpg"),
-        col="random_annotations_saved",
-        title_suffix=" — Random vs Our Method@50 (losing combos)",
-        subtitle=f"Random matches variance_matched_weighted_.9 at budget 50 ({len(losing)} combos)",
-    )
+    if len(losing) > 0:
+        plot_distribution(
+            losing,
+            os.path.join(output_dir, "annotations_saved_distribution_losing.jpg"),
+            col="random_annotations_saved",
+            title_suffix=" — Random vs Metric-Matched@50 (losing combos)",
+            subtitle=f"Random matches metric_match_aligned at budget 50 ({len(losing)} combos)",
+        )
 
     # Budget equivalence plots
     print("\nComputing budget equivalence...")
     equivs = compute_budget_equivalence(df)
-    equiv_dir = os.path.join(out_dir, "budget_equivalence")
+    equiv_dir = os.path.join(output_dir, "budget_equivalence")
     os.makedirs(equiv_dir, exist_ok=True)
     equiv_csv = os.path.join(equiv_dir, "budget_equivalence_detail.csv")
     equivs.to_csv(equiv_csv, index=False)
@@ -447,11 +482,10 @@ def main(results_dir=RESULTS_DIR, track_mse_match=False):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Annotations saved analysis")
-    parser.add_argument("--folder", default=RESULTS_DIR, help="Results directory")
-    parser.add_argument(
-        "--track_mse_match", action="store_true",
-        help="Also track metric_matched_mean_squared_error for the mean_squared_error metric",
+    parser = argparse.ArgumentParser(
+        description="Annotations saved analysis for metric-matched subsets"
     )
+    parser.add_argument("--data-dir", default=DATA_DIR, help="Data directory with combined_results2.csv files")
+    parser.add_argument("--output-dir", default=None, help="Output directory for annotations saved")
     args = parser.parse_args()
-    main(results_dir=args.folder, track_mse_match=args.track_mse_match)
+    main(data_dir=args.data_dir, output_dir=args.output_dir)

@@ -70,7 +70,7 @@ METHOD_COLORS = {
 
 def load_combined_csv(data_dir, dataset_name):
     """Load the combined CSV for a dataset."""
-    path = os.path.join(data_dir, f"{dataset_name}_combined_results.csv")
+    path = os.path.join(data_dir, f"{dataset_name}_combined_results2.csv")
     if not os.path.exists(path):
         return pd.DataFrame()
     df = pd.read_csv(path)
@@ -185,7 +185,7 @@ def main():
     args = parser.parse_args()
 
     data_dir = args.data_dir
-    output_dir = args.output_dir or os.path.join(data_dir, "plots")
+    output_dir = args.output_dir or os.path.join(data_dir, "plots2")
     os.makedirs(output_dir, exist_ok=True)
 
     # Load all datasets

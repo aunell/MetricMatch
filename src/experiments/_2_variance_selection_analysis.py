@@ -38,7 +38,7 @@ np.random.seed(42)
 # -------------------------
 # CONFIGURATION (defaults)
 # -------------------------
-DEFAULT_N_BOOTSTRAP_SAMPLES = 10
+DEFAULT_N_BOOTSTRAP_SAMPLES = 100
 DEFAULT_N_CANDIDATE_SUBSETS = 20
 DEFAULT_TOTAL_ANNOTATIONS = 300
 DEFAULT_DATASET = "mslr"
@@ -46,7 +46,7 @@ DEFAULT_MODEL_NAMES = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "deepseek-r1", "
 DEFAULT_TARGET_MODELS = None   # None → same as model_names
 DEFAULT_ENSEMBLE_MODELS = None #["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"] #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct") #("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro") #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")   # None → same as model_names
 DEFAULT_DATA_DIR = "data/judge_scores"
-DEFAULT_PLOTS_DIR = f"results/04_31_{DEFAULT_DATASET}"
+DEFAULT_PLOTS_DIR = f"results/04_32_{DEFAULT_DATASET}"
 DEFAULT_COMPARISON_MODE = "pairwise_average"
 # ONLINE_ACQUISITION=True  → cumulative/incremental selection: IDs chosen at budget k are
 #                            locked in and carried forward to budget k+n (simulates a real
