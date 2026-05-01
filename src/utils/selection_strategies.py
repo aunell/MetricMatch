@@ -496,7 +496,6 @@ def dev_metric_matched_selection(text_ids, k, im_full_df, target_metric_values, 
     Returns:
         Array of selected text_ids, or None if no valid subset found
     """
-
     if isinstance(target_metric_values, list):
         assert isinstance(compute_metric_fns, list)
         assert isinstance(alpha_weight, list)
@@ -514,8 +513,8 @@ def dev_metric_matched_selection(text_ids, k, im_full_df, target_metric_values, 
     rng = np.random.RandomState(seed)
     best_ids = None
     best_score = float('inf')
-
     for _ in range(n_candidates):
+        text_ids.sort() # Ensure consistent ordering
         candidate_ids = rng.choice(text_ids, size=min(k, len(text_ids)), replace=False)
         im_candidate = im_full_df[im_full_df["text_id"].isin(candidate_ids)]
 
@@ -531,11 +530,12 @@ def dev_metric_matched_selection(text_ids, k, im_full_df, target_metric_values, 
             continue
 
         score = np.array(alpha_weight).T @ np.abs(np.array(target_metric_values) - np.array(cand_metrics))
-
+        # if k==10:
+            # print("CAND VALUE SCORE", score)
+            # breakpoint()
         if score < best_score:
             best_score = score
             best_ids = candidate_ids
-
     return best_ids
 
 
@@ -587,10 +587,12 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
         return forced_ids[:k]
 
     for _ in range(n_candidates):
-        new_ids = rng.choice(available_ids, size=n_new, replace=False)
+        text_ids.sort()
+        new_ids = rng.choice(available_ids, size=min(k, len(text_ids)), replace=False)
+        # new_ids = rng.choice(available_ids, size=n_new, replace=False)
         candidate_ids = np.concatenate([forced_ids, new_ids]) if len(forced_ids) > 0 else new_ids
         im_candidate = im_full_df[im_full_df["text_id"].isin(candidate_ids)]
-
+        print(f"budget {k}, candidate ids: {len(candidate_ids)}")
         if len(im_candidate) == 0:
             continue
 
@@ -618,10 +620,12 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
             continue
 
         score = abs(cand_value - target_value)
+        # if target_metric =="alpha" and k==10:
+            # print("SCORE alyssa", score)
+            # breakpoint()
         if score < best_score:
             best_score = score
             best_ids = candidate_ids
-
     return best_ids
 
 

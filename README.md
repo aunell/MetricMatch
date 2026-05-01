@@ -24,19 +24,35 @@ _3_confidence_interval_rde.sh
 
 The first script generates the LLM judge scores for given datasets. The second script employs the different selection mechanisms to select the most informative subset of annotations to obtain. The third script compares the confidence interval widths of our best performing method to random selection of annotation subset.
 
-## Additional Experiments
-In the src/experiments folder, we find the additional:
+## Experiments
+In the `src/experiments` folder, experiments are numbered in order of execution:
+
 ```bash
-inter_model_vs_human_disagreement.py
-llm_judge_tradeoff_experiment.py
-variance_selection_analysis.py
+_1_get_judge_scores.py
+_2_variance_selection_analysis.py
+_3_model_model_vs_model_human_disagreement.py
+_4_human_or_model_agreement_vs_gap.py
+_5_judge_quality_analysis.py
+_6_selection_method_downstream.py
+_7_win_rates.py
+_8_annotations_saved.py
 ```
 
-The first experiment copmares the standard deviation between model scores to the differene between mean model score and human score, indicating that there is a positive correlation as models disagree with each other that they also disagree with humans as well.\\
+**_1_get_judge_scores.py** — Queries LLM judges (OpenAI, Anthropic, Llama, Qwen, Gemma, Gemini) to score text on a given dataset and dimension. Outputs judge scores as JSON and CSV.
 
-The second script uses simulated data to show the tradeoff of getting more human annotations on a single data point with respect to inter-human agreement. \\
+**_2_variance_selection_analysis.py** — Evaluates different sampling strategies (variance-matched, random, oracle) for estimating ICC and Krippendorff's alpha under limited annotation budgets across datasets.
 
-The third script further formalizes this correlation by showing the relationship between inter-model ICC and model-human ICC variance components, and employs a variance based selection algorithm to highlight that this selection algorithm leads to consistent gains beyond random. 
+**_3_model_model_vs_model_human_disagreement.py** — Compares inter-model variance to model-human disagreement, showing that when LLM judges disagree with each other they also tend to disagree with humans.
+
+**_4_human_or_model_agreement_vs_gap.py** — Computes inter-human and human-model agreement metrics (ICC, Krippendorff's alpha, MSE) across datasets and axes.
+
+**_5_judge_quality_analysis.py** — Evaluates LLM judge quality against human ground truth across reliability metrics and downstream tasks.
+
+**_6_selection_method_downstream.py** — Measures model ranking recovery (Spearman ρ) for each selection method as a downstream task; accepts `--folder` or `--input`.
+
+**_7_win_rates.py** — Computes estimation and threshold win rates of `variance_matched_weighted_.9` vs random across datasets, metrics, and budgets; accepts `--folder`.
+
+**_8_annotations_saved.py** — Computes how many annotations our method saves relative to random at budget 50 (i.e., the smallest budget at which our method matches random's error at full budget); accepts `--folder`.
 
 
 ## Dataset Class

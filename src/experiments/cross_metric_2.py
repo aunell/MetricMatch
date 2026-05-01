@@ -17,16 +17,15 @@ from collections import defaultdict
 from tqdm import tqdm
 
 from src.utils.data_loading import load_judge_scores
-from src.utils.match_metrics import (
-    compute_msb,
-    compute_msre,
-    compute_mean_sq_err,
+from src.utils.reliability_metrics import (
     compute_icc_pingouin,
     compute_krippendorff_alpha,
-    compute_spearman,
-    compute_pearson
+    compute_spearman_rho,
+    compute_kendall_tau,
+    compute_ms_components
 )
-from src.utils.selection_strategies import dev_metric_matched_selection as metric_matched_selection
+# from src.utils.match_metrics import compute_weighted_msb_msre
+from src.utils.selection_strategies import metric_matched_selection
 
 # Set random seed for reproducibility
 np.random.seed(42)
@@ -38,7 +37,7 @@ N_BOOTSTRAP_SAMPLES = 100
 N_CANDIDATE_SUBSETS = 20
 
 EVALUATION_AXES = {
-    "hanna": ["Coherence"], #, "Complexity", "Empathy", "Engagement", "Relevance", "Surprise"],
+    "hanna": ["Coherence", "Complexity", "Empathy", "Engagement", "Relevance", "Surprise"],
     "medval": ["Risk"],
     "mslr": ["fluency", "intervention", "outcome", "population"],
     "summeval": ["coherence", "consistency", "fluency", "relevance"]
@@ -46,50 +45,42 @@ EVALUATION_AXES = {
 
 ## METRIC CONFIGURATION
 METRIC_NAMES = [
-    # "msb",
-    # "msre",
-    # "mean_sq_error",
-    # "icc",
+    "msb+msre",
+    "icc",
     "alpha",
-    # "spearman",
-    # "pearson"
+    "spearman",
+    "kendalltau"
 ]
 METRIC_FNS = [
-    # compute_msb,
-    # compute_msre,
-    # compute_mean_sq_err,
-    # compute_icc_pingouin,
+    compute_weighted_msb_msre,
+    compute_icc_pingouin,
     compute_krippendorff_alpha,
-    # compute_spearman,
-    # compute_pearson
+    compute_spearman_rho,
+    compute_kendall_tau
 ]
 EXCLUDE_EST = [
-    "msb",
-    "msre",
-    "mean_sq_error",
-    "icc",
+    "msb+msre",
+    # "icc",
     # "alpha",
-    "spearman",
-    "pearson"
+    # "spearman",
+    # "kendalltau"
 ]
 EXCLUDE_MATCH = [
-    # "msb",
-    # "msre",
-    "mean_sq_error",
-    "icc",
+    # "msb+msre",
+    # "icc",
     # "alpha",
-    "spearman",
-    "pearson"
+    # "spearman",
+    # "kendalltau"
 ]
 
 # Runtime configuration
 # dataset = "summeval"
-datasets = ["hanna"] #["medval", "mslr", "summeval", "hanna"]
+datasets = ["medval", "mslr", "summeval", "hanna"]
 # model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "gpt-5", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
 # model_names = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
-model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "deepseek-r1", "gemini-2.5-pro"]
+model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "gemini-2.5-pro", "deepseek-r1"]
 DATA_DIR = "data/judge_scores"
-PLOTS_DIR = "results/04_16/metric_matched_subsets"
+PLOTS_DIR = "results/04_28/metric_matched_subsets"
 COMPARISON_MODE = "pairwise"  # "pairwise" or "aggregate"
 
 # os.makedirs(os.path.join(PLOTS_DIR, dataset), exist_ok=True)
@@ -193,6 +184,7 @@ def compute_metric_alignment(df, model_names, compute_metric_fns, mode="aggregat
     if len(aggregate_stats['hm_list']) > 1:
         hm_mean = np.mean(np.array([v for _, v in aggregate_stats["hm_list"].items()]), axis=0)
         print(f"\nMetrics: IM={[f'{x:.4f}' for x in aggregate_stats['im']]}, HM mean={[f'{x:.4f}' for x in hm_mean]}")
+
     return per_model_metric, aggregate_stats
 
 
@@ -202,50 +194,38 @@ def compute_metric_alignment(df, model_names, compute_metric_fns, mode="aggregat
 def _build_im_pairwise_df(df, model, model_names):
     """Build inter-model DataFrame for pairwise mode (model vs avg of others)."""
     other_models = [x for x in model_names if x != model]
-    im_subset = df[df["model_name"].isin(model_names)]
+    im_subset = df[df["model_name"].isin(model_names)].copy()
+    im_grouped = im_subset.groupby("text_id")
 
-    model_rows = (
-        im_subset[im_subset["model_name"] == model][["text_id", "evaluation_score"]]
-        .copy()
-    )
-    model_rows["model_name"] = model
+    im_full_df = []
+    for text_id, text_data in im_grouped:
+        model_score = text_data.loc[text_data["model_name"] == model, "evaluation_score"]
+        if len(model_score) > 0:
+            im_full_df.append({
+                "text_id": text_id,
+                "model_name": model,
+                "evaluation_score": model_score.iloc[0]
+            })
+        other_scores = text_data.loc[text_data["model_name"].isin(other_models), "evaluation_score"]
+        if len(other_scores) > 0:
+            im_full_df.append({
+                "text_id": text_id,
+                "model_name": "avg_other",
+                "evaluation_score": other_scores.mean()
+            })
 
-    avg_rows = (
-        im_subset[im_subset["model_name"].isin(other_models)]
-        .groupby("text_id")["evaluation_score"]
-        .mean()
-        .reset_index()
-    )
-    avg_rows["model_name"] = "avg_other"
-    ret = pd.concat(
-        [model_rows[["text_id", "model_name", "evaluation_score"]],
-         avg_rows[["text_id", "model_name", "evaluation_score"]]],
-        ignore_index=True
-    )
-    # Filter to only the models we care about
-    im_subset = df[df["model_name"].isin(model_names)]
-
-    # Count how many models each text_id has
-    text_id_model_counts = im_subset.groupby("text_id")["model_name"].nunique()
-
-    # Find text_ids that have ALL models
-    shared_text_ids = text_id_model_counts[text_id_model_counts == len(model_names)].index
-
-    # Count of shared text_ids
-    num_shared = len(shared_text_ids)
-
-    print(text_id_model_counts.value_counts().sort_index())
-    return ret
+    return pd.DataFrame(im_full_df)
 
 
 def _run_random_trials(text_ids, k, n_trials, hm_full_df, model, metric_names, hm_targets, compute_metric_fns, exclude_est=[]):
     """Run random sampling trials and collect estimation errors."""
     errors_dict_list = []
+
     for trial_idx in range(n_trials): #tqdm(range(n_trials), f"Running random trials..."):
         np.random.seed(42 + trial_idx)
         sampled_ids = np.random.choice(text_ids, size=min(k, len(text_ids)), replace=False)
         hm_sample = hm_full_df[hm_full_df["text_id"].isin(sampled_ids)]
-        # breakpoint()
+
         for metric_name, hm_target, compute_metric_fn in zip(metric_names, hm_targets, compute_metric_fns):
             if metric_name in exclude_est:
                 continue
@@ -256,7 +236,9 @@ def _run_random_trials(text_ids, k, n_trials, hm_full_df, model, metric_names, h
                         "model": model, "budget": k, "method": "random",
                         "match_metric": None,
                         "est_metric": metric_name,
-                        "est_error": abs(est_metric - hm_target)
+                        "est_error": abs(est_metric - hm_target),
+                        # "sp_corr": np.nan,
+                        # "sp_corr_diff": np.nan
                     })
             except Exception:
                 pass
@@ -267,19 +249,30 @@ def _run_random_trials(text_ids, k, n_trials, hm_full_df, model, metric_names, h
 def _run_metric_matched_trials(text_ids, k, n_trials, hm_full_df, im_full_df,
                                   model, metric_names, hm_targets, im_targets, compute_metric_fns, exclude_match=[], exclude_est=[]):
     """Run variance-matched sampling trials and collect estimation errors for given model."""
+
+    # est_compute_metric_fns = {est_metric_name: fn for est_metric_name, fn in zip(metric_names, compute_metric_fns) \
+    #                           if est_metric_name not in exclude_est}
+    # hm_targets_dict = {est_metric_name: hm_target for est_metric_name, hm_target in zip(metric_names, hm_targets) \
+    #                           if est_metric_name not in exclude_est}
     errors_dict_list = []
     for match_metric_name, im_target, match_compute_metric_fn in zip(metric_names, im_targets, compute_metric_fns):
         if match_metric_name in exclude_match:
             continue
         for trial_idx in range(n_trials): # tqdm(range(n_trials), f"Running metric matched trials on {match_metric_name}..."):
-            best_ids = metric_matched_selection(
-                text_ids, k, im_full_df, im_target,
-                match_compute_metric_fn, alpha_weight=1., seed=42 + trial_idx, n_candidates=N_CANDIDATE_SUBSETS
-            )
-            if match_metric_name == "alpha":
-                print(best_ids)
-            else:
-                print(match_metric_name, im_target)
+            # best_ids, metadata = metric_matched_selection(
+            #     text_ids, k, im_full_df, hm_full_df, im_target, hm_targets_dict,
+            #     match_compute_metric_fn, est_compute_metric_fns, alpha_weight=1., seed=42 + trial_idx, n_candidates=N_CANDIDATE_SUBSETS
+            # )
+            best_ids = metric_matched_selection(text_ids, k, im_full_df, 
+                                                im_target, 
+                                                match_metric_name, 
+                                                compute_ms_fn=compute_ms_components,
+                                                compute_icc_fn=compute_icc_pingouin,
+                                                compute_alpha_fn=compute_krippendorff_alpha,
+                                                compute_rho_fn=compute_spearman_rho,
+                                                compute_tau_fn=compute_kendall_tau,
+                                                seed=42 + trial_idx, 
+                                                n_candidates=N_CANDIDATE_SUBSETS)
 
             if best_ids is not None:
                 hm_sample = hm_full_df[hm_full_df["text_id"].isin(best_ids)]
@@ -294,7 +287,9 @@ def _run_metric_matched_trials(text_ids, k, n_trials, hm_full_df, im_full_df,
                                 "model": model, "budget": k, "method": "metric_match",
                                 "match_metric": match_metric_name,
                                 "est_metric": est_metric_name,
-                                "est_error": abs(est_metric - hm_target)
+                                "est_error": abs(est_metric - hm_target),
+                                # "sp_corr": metadata[est_metric_name]["sp_corr"],
+                                # "sp_corr_diff": metadata[est_metric_name]["sp_corr_diff"],
                             })
                     except Exception:
                         pass
@@ -334,10 +329,10 @@ def evaluate_cross_metric_matching(df, model_names, per_model_metric, metric_nam
             im_full_df = _build_im_pairwise_df(df, model, model_names)
         else:
             im_full_df = df[df["model_name"] != "original"]
+
         for k in budgets:
             # Random baseline
-            # excluded for now because already done
-            random_error_dict_list = []
+            # random_error_dict_list = []
             random_error_dict_list = _run_random_trials(
                 text_ids, k, n_trials, hm_full_df, model, metric_names, hm_targets, compute_metric_fns, exclude_est=exclude_est
             )
@@ -350,7 +345,7 @@ def evaluate_cross_metric_matching(df, model_names, per_model_metric, metric_nam
             
             results_dict_list.extend(random_error_dict_list)
             results_dict_list.extend(matched_error_dict_list)
-    print(f"Collected a total of {len(results_dict_list)} estimation error records across all models and budgets.")
+
     return pd.DataFrame(results_dict_list)
 
 
@@ -376,18 +371,8 @@ def main(dataset):
         print(f"\n{'=' * 50}")
         print(f"Running for axis: {axis}")
         print(f"{'=' * 50}")
-        # axes = EVALUATION_AXES[dataset]
-        # axis_jobs = []
-        # for axis in axes:
-        axis_df = df[df["evaluation_axis"] == axis]
-        num_models = axis_df["model_name"].nunique()
-        texts_per_model = axis_df.groupby("text_id")["model_name"].nunique()
-        shared_text_ids = texts_per_model[texts_per_model == num_models].index[:300]
-        axis_df = axis_df[axis_df["text_id"].isin(shared_text_ids)]
-        print(f"Axis '{axis}': {len(axis_df)} rows after filtering to {len(shared_text_ids)} shared text_ids")
-        # axis_jobs.append((axis, axis_df))
 
-        # axis_df = df.loc[df["evaluation_axis"] == axis]
+        axis_df = df.loc[df["evaluation_axis"] == axis]
 
         # Recompute metric components for this axis
         axis_per_model_metric, _ = compute_metric_alignment(
@@ -400,6 +385,7 @@ def main(dataset):
         )
         results_by_axis[axis] = axis_results
         print(f"Collected {len(axis_results)} results for {axis}")
+
     # Combine per-axis results
     all_results = []
     for axis in EVALUATION_AXES[dataset]:
@@ -409,7 +395,6 @@ def main(dataset):
             all_results.append(axis_results)
 
     results = pd.concat(all_results, ignore_index=True) if all_results else pd.DataFrame()
-    breakpoint()
     return results
 
 
@@ -423,6 +408,6 @@ if __name__ == "__main__":
 
         os.makedirs(os.path.join(PLOTS_DIR, dataset), exist_ok=True)
         metrics_for_match = [mn for mn in METRIC_NAMES if mn not in EXCLUDE_MATCH]
-        multiple_metric = "__".join(metrics_for_match)
-        output_path = os.path.join(PLOTS_DIR, dataset, f"cross_metric_{multiple_metric}_match_results.csv")
-        results.to_csv(output_path, index=False)
+        for metric_matched in metrics_for_match:
+            output_path = os.path.join(PLOTS_DIR, dataset, f"cross_metric_{metric_matched}_match_results.csv")
+            results.loc[np.logical_or(results["method"] == "random", results["match_metric"] == metric_matched)].to_csv(output_path, index=False) # save ones that are random AND metric matched for each metric matched

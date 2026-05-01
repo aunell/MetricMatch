@@ -15,7 +15,7 @@ from scipy import stats as scipy_stats
 
 # from intraclass_corr import PointwiseICC
 from src.utils.intraclass_corr import PointwiseICC
-
+from src.utils.match_metrics import compute_mean_sq_err_multi, compute_mean_sq_err
 
 def compute_ms_components(data: pd.DataFrame, targets: str = "text_id", raters: str = "model_name", ratings: str = "evaluation_score", validate: bool = True):
     """
@@ -356,58 +356,68 @@ def compute_krippendorff_alpha_bias_corrected(data, models=None, n_bootstrap=30,
 #     return 2 * raw_hm_icc - mean_boot_hm - im_correction
 
 
-def compute_reliability_ppi_corrected(hm_data, im_data, true_im_icc, true_im_alpha,
-                                       hm_models=None, im_models=None):
+def compute_reliability_ppi_corrected(
+    hm_data,
+    im_data,
+    true_im_icc,
+    true_im_alpha,
+    true_im_spearman,
+    true_im_kendall,
+    true_im_msre,
+    hm_models=None,
+    im_models=None,
+):
     """
-    Compute PPI-corrected ICC and Krippendorff's alpha.
+    Compute PPI-corrected reliability metrics:
+        - ICC
+        - Krippendorff's alpha
+        - Spearman's rho
+        - Kendall's tau
+        - Mean Squared Error (MSE)
 
-    Following the Post-Prediction Inference framework, the correction is:
-
+    PPI correction:
         corrected = true_im + (hm_subset - im_subset)
-
-    where:
-        - true_im     = metric on the full inter-model dataset (reference)
-        - hm_subset   = metric on the human-model subsample
-        - im_subset   = metric on the inter-model data for the same subset items
-
-    The intuition: the inter-model ICC on the subset tells us how biased the
-    subset is relative to the full population, and we use that same bias to
-    correct the human-model estimate. No bootstrapping is needed.
-
-    Args:
-        hm_data: DataFrame with human-model subsample (text_id, model_name, evaluation_score)
-        im_data: Full inter-model DataFrame (all text_ids)
-        true_im_icc: ICC computed on the full inter-model dataset
-        true_im_alpha: Krippendorff's alpha on the full inter-model dataset
-        hm_models: Optional model names to include for HM computation
-        im_models: Optional model names to include for IM computation
-
-    Returns:
-        (corrected_icc, corrected_alpha): PPI-corrected estimates. Falls back
-        to the raw HM estimate for each metric if the IM reference is not finite.
     """
+
+    # --- HM metrics ---
     hm_icc = compute_icc_pingouin(hm_data, models=hm_models)
     hm_alpha = compute_krippendorff_alpha(hm_data, models=hm_models)
+    hm_spearman = compute_spearman_rho(hm_data, models=hm_models)
+    hm_kendall = compute_kendall_tau(hm_data, models=hm_models)
+    hm_msre = compute_mean_sq_err_multi(hm_data, models=hm_models)
 
-    # Restrict IM data to the same text_ids as the HM subsample
+    # --- Restrict IM to same items ---
     subset_ids = hm_data["text_id"].unique()
     im_subset = im_data[im_data["text_id"].isin(subset_ids)]
 
+    # --- IM subset metrics ---
     im_subset_icc = compute_icc_pingouin(im_subset, models=im_models)
     im_subset_alpha = compute_krippendorff_alpha(im_subset, models=im_models)
+    im_subset_spearman = compute_spearman_rho(im_subset, models=im_models)
+    im_subset_kendall = compute_kendall_tau(im_subset, models=im_models)
+    im_subset_msre = compute_mean_sq_err_multi(im_subset, models=im_models)
 
-    corrected_icc = (
-        true_im_icc + (hm_icc - im_subset_icc)
-        if np.isfinite(hm_icc) and np.isfinite(im_subset_icc) and np.isfinite(true_im_icc)
-        else hm_icc
-    )
-    corrected_alpha = (
-        true_im_alpha + (hm_alpha - im_subset_alpha)
-        if np.isfinite(hm_alpha) and np.isfinite(im_subset_alpha) and np.isfinite(true_im_alpha)
-        else hm_alpha
-    )
+    # --- PPI corrections ---
+    def ppi_correct(hm, im_sub, true_im):
+        return (
+            true_im + (hm - im_sub)
+            if np.isfinite(hm) and np.isfinite(im_sub) and np.isfinite(true_im)
+            else hm
+        )
 
-    return corrected_icc, corrected_alpha
+    corrected_icc = ppi_correct(hm_icc, im_subset_icc, true_im_icc)
+    corrected_alpha = ppi_correct(hm_alpha, im_subset_alpha, true_im_alpha)
+    corrected_spearman = ppi_correct(hm_spearman, im_subset_spearman, true_im_spearman)
+    corrected_kendall = ppi_correct(hm_kendall, im_subset_kendall, true_im_kendall)
+    corrected_msre = ppi_correct(hm_msre, im_subset_msre, true_im_msre)
+
+    return {
+        "icc": corrected_icc,
+        "alpha": corrected_alpha,
+        "rho": corrected_spearman,
+        "tau": corrected_kendall,
+        "msre": corrected_msre,
+    }
 
 
 def compute_spearman_rho(data, models=None):

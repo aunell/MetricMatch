@@ -671,8 +671,8 @@ def plot_all_results(icc_results, alpha_results, mse_results, rho_results, tau_r
         dataset,
         plots_dir,
         comparison_mode,
-        metric_name="MSE",
-        hm_key="true_hm_mse",
+        metric_name="MSRE",
+        hm_key="true_hm_msre",
         im_key="im_mse"
     )
 
