@@ -12,7 +12,7 @@ import pandas as pd
 import pingouin as pg
 import krippendorff
 from scipy import stats as scipy_stats
-
+from scipy import stats
 # from intraclass_corr import PointwiseICC
 from src.utils.intraclass_corr import PointwiseICC
 from src.utils.match_metrics import compute_mean_sq_err_multi, compute_mean_sq_err
@@ -419,113 +419,170 @@ def compute_reliability_ppi_corrected(
         "msre": corrected_msre,
     }
 
-
-def compute_spearman_rho(data, models=None):
-    """
-    Compute Spearman's rank correlation coefficient for inter-rater reliability.
-
-    For two raters, computes the Spearman correlation between their score vectors.
-    For k > 2 raters, computes the average pairwise Spearman correlation.
-
-    Args:
-        data: DataFrame with columns: text_id, model_name, evaluation_score
-        models: Optional list of model names to include. If None, uses all models in data.
-
-    Returns:
-        Spearman's rho value or np.nan if computation fails
-    """
-    if len(data) == 0:
+def compute_spearman_rho(data: pd.DataFrame, models=None):
+    # print(models)
+    model_names = data["model_name"].unique()
+    n_raters = len(model_names)
+    if n_raters != 2:
+        print("Spearman rank correlation can only be computed on two raters, returning nan")
         return np.nan
+    
+    data_filtered = (
+        data.groupby('text_id')
+            .filter(lambda x: x['model_name'].nunique() == n_raters)
+    )
 
-    if models is not None:
-        data = data[data["model_name"].isin(models)].copy()
-
-    if len(data) == 0:
-        return np.nan
-
-    rater_names = data["model_name"].unique()
-    n_raters = len(rater_names)
-    if n_raters < 2:
-        return np.nan
-
-    counts = data.groupby("text_id")["model_name"].nunique()
-    valid_ids = counts[counts == n_raters].index
-    data_filtered = data[data["text_id"].isin(valid_ids)]
     if len(data_filtered) == 0:
         return np.nan
-
+    
+    data_filtered = data_filtered.groupby(
+            by=['text_id', 'model_name']
+        )["evaluation_score"].mean().reset_index()
+    
     try:
-        data_filtered = data_filtered.drop_duplicates(subset=["text_id", "model_name"], keep="first")
-        pivot = data_filtered.pivot(index="text_id", columns="model_name", values="evaluation_score")
+        spearman_r, spearman_p = stats.spearmanr(data_filtered.loc[data_filtered["model_name"] == model_names[0]]["evaluation_score"].values,
+                                               data_filtered.loc[data_filtered["model_name"] == model_names[1]]["evaluation_score"].values, nan_policy="omit")
+    # print(f"\n  Correlation Results:")
+    # print(f"    Spearman rank r = {spearman_r:.4f} (p = {spearman_p:.6f})")
+    except:
+        spearman_r = np.nan
 
-        if n_raters == 2:
-            rho, _ = scipy_stats.spearmanr(pivot.iloc[:, 0], pivot.iloc[:, 1])
-            return float(rho) if np.isfinite(rho) else np.nan
-        else:
-            rater_list = list(pivot.columns)
-            rho_vals = []
-            for i in range(len(rater_list)):
-                for j in range(i + 1, len(rater_list)):
-                    rho, _ = scipy_stats.spearmanr(pivot[rater_list[i]], pivot[rater_list[j]])
-                    if np.isfinite(rho):
-                        rho_vals.append(float(rho))
-            return float(np.nanmean(rho_vals)) if rho_vals else np.nan
-    except Exception:
-        return np.nan
+    return spearman_r
 
+# def compute_spearman_rho(data, models=None):
+#     """
+#     Compute Spearman's rank correlation coefficient for inter-rater reliability.
+
+#     For two raters, computes the Spearman correlation between their score vectors.
+#     For k > 2 raters, computes the average pairwise Spearman correlation.
+
+#     Args:
+#         data: DataFrame with columns: text_id, model_name, evaluation_score
+#         models: Optional list of model names to include. If None, uses all models in data.
+
+#     Returns:
+#         Spearman's rho value or np.nan if computation fails
+#     """
+#     if len(data) == 0:
+#         return np.nan
+
+#     if models is not None:
+#         data = data[data["model_name"].isin(models)].copy()
+
+#     if len(data) == 0:
+#         return np.nan
+
+#     rater_names = data["model_name"].unique()
+#     n_raters = len(rater_names)
+#     if n_raters < 2:
+#         return np.nan
+
+#     counts = data.groupby("text_id")["model_name"].nunique()
+#     valid_ids = counts[counts == n_raters].index
+#     data_filtered = data[data["text_id"].isin(valid_ids)]
+#     if len(data_filtered) == 0:
+#         return np.nan
+
+#     try:
+#         data_filtered = data_filtered.drop_duplicates(subset=["text_id", "model_name"], keep="first")
+#         pivot = data_filtered.pivot(index="text_id", columns="model_name", values="evaluation_score")
+
+#         if n_raters == 2:
+#             rho, _ = scipy_stats.spearmanr(pivot.iloc[:, 0], pivot.iloc[:, 1])
+#             return float(rho) if np.isfinite(rho) else np.nan
+#         else:
+#             rater_list = list(pivot.columns)
+#             rho_vals = []
+#             for i in range(len(rater_list)):
+#                 for j in range(i + 1, len(rater_list)):
+#                     rho, _ = scipy_stats.spearmanr(pivot[rater_list[i]], pivot[rater_list[j]])
+#                     if np.isfinite(rho):
+#                         rho_vals.append(float(rho))
+#             return float(np.nanmean(rho_vals)) if rho_vals else np.nan
+#     except Exception:
+#         return np.nan
 
 def compute_kendall_tau(data, models=None):
-    """
-    Compute Kendall's tau-b for inter-rater reliability.
-
-    For two raters, computes Kendall's tau between their score vectors.
-    For k > 2 raters, computes the average pairwise Kendall's tau.
-
-    Args:
-        data: DataFrame with columns: text_id, model_name, evaluation_score
-        models: Optional list of model names to include. If None, uses all models in data.
-
-    Returns:
-        Kendall's tau value or np.nan if computation fails
-    """
-    if len(data) == 0:
+    model_names = data["model_name"].unique()
+    n_raters = len(model_names)
+    if n_raters != 2:
+        print("Pearson correlation can only be computed on two raters, returning nan")
         return np.nan
+    
+    data_filtered = (
+        data.groupby('text_id')
+            .filter(lambda x: x['model_name'].nunique() == n_raters)
+    )
 
-    if models is not None:
-        data = data[data["model_name"].isin(models)].copy()
-
-    if len(data) == 0:
-        return np.nan
-
-    rater_names = data["model_name"].unique()
-    n_raters = len(rater_names)
-    if n_raters < 2:
-        return np.nan
-
-    counts = data.groupby("text_id")["model_name"].nunique()
-    valid_ids = counts[counts == n_raters].index
-    data_filtered = data[data["text_id"].isin(valid_ids)]
     if len(data_filtered) == 0:
         return np.nan
-
+    
+    data_filtered = data_filtered.groupby(
+            by=['text_id', 'model_name']
+        )["evaluation_score"].mean().reset_index()
+    
     try:
-        data_filtered = data_filtered.drop_duplicates(subset=["text_id", "model_name"], keep="first")
-        pivot = data_filtered.pivot(index="text_id", columns="model_name", values="evaluation_score")
+        tau_r, tau_p = stats.kendalltau(data_filtered.loc[data_filtered["model_name"] == model_names[0]]["evaluation_score"].values,
+                                               data_filtered.loc[data_filtered["model_name"] == model_names[1]]["evaluation_score"].values, nan_policy="omit")
 
-        if n_raters == 2:
-            tau, _ = scipy_stats.kendalltau(pivot.iloc[:, 0], pivot.iloc[:, 1])
-            return float(tau) if np.isfinite(tau) else np.nan
-        else:
-            rater_list = list(pivot.columns)
-            tau_vals = []
-            for i in range(len(rater_list)):
-                for j in range(i + 1, len(rater_list)):
-                    tau, _ = scipy_stats.kendalltau(pivot[rater_list[i]], pivot[rater_list[j]])
-                    if np.isfinite(tau):
-                        tau_vals.append(float(tau))
-            return float(np.nanmean(tau_vals)) if tau_vals else np.nan
-    except Exception:
-        return np.nan
+    except:
+        tau_r = np.nan
+    # print(f"\n  Correlation Results:")
+    # print(f"    Kendall tau = {tau_r:.4f} (p = {tau_p:.6f})")
+    
+    return tau_r
+# def compute_kendall_tau(data, models=None):
+#     """
+#     Compute Kendall's tau-b for inter-rater reliability.
+
+#     For two raters, computes Kendall's tau between their score vectors.
+#     For k > 2 raters, computes the average pairwise Kendall's tau.
+
+#     Args:
+#         data: DataFrame with columns: text_id, model_name, evaluation_score
+#         models: Optional list of model names to include. If None, uses all models in data.
+
+#     Returns:
+#         Kendall's tau value or np.nan if computation fails
+#     """
+#     if len(data) == 0:
+#         return np.nan
+
+#     if models is not None:
+#         data = data[data["model_name"].isin(models)].copy()
+
+#     if len(data) == 0:
+#         return np.nan
+
+#     rater_names = data["model_name"].unique()
+#     n_raters = len(rater_names)
+#     if n_raters < 2:
+#         return np.nan
+
+#     counts = data.groupby("text_id")["model_name"].nunique()
+#     valid_ids = counts[counts == n_raters].index
+#     data_filtered = data[data["text_id"].isin(valid_ids)]
+#     if len(data_filtered) == 0:
+#         return np.nan
+
+#     try:
+#         data_filtered = data_filtered.drop_duplicates(subset=["text_id", "model_name"], keep="first")
+#         pivot = data_filtered.pivot(index="text_id", columns="model_name", values="evaluation_score")
+
+#         if n_raters == 2:
+#             tau, _ = scipy_stats.kendalltau(pivot.iloc[:, 0], pivot.iloc[:, 1])
+#             return float(tau) if np.isfinite(tau) else np.nan
+#         else:
+#             rater_list = list(pivot.columns)
+#             tau_vals = []
+#             for i in range(len(rater_list)):
+#                 for j in range(i + 1, len(rater_list)):
+#                     tau, _ = scipy_stats.kendalltau(pivot[rater_list[i]], pivot[rater_list[j]])
+#                     if np.isfinite(tau):
+#                         tau_vals.append(float(tau))
+#             return float(np.nanmean(tau_vals)) if tau_vals else np.nan
+#     except Exception:
+#         return np.nan
 
 
 def compute_krippendorff_alpha(data, models=None):

@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
-from src.utils.match_metrics import compute_mean_sq_err_multi
+from src.utils.match_metrics import compute_mean_sq_err
 
 def random_selection(cheap_ratings, n_expensive, seed):
     """Random selection strategy."""
@@ -513,8 +513,8 @@ def dev_metric_matched_selection(text_ids, k, im_full_df, target_metric_values, 
     rng = np.random.RandomState(seed)
     best_ids = None
     best_score = float('inf')
+    text_ids.sort() # Ensure consistent ordering
     for _ in range(n_candidates):
-        text_ids.sort() # Ensure consistent ordering
         candidate_ids = rng.choice(text_ids, size=min(k, len(text_ids)), replace=False)
         im_candidate = im_full_df[im_full_df["text_id"].isin(candidate_ids)]
 
@@ -528,14 +528,14 @@ def dev_metric_matched_selection(text_ids, k, im_full_df, target_metric_values, 
 
         if not (np.isfinite(np.all(cand_metrics)) and np.isfinite(np.all(cand_metrics))):
             continue
-
-        score = np.array(alpha_weight).T @ np.abs(np.array(target_metric_values) - np.array(cand_metrics))
-        # if k==10:
-            # print("CAND VALUE SCORE", score)
             # breakpoint()
+        score = np.array(alpha_weight).T @ np.abs(np.array(target_metric_values) - np.array(cand_metrics))
         if score < best_score:
             best_score = score
             best_ids = candidate_ids
+    if compute_metric_fn.__name__ == "compute_mean_sq_err" and k==40:
+        print("target", target_metric_values)
+        # breakpoint()
     return best_ids
 
 
@@ -579,32 +579,23 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
     best_ids = None
     best_score = float('inf')
 
-    forced_ids = np.asarray(forced_ids) if forced_ids is not None and len(forced_ids) > 0 else np.array([], dtype=text_ids.dtype)
-    available_ids = np.setdiff1d(text_ids, forced_ids)
-    n_new = min(k - len(forced_ids), len(available_ids))
-
-    if n_new <= 0:
-        return forced_ids[:k]
-
+    text_ids.sort()
     for _ in range(n_candidates):
-        text_ids.sort()
-        new_ids = rng.choice(available_ids, size=min(k, len(text_ids)), replace=False)
-        # new_ids = rng.choice(available_ids, size=n_new, replace=False)
-        candidate_ids = np.concatenate([forced_ids, new_ids]) if len(forced_ids) > 0 else new_ids
+        candidate_ids = rng.choice(text_ids, size=min(k, len(text_ids)), replace=False)
         im_candidate = im_full_df[im_full_df["text_id"].isin(candidate_ids)]
-        print(f"budget {k}, candidate ids: {len(candidate_ids)}")
         if len(im_candidate) == 0:
             continue
 
         if target_metric == "icc":
             # Use MS components instead of pingouin to avoid ANOVA overhead.
             # ICC3k = (MSB - MSE) / MSB, identical to compute_icc_pingouin's ICC3k formula.
-            ms_obj = compute_ms_fn(im_candidate)
-            cand_value = ms_obj.icc if (ms_obj is not None and ms_obj.icc is not None) else np.nan
+            # ms_obj = compute_ms_fn(im_candidate)
+            cand_value = compute_icc_fn(im_candidate, models=im_models) 
+            #cand_value = ms_obj.icc if (ms_obj is not None and ms_obj.icc is not None) else np.nan
         elif target_metric == "alpha":
             cand_value = compute_alpha_fn(im_candidate, models=im_models)
         elif target_metric == "mse":
-            cand_value = compute_mean_sq_err_multi(im_candidate, models=im_models)
+            cand_value = compute_mean_sq_err(im_candidate) #, models=im_models)
         elif target_metric == "rho":
             if compute_rho_fn is None:
                 continue
@@ -620,12 +611,12 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
             continue
 
         score = abs(cand_value - target_value)
-        # if target_metric =="alpha" and k==10:
-            # print("SCORE alyssa", score)
-            # breakpoint()
         if score < best_score:
             best_score = score
             best_ids = candidate_ids
+        if target_metric== "mse" and k==40:
+            print("target", target_value)
+            # breakpoint()
     return best_ids
 
 

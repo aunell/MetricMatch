@@ -16,13 +16,13 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-DEFAULT_DATA_DIR = "/Users/alyssaunell/code/SmartSample_local/data/metric_matched_subsets"
+DEFAULT_DATA_DIR = "/Users/alyssaunell/code/SmartSample_local/results/05_01_natalie_audit"
 
 # Methods to include in plots
 SELECTED_METHODS = [
     "random",
-    "random_imc",
-    "stratified",
+    # "random_imc",
+    # "stratified",
     "metric_match_alpha",
     "metric_match_icc",
     "metric_match_spearman",
@@ -71,6 +71,7 @@ METHOD_COLORS = {
 def load_combined_csv(data_dir, dataset_name):
     """Load the combined CSV for a dataset."""
     path = os.path.join(data_dir, f"{dataset_name}_combined_results2.csv")
+    print(path)
     if not os.path.exists(path):
         return pd.DataFrame()
     df = pd.read_csv(path)
@@ -86,7 +87,6 @@ def load_combined_csv(data_dir, dataset_name):
         )
     else:
         df['plot_method'] = df['method']
-
     return df
 
 
@@ -209,6 +209,7 @@ def main():
 
     # Combine all data
     all_df = pd.concat(all_frames, ignore_index=True)
+    breakpoint()
     print(f"\nTotal rows loaded: {len(all_df)}")
     print(f"Unique methods: {sorted(all_df['method'].unique())}")
     print(f"Unique metrics: {sorted(all_df['est_metric'].unique())}")

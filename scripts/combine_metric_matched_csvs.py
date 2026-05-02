@@ -18,8 +18,8 @@ def process_dataset(dataset_name):
     print(f"{'='*80}\n")
 
     # Define the data directory
-    data_dir = Path("/Users/alyssaunell/code/SmartSample_local/data/metric_matched_subsets") / dataset_name
-    output_dir = Path("/Users/alyssaunell/code/SmartSample_local/data/metric_matched_subsets")
+    data_dir = Path("/Users/alyssaunell/code/SmartSample_local/results/05_01_natalie_audit/metric_matched_subsets") / dataset_name
+    output_dir = Path("/Users/alyssaunell/code/SmartSample_local/results/05_01_natalie_audit")
 
     # Read the msb+msre file - we want ALL rows from this file
     # msb_msre_file = data_dir / "cross_metric_msb+msre_match_results.csv"
@@ -68,94 +68,8 @@ def process_dataset(dataset_name):
             print(f"Found {len(random_rows)} random baseline rows for {metric_name}")
             all_dfs.append(random_rows)
 
-    # Add baseline methods from 04_30 results
-    print("\n" + "="*60)
-    print("Adding baseline methods from 04_30 results")
-    print("="*60)
-
-    # Determine the correct path for 04_30 results
-    baseline_dir = Path(f"/Users/alyssaunell/code/SmartSample_local/results/04_32_{dataset_name}/{dataset_name}/dataframes")
-
-    # Define the metric result files
-    metric_files = {
-        'alpha': 'alpha_results.csv',
-        'icc': 'icc_results.csv',
-        'spearman': 'rho_results.csv',
-        'kendalltau': 'tau_results.csv',
-        'mean_sq_error': 'mse_results.csv'
-    }
-
-    # Methods to extract
-    baseline_methods = ['random','random_imc', 'stratified']
-
-    for est_metric, filename in metric_files.items():
-        file_path = baseline_dir / filename
-        if not file_path.exists():
-            print(f"Warning: {file_path} does not exist, skipping...")
-            continue
-
-        print(f"\nReading {file_path.name}...")
-        df = pd.read_csv(file_path)
-
-        # Filter for baseline methods
-        baseline_df = df[df['method'].isin(baseline_methods)].copy()
-
-        if len(baseline_df) == 0:
-            print(f"  No baseline methods found in {filename}")
-            continue
-
-        # Rename columns to match the combined format
-        # The 04_29 files have: model, budget, method, estimation_error, predicted_X, true_X, axis
-        # We need: model, budget, method, match_metric, est_metric, est_error, axis
-
-        baseline_df = baseline_df.rename(columns={'estimation_error': 'est_error'})
-        baseline_df['est_metric'] = est_metric
-
-        # Set match_metric based on method
-        # variance_matched_weighted_.9 uses msb+msre as the matching metric
-        # Other baseline methods don't have a match_metric
-        baseline_df['match_metric'] = baseline_df['method'].apply(
-            lambda x: 'msb+msre' if x == 'variance_matched_weighted_.9' else ''
-        )
-
-        # Select only the columns we need
-        baseline_df = baseline_df[['model', 'budget', 'method', 'match_metric', 'est_metric', 'est_error', 'axis']]
-
-        print(f"  Found {len(baseline_df)} baseline rows for {est_metric}")
-        print(f"    Method breakdown: {baseline_df['method'].value_counts().to_dict()}")
-
-        all_dfs.append(baseline_df)
-
-    # Add baseline methods from 04_31 results (MSE only - updated random_imc and stratified)
-    print("\n" + "="*60)
-    print("Adding updated random_imc and stratified from 04_31 results (MSE only)")
-    print("="*60)
-
-    baseline_04_32_dir = Path(f"/Users/alyssaunell/code/SmartSample_local/results/04_32_{dataset_name}/{dataset_name}/dataframes")
-    # mse_file_path = baseline_04_32_dir / "mse_results.csv"
-
-    # if mse_file_path.exists():
-    #     print(f"\nReading {mse_file_path.name}...")
-    #     df = pd.read_csv(mse_file_path)
-
-    #     # Filter for random_imc and stratified only
-    #     baseline_04_31_df = df[df['method'].isin(['random_imc', 'stratified'])].copy()
-
-    #     if len(baseline_04_31_df) > 0:
-    #         # Rename and format columns
-    #         baseline_04_31_df = baseline_04_31_df.rename(columns={'estimation_error': 'est_error'})
-    #         baseline_04_31_df['est_metric'] = 'mean_sq_error'
-    #         baseline_04_31_df['match_metric'] = ''
-    #         baseline_04_31_df = baseline_04_31_df[['model', 'budget', 'method', 'match_metric', 'est_metric', 'est_error', 'axis']]
-
-    #         print(f"  Found {len(baseline_04_31_df)} rows for MSE from 04_31")
-    #         print(f"    Method breakdown: {baseline_04_31_df['method'].value_counts().to_dict()}")
-
-    #         all_dfs.append(baseline_04_31_df)
-    #     else:
-    #         print(f"  No random_imc or stratified methods found in {mse_file_path.name}")
-    # else:
-    #     print(f"Warning: {mse_file_path} does not exist, skipping 04_31 MSE update...")
+    # Note: NOT loading baseline methods from external directories
+    # Only using data from metric_matched_subsets directory
 
     # Combine all dataframes
     print("\n" + "="*60)

@@ -18,11 +18,23 @@ import pandas as pd
 from src.utils.data_loading import load_judge_scores
 from src.utils.reliability_metrics import (
     compute_ms_components,
-    compute_icc_pingouin,
-    compute_krippendorff_alpha,
+    # compute_icc_pingouin,
+    # compute_krippendorff_alpha,
     compute_spearman_rho,
     compute_kendall_tau,
     compute_reliability_ppi_corrected,
+)
+
+from src.utils.match_metrics import (
+    compute_msb,
+    compute_msre,
+    compute_weighted_msb_msre,
+    compute_mean_sq_err,
+    compute_icc_pingouin,
+    compute_krippendorff_alpha,
+    compute_spearman,
+    compute_pearson,
+    # compute_kendall_tau
 )
 from src.utils.selection_strategies import (
     variance_matched_selection_ms,
@@ -30,7 +42,7 @@ from src.utils.selection_strategies import (
     max_expand_selection,
     stratified_target_selection,
 )
-from src.utils.match_metrics import compute_mean_sq_err_multi, compute_mean_sq_err
+
 from src.utils.plotting import plot_all_results, load_results_dataframes, save_predictor_inputs
 # Set random seed for reproducibility
 np.random.seed(42)
@@ -38,16 +50,16 @@ np.random.seed(42)
 # -------------------------
 # CONFIGURATION (defaults)
 # -------------------------
-DEFAULT_N_BOOTSTRAP_SAMPLES = 100
-DEFAULT_N_CANDIDATE_SUBSETS = 20
+DEFAULT_N_BOOTSTRAP_SAMPLES = 3
+DEFAULT_N_CANDIDATE_SUBSETS = 3
 DEFAULT_TOTAL_ANNOTATIONS = 300
-DEFAULT_DATASET = "mslr"
+DEFAULT_DATASET = "medval"
 DEFAULT_MODEL_NAMES = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "deepseek-r1", "gemini-2.5-pro"] #["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"] #["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "deepseek-r1", "gemini-2.5-pro"]
 DEFAULT_TARGET_MODELS = None   # None → same as model_names
 DEFAULT_ENSEMBLE_MODELS = None #["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"] #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct") #("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro") #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")   # None → same as model_names
 DEFAULT_DATA_DIR = "data/judge_scores"
-DEFAULT_PLOTS_DIR = f"results/04_32_{DEFAULT_DATASET}"
-DEFAULT_COMPARISON_MODE = "pairwise_average"
+DEFAULT_PLOTS_DIR = f"results/05_01_VM_{DEFAULT_DATASET}_audit"
+DEFAULT_COMPARISON_MODE = "average_pairwise"
 # ONLINE_ACQUISITION=True  → cumulative/incremental selection: IDs chosen at budget k are
 #                            locked in and carried forward to budget k+n (simulates a real
 #                            annotation session where labels already collected are reused).
@@ -71,7 +83,7 @@ SAMPLING_STRATEGIES = [
     # "variance_matched_combined_imc",
     # "variance_matched_combined_tc",
     # "variance_matched_combined_tc_imc",
-    # "variance_matched_msb",
+    "variance_matched_msb",
     # "variance_matched_msb_imc",
     # "variance_matched_msb_tc",
     # "variance_matched_msb_tc_imc",
@@ -81,7 +93,7 @@ SAMPLING_STRATEGIES = [
     # "variance_matched_weighted_.5_imc",
     # "variance_matched_weighted_.7",
     # "variance_matched_weighted_.7_imc",
-    # "variance_matched_weighted_.9",
+    "variance_matched_weighted_.9",
     # "variance_matched_weighted_.9_imc",
     # "proxy_oracle",
     # "proxy_oracle_imc",
@@ -93,11 +105,11 @@ SAMPLING_STRATEGIES = [
     # "oracle_mean_squared_error",
     # "oracle_rho",
     # "oracle_tau",
-    # "metric_matched_icc",
-    # "metric_matched_alpha",
-    # "metric_matched_rho",
-    # "metric_matched_tau",
-    # "metric_matched_mse",
+    "metric_matched_icc", 
+    "metric_matched_alpha",
+    "metric_matched_rho",
+    "metric_matched_tau",
+    "metric_matched_mse",
 ]
 
 EVALUATION_AXES = {
@@ -431,6 +443,7 @@ def _build_im_pairwise_df(df, model, model_names):
     # Optional: See the distribution of how many models each text_id has
     print("\nDistribution of model counts per text_id:")
     print(text_id_model_counts.value_counts().sort_index())
+    # breakpoint()
     return ret
 
 
@@ -590,9 +603,11 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
         fast_ms_fn = compute_ms_components
 
     im_standalone_msre = (
-        compute_mean_sq_err_multi(im_full_df, models=im_models)
+        compute_mean_sq_err(im_full_df) 
         if base_strategy == "metric_matched_mse" else None
     )
+    # if base_strategy == "metric_matched_mse":
+    #     breakpoint()
 
     target_scores_for_stratified = (
         hm_full_df[hm_full_df["model_name"] == model]
@@ -605,7 +620,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
 
     results = {s: {"icc_errors": [], "alpha_errors": [], "msre_errors": [],
                    "rho_errors": [], "tau_errors": [],
-                   "icc_preds": [], "alpha_preds": [],
+                   "icc_preds": [], "alpha_preds": [], "msre_preds": [],
                    "rho_preds": [], "tau_preds": []} for s in strategy_variants}
 
     actual_trials = 1 if base_strategy == "max_expand" else n_trials
@@ -619,12 +634,13 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
 
     # Copy so we can update and return without mutating the caller's dict.
     updated_selected_per_trial = dict(prev_selected_per_trial)
-
+    sampled_ids_list=[]
     for trial_idx in range(actual_trials):
         seed = 42 + trial_idx
 
         # IDs locked in from prior budget levels for this trial (online mode only).
         if online_acquisition:
+            breakpoint()
             forced_ids = updated_selected_per_trial.get(trial_idx, np.array([], dtype=text_ids.dtype))
         else:
             forced_ids = np.array([], dtype=text_ids.dtype)
@@ -663,13 +679,15 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
         # ── Sample once (only incremental IDs beyond forced_ids) ───────────────
         if base_strategy == "random":
             np.random.seed(seed)
-            available = np.setdiff1d(text_ids, forced_ids)
-            n_new = min(k - len(forced_ids), len(available))
-            if n_new > 0:
-                new_ids = np.random.choice(available, size=n_new, replace=False)
-                sampled_ids = np.concatenate([forced_ids, new_ids]) if len(forced_ids) > 0 else new_ids
-            else:
-                sampled_ids = forced_ids[:k]
+            # available = np.setdiff1d(text_ids, forced_ids)
+            # n_new = min(k - len(forced_ids), len(available))
+            # if n_new > 0:
+            sampled_ids = np.random.choice(text_ids, size=min(k, len(text_ids)), replace=False)
+            # breakpoint()
+                # sampled_ids = np.concatenate([forced_ids, new_ids]) if len(forced_ids) > 0 else new_ids
+            # else:
+                # sampled_ids = forced_ids[:k]
+
         elif base_strategy == "stratified":
             sampled_ids = stratified_target_selection(
                 text_ids, k, target_scores_for_stratified, seed=seed, forced_ids=forced_ids
@@ -700,14 +718,11 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                 seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
                 forced_ids=forced_ids
             )
-            # print(sampled_ids)
-            # if k==10:
-            #     breakpoint()
             if sampled_ids is None:
                 continue
         elif base_strategy == "metric_matched_rho":
             sampled_ids = metric_matched_selection(
-                text_ids, k, im_full_df, true_im_alpha, "rho",
+                text_ids, k, im_full_df, true_im_rho, "rho",
                 fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
                 seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
                 forced_ids=forced_ids, compute_rho_fn=compute_spearman_rho
@@ -716,7 +731,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                 continue
         elif base_strategy == "metric_matched_tau":
             sampled_ids = metric_matched_selection(
-                text_ids, k, im_full_df, true_im_alpha, "tau",
+                text_ids, k, im_full_df, true_im_tau, "tau",
                 fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
                 seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
                 forced_ids=forced_ids, compute_tau_fn=compute_kendall_tau
@@ -725,7 +740,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                 continue
         elif base_strategy == "metric_matched_mse":
             sampled_ids = metric_matched_selection(
-                text_ids, k, im_full_df, im_standalone_msre, "msre",
+                text_ids, k, im_full_df, im_standalone_msre, "mse",
                 fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
                 seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
                 forced_ids=forced_ids
@@ -783,7 +798,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             updated_selected_per_trial[trial_idx] = np.asarray(sampled_ids)
 
         hm_sample = hm_full_df[hm_full_df["text_id"].isin(sampled_ids)]
-
+        sampled_ids_list.append(sampled_ids)
         # ── Observe IM and HM MS components on this subset ───────────────────
         im_sample = im_full_df[im_full_df["text_id"].isin(sampled_ids)]
         im_ms = fast_ms_fn(im_sample)
@@ -860,16 +875,16 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             if matched_metric in (None, "msre"):
                 if est_msre is not None and np.isfinite(est_msre) and true_msre is not None and np.isfinite(true_msre):
                     results[strategy]["msre_errors"].append(abs(est_msre - true_msre))
+                    results[strategy]["msre_preds"].append(est_msre)
             if matched_metric in (None, "rho"):
                 if est_rho is not None and np.isfinite(est_rho) and true_rho is not None and np.isfinite(true_rho):
-                    results[strategy]["rho_errors"].append(abs(est_rho - true_rho))
+                    results[strategy]["rho_errors"].append(min(2, abs(est_rho - true_rho)))
                     results[strategy]["rho_preds"].append(est_rho)
             if matched_metric in (None, "tau"):
                 if est_tau is not None and np.isfinite(est_tau) and true_tau is not None and np.isfinite(true_tau):
-                    results[strategy]["tau_errors"].append(abs(est_tau - true_tau))
+                    results[strategy]["tau_errors"].append(min(2, abs(est_tau - true_tau)))
                     results[strategy]["tau_preds"].append(est_tau)
-
-    return results, new_im_msb_obs, new_im_mse_obs, new_hm_msb_obs, new_hm_mse_obs, updated_selected_per_trial
+    return results, new_im_msb_obs, new_im_mse_obs, new_hm_msb_obs, new_hm_mse_obs, updated_selected_per_trial, sampled_ids_list
 
 
 def evaluate_reliability_estimators(df, target_models, ensemble_models, per_model_variance,
@@ -911,7 +926,6 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
     for strategy in SAMPLING_STRATEGIES:
         base, _ = _parse_strategy(strategy)
         strategies_by_base.setdefault(base, []).append(strategy)
-
     # Reusable fast MS function that skips expensive pivot_table validation.
     # Safe because all candidate subsets are drawn from pre-filtered shared text_ids.
     _fast_ms = partial(compute_ms_components, validate=False)
@@ -944,7 +958,8 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
             im_alpha = compute_krippendorff_alpha(im_full_df, models=im_models)
             im_rho = compute_spearman_rho(im_full_df, models=im_models)
             im_tau = compute_kendall_tau(im_full_df, models=im_models)
-            im_msre = compute_mean_sq_err_multi(im_full_df, models=im_models)
+            im_msre = compute_mean_sq_err(im_full_df)
+            # breakpoint()
         elif COMPARISON_MODE == "pairwise_average":
             # Compute ICC and alpha for each (target, ensemble_model) pair, then average
             pair_icc_list, pair_alpha_list, pair_rho_list, pair_tau_list, pair_msre_list = [], [], [], [], []
@@ -984,7 +999,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
             im_alpha = compute_krippendorff_alpha(im_full_df, models=im_models)
             im_rho = compute_spearman_rho(im_full_df, models=im_models)
             im_tau = compute_kendall_tau(im_full_df, models=im_models)
-            im_msre = compute_mean_sq_err_multi(im_full_df, models=im_models)
+            im_msre = compute_mean_sq_err(im_full_df) #, models=im_models)
 
         reliability_metadata[model] = {
             "true_hm_icc": true_icc,
@@ -1001,6 +1016,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
         }
 
         text_ids = hm_full_df["text_id"].unique()
+        text_ids.sort()
 
         # Outer loop over strategies so each base strategy accumulates its own
         # observation history across budget levels for bias-corrected targeting,
@@ -1014,7 +1030,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
             prev_selected_per_trial = {}  # trial_idx -> array of IDs selected so far
 
             for k in budgets:
-                trial_results, new_im_msb, new_im_mse, new_hm_msb, new_hm_mse, prev_selected_per_trial = (
+                trial_results, new_im_msb, new_im_mse, new_hm_msb, new_hm_mse, prev_selected_per_trial, sampled_ids_list = (
                     _run_trials_for_base(
                         base_strategy, strategy_variants, text_ids, k, n_trials,
                         hm_full_df, im_full_df, model, true_icc, true_alpha, true_msre,
@@ -1029,6 +1045,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
                         fast_ms_fn=_fast_ms,
                     )
                 )
+
                 # Extend history with this budget level's observations so the
                 # next budget level benefits from all prior data.
                 past_im_msb_obs.extend(new_im_msb)
@@ -1037,24 +1054,26 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
                 past_hm_mse_obs.extend(new_hm_mse)
 
                 for strategy, errors in trial_results.items():
-                    for error, pred in zip(errors["icc_errors"], errors["icc_preds"]):
+                    for i, (error, pred) in enumerate(zip(errors["icc_errors"], errors["icc_preds"])):
                         icc_results.append({"model": model, "budget": k, "method": strategy,
                                             "estimation_error": error, "predicted_icc": pred,
-                                            "true_icc": true_icc})
-                    for error, pred in zip(errors["alpha_errors"], errors["alpha_preds"]):
+                                            "true_icc": true_icc, "best_ids": sampled_ids_list[i]})
+                    for i, (error, pred) in enumerate(zip(errors["alpha_errors"], errors["alpha_preds"])):
                         alpha_results.append({"model": model, "budget": k, "method": strategy,
                                               "estimation_error": error, "predicted_alpha": pred,
-                                              "true_alpha": true_alpha})
-                    for error in errors["msre_errors"]:
-                        msre_results.append({"model": model, "budget": k, "method": strategy, "estimation_error": error})
-                    for error, pred in zip(errors["rho_errors"], errors["rho_preds"]):
+                                              "true_alpha": true_alpha, "best_ids": sampled_ids_list[i]})
+                    for i, (error, pred) in enumerate(zip(errors["msre_errors"], errors["msre_preds"])):
+                        msre_results.append({"model": model, "budget": k, "method": strategy,
+                                            "estimation_error": error, "predicted_msre": pred,
+                                            "true_msre": true_msre, "best_ids": sampled_ids_list[i]})
+                    for i, (error, pred) in enumerate(zip(errors["rho_errors"], errors["rho_preds"])):
                         rho_results.append({"model": model, "budget": k, "method": strategy,
                                             "estimation_error": error, "predicted_rho": pred,
-                                            "true_rho": true_rho})
-                    for error, pred in zip(errors["tau_errors"], errors["tau_preds"]):
+                                            "true_rho": true_rho, "best_ids": sampled_ids_list[i]})
+                    for i, (error, pred) in enumerate(zip(errors["tau_errors"], errors["tau_preds"])):
                         tau_results.append({"model": model, "budget": k, "method": strategy,
                                             "estimation_error": error, "predicted_tau": pred,
-                                            "true_tau": true_tau})
+                                            "true_tau": true_tau, "best_ids": sampled_ids_list[i]})
     return (pd.DataFrame(icc_results), pd.DataFrame(alpha_results), pd.DataFrame(msre_results),
             pd.DataFrame(rho_results), pd.DataFrame(tau_results), reliability_metadata)
 
@@ -1107,16 +1126,15 @@ def main():
     n_workers = min(len(axis_jobs), os.cpu_count() or 1)
     print(f"\nRunning {len(axis_jobs)} axes across {n_workers} parallel workers...")
 
-    if n_workers > 1:
-        # Use fork-based pool so worker processes inherit all module-level globals
-        # (COMPARISON_MODE, ONLINE_ACQUISITION, N_BOOTSTRAP_SAMPLES, etc.).
-        ctx = mp.get_context("fork")
-        with ctx.Pool(processes=n_workers) as pool:
-            axis_results = pool.map(_run_axis_worker, axis_jobs)
-    else:
-        axis_results = [_run_axis_worker(job) for job in axis_jobs]
+    # if n_workers > 1:
+    #     # Use fork-based pool so worker processes inherit all module-level globals
+    #     # (COMPARISON_MODE, ONLINE_ACQUISITION, N_BOOTSTRAP_SAMPLES, etc.).
+    #     ctx = mp.get_context("fork")
+    #     with ctx.Pool(processes=n_workers) as pool:
+    #         axis_results = pool.map(_run_axis_worker, axis_jobs)
+    # else:
+    axis_results = [_run_axis_worker(job) for job in axis_jobs]
     results = axis_results[0][1]
-    breakpoint()
     icc_results_by_axis = {}
     alpha_results_by_axis = {}
     msre_results_by_axis = {}
