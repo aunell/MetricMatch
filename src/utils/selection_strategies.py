@@ -390,6 +390,118 @@ def variance_matching(cheap_ratings, n_expensive, seed, epsilon=0.1, k=10):
     print("VARIANCE MATCHING DIDNT WORK")
     return curr_selected
 
+def pairwise_variance_matched_selection_ms(text_ids, k, im_pair_df, im_msb_target, im_mse_target,
+                                           compute_ms_fn, seed=42, n_candidates=20, score_method="combined",
+                                           msb_weight=0.5, forced_ids=None, target_model=None):
+    """
+    Select subset that best matches target inter-model variance using pairwise MS components.
+
+    Computes MSB/MSE between the target model and each other model pairwise,
+    then averages these pairwise MSB/MSE values and tries to minimize the gap between
+    the averaged components and the target values.
+
+    Args:
+        text_ids: Array of text IDs to sample from
+        k: Number of items to select
+        im_pair_df: DataFrame with inter-model data (text_id, model_name, evaluation_score)
+        im_msb_target: Target mean square between (MSB) value
+        im_mse_target: Target mean square error (MSE) value
+        compute_ms_fn: Function to compute MS components (returns PointwiseICC object)
+        seed: Random seed for reproducibility
+        n_candidates: Number of candidate subsets to try (default: 20)
+        score_method: Method for computing score. Options:
+            - "msb_only": score = abs(cand_msb - im_msb_target)
+            - "mse_only": score = abs(cand_mse - im_mse_target)
+            - "combined": score = abs(cand_msb - im_msb_target) + abs(cand_mse - im_mse_target)
+            - "weighted": score = msb_weight * |Δmsb|/msb_target + (1-msb_weight) * |Δmse|/mse_target
+        msb_weight: Weight on the MSB term for score_method="weighted" (default: 0.5 = equal)
+        forced_ids: IDs that must be included in the selection (ONLINE_ACQUISITION mode only —
+                    these are IDs already annotated at a prior budget level). Only the
+                    incremental IDs needed to reach k are sampled from the remaining pool.
+                    The score is computed on the full combined set (forced + new).
+                    Pass None or an empty array for batch/independent selection.
+        target_model: The target model to use for pairwise comparisons. If None, raises error.
+
+    Returns:
+        Array of selected text_ids, or None if no valid subset found
+    """
+    if target_model is None:
+        raise ValueError("target_model must be specified for pairwise variance matching")
+
+    # Get list of all models except target model
+    all_models = im_pair_df["model_name"].unique()
+    other_models = [m for m in all_models if m != target_model]
+
+    if len(other_models) == 0:
+        return None
+
+    rng = np.random.RandomState(seed)
+    best_ids = None
+    best_score = float('inf')
+
+    forced_ids = np.asarray(forced_ids) if forced_ids is not None and len(forced_ids) > 0 else np.array([], dtype=text_ids.dtype)
+    available_ids = np.setdiff1d(text_ids, forced_ids)
+    n_new = min(k - len(forced_ids), len(available_ids))
+
+    if n_new <= 0:
+        return forced_ids[:k]
+
+    for _ in range(n_candidates):
+        new_ids = rng.choice(available_ids, size=n_new, replace=False)
+        candidate_ids = np.concatenate([forced_ids, new_ids]) if len(forced_ids) > 0 else new_ids
+        im_candidate = im_pair_df[im_pair_df["text_id"].isin(candidate_ids)]
+
+        if len(im_candidate) == 0:
+            continue
+
+        # Compute MSB/MSE for each pairwise comparison (target_model vs each other model)
+        pairwise_msb = []
+        pairwise_mse = []
+        for other_model in other_models:
+            # Filter to only target_model and other_model
+            pairwise_data = im_candidate[im_candidate["model_name"].isin([target_model, other_model])]
+
+            # Skip if we don't have data for both models
+            if pairwise_data["model_name"].nunique() < 2:
+                continue
+
+            pair_obj = compute_ms_fn(pairwise_data)
+            if pair_obj is None or pair_obj.msb is None or pair_obj.mse is None:
+                continue
+
+            if np.isfinite(pair_obj.msb) and np.isfinite(pair_obj.mse):
+                pairwise_msb.append(pair_obj.msb)
+                pairwise_mse.append(pair_obj.mse)
+
+        # Average the pairwise MSB/MSE values
+        if len(pairwise_msb) == 0 or len(pairwise_mse) == 0:
+            continue
+
+        cand_msb = np.mean(pairwise_msb)
+        cand_mse = np.mean(pairwise_mse)
+
+        if not (np.isfinite(cand_msb) and np.isfinite(cand_mse)):
+            continue
+
+        # Compute score based on selected method
+        if score_method == "msb_only":
+            score = abs(cand_msb - im_msb_target)
+        elif score_method == "mse_only":
+            score = abs(cand_mse - im_mse_target)
+        elif score_method == "weighted":
+            dmsb = (abs(cand_msb - im_msb_target) / im_msb_target
+                    if im_msb_target != 0 else abs(cand_msb - im_msb_target))
+            dmse = (abs(cand_mse - im_mse_target) / im_mse_target
+                    if im_mse_target != 0 else abs(cand_mse - im_mse_target))
+            score = msb_weight * dmsb + (1.0 - msb_weight) * dmse
+        else:  # "combined" (default)
+            score = abs(cand_msb - im_msb_target) + abs(cand_mse - im_mse_target)
+
+        if score < best_score:
+            best_score = score
+            best_ids = candidate_ids
+
+    return best_ids
 
 def variance_matched_selection_ms(text_ids, k, im_full_df, im_msb_target, im_mse_target,
                                    compute_ms_fn, seed=42, n_candidates=20, score_method="combined",
@@ -533,9 +645,6 @@ def dev_metric_matched_selection(text_ids, k, im_full_df, target_metric_values, 
         if score < best_score:
             best_score = score
             best_ids = candidate_ids
-    if compute_metric_fn.__name__ == "compute_mean_sq_err" and k==40:
-        print("target", target_metric_values)
-        # breakpoint()
     return best_ids
 
 
@@ -619,6 +728,111 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
             # breakpoint()
     return best_ids
 
+def pairwise_metric_matched_selection(text_ids, k, im_pair_df, target_value, target_metric,
+                              compute_ms_fn, compute_icc_fn, compute_alpha_fn,
+                              seed=42, n_candidates=20, im_models=None,
+                              forced_ids=None, target_model=None,
+                              compute_rho_fn=None, compute_tau_fn=None):
+    """
+    Select subset whose pairwise target-model metric best matches a target value.
+
+    Computes the target metric between the target model and each other model pairwise,
+    then averages these pairwise metrics and tries to minimize the gap between this
+    average and the target_value.
+
+    Args:
+        text_ids: Array of text IDs to sample from
+        k: Number of items to select
+        im_pair_df: DataFrame with inter-model data (text_id, model_name, evaluation_score)
+        target_value: Target metric value to match (e.g. full-dataset pairwise metric)
+        target_metric: Which metric to match — "icc", "alpha", "mse", "rho", or "tau"
+        compute_ms_fn: Function that returns a PointwiseICC object (for MSE)
+        compute_icc_fn: Function to compute ICC given a DataFrame and models kwarg
+        compute_alpha_fn: Function to compute Krippendorff's alpha given a DataFrame and models kwarg
+        seed: Base random seed
+        n_candidates: Number of candidate subsets to evaluate
+        im_models: Model names to pass to the metric functions
+        forced_ids: IDs that must be included in the selection (ONLINE_ACQUISITION mode only —
+                    these are IDs already annotated at a prior budget level). Only the
+                    incremental IDs needed to reach k are sampled from the remaining pool.
+                    The score is computed on the full combined set (forced + new).
+                    Pass None or an empty array for batch/independent selection.
+        target_model: The target model to use for pairwise comparisons. If None, raises error.
+        compute_rho_fn: Function to compute Spearman rho
+        compute_tau_fn: Function to compute Kendall tau
+
+    Returns:
+        Array of selected text_ids, or None if no valid subset found
+    """
+    if not np.isfinite(target_value):
+        return None
+
+    if target_model is None:
+        raise ValueError("target_model must be specified for pairwise metric matching")
+
+    # Get list of all models except target model
+    all_models = im_pair_df["model_name"].unique()
+    other_models = [m for m in all_models if m != target_model]
+
+    if len(other_models) == 0:
+        return None
+
+    rng = np.random.RandomState(seed)
+    best_ids = None
+    best_score = float('inf')
+
+    text_ids.sort()
+    for _ in range(n_candidates):
+        candidate_ids = rng.choice(text_ids, size=min(k, len(text_ids)), replace=False)
+        im_candidate = im_pair_df[im_pair_df["text_id"].isin(candidate_ids)]
+        if len(im_candidate) == 0:
+            continue
+
+        # Compute metric for each pairwise comparison (target_model vs each other model)
+        pairwise_values = []
+        for other_model in other_models:
+            # Filter to only target_model and other_model
+            pairwise_data = im_candidate[im_candidate["model_name"].isin([target_model, other_model])]
+
+            # Skip if we don't have data for both models
+            if pairwise_data["model_name"].nunique() < 2:
+                continue
+
+            if target_metric == "icc":
+                pair_value = compute_icc_fn(pairwise_data, models=[target_model, other_model])
+            elif target_metric == "alpha":
+                pair_value = compute_alpha_fn(pairwise_data, models=[target_model, other_model])
+            elif target_metric == "mse":
+                pair_value = compute_mean_sq_err(pairwise_data)
+            elif target_metric == "rho":
+                if compute_rho_fn is None:
+                    continue
+                pair_value = compute_rho_fn(pairwise_data, models=[target_model, other_model])
+            elif target_metric == "tau":
+                if compute_tau_fn is None:
+                    continue
+                pair_value = compute_tau_fn(pairwise_data, models=[target_model, other_model])
+            else:
+                continue
+
+            if np.isfinite(pair_value):
+                pairwise_values.append(pair_value)
+
+        # Average the pairwise metrics
+        if len(pairwise_values) == 0:
+            continue
+
+        cand_value = np.mean(pairwise_values)
+
+        if not np.isfinite(cand_value):
+            continue
+
+        score = abs(cand_value - target_value)
+        if score < best_score:
+            best_score = score
+            best_ids = candidate_ids
+
+    return best_ids
 
 def max_expand_selection(im_full_df, k, compute_ms_fn, alpha_weight=0.5, forced_ids=None):
     """

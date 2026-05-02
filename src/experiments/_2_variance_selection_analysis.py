@@ -41,6 +41,8 @@ from src.utils.selection_strategies import (
     metric_matched_selection,
     max_expand_selection,
     stratified_target_selection,
+    pairwise_metric_matched_selection,
+    pairwise_variance_matched_selection_ms
 )
 
 from src.utils.plotting import plot_all_results, load_results_dataframes, save_predictor_inputs
@@ -50,16 +52,16 @@ np.random.seed(42)
 # -------------------------
 # CONFIGURATION (defaults)
 # -------------------------
-DEFAULT_N_BOOTSTRAP_SAMPLES = 3
-DEFAULT_N_CANDIDATE_SUBSETS = 3
+DEFAULT_N_BOOTSTRAP_SAMPLES = 20
+DEFAULT_N_CANDIDATE_SUBSETS = 20
 DEFAULT_TOTAL_ANNOTATIONS = 300
 DEFAULT_DATASET = "medval"
 DEFAULT_MODEL_NAMES = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "deepseek-r1", "gemini-2.5-pro"] #["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"] #["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "deepseek-r1", "gemini-2.5-pro"]
 DEFAULT_TARGET_MODELS = None   # None → same as model_names
 DEFAULT_ENSEMBLE_MODELS = None #["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"] #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct") #("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro") #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")   # None → same as model_names
 DEFAULT_DATA_DIR = "data/judge_scores"
-DEFAULT_PLOTS_DIR = f"results/05_01_VM_{DEFAULT_DATASET}_audit"
-DEFAULT_COMPARISON_MODE = "average_pairwise"
+DEFAULT_PLOTS_DIR = f"results/05_02_VM_{DEFAULT_DATASET}_alyssa_20_pairwise_average"
+DEFAULT_COMPARISON_MODE = "pairwise_average"
 # ONLINE_ACQUISITION=True  → cumulative/incremental selection: IDs chosen at budget k are
 #                            locked in and carried forward to budget k+n (simulates a real
 #                            annotation session where labels already collected are reused).
@@ -533,7 +535,7 @@ _METRIC_MATCH_TARGET = {
 
 
 def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials,
-                          hm_full_df, im_full_df, model, true_icc, true_alpha, true_msre,
+                          hm_full_df, im_full_df, im_pair_df, model, true_icc, true_alpha, true_msre,
                           true_rho=None, true_tau=None,
                           im_msb_target=None, im_mse_target=None,
                           hm_msb_target=None, hm_mse_target=None,
@@ -602,10 +604,10 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
     if fast_ms_fn is None:
         fast_ms_fn = compute_ms_components
 
-    im_standalone_msre = (
-        compute_mean_sq_err(im_full_df) 
-        if base_strategy == "metric_matched_mse" else None
-    )
+    # im_standalone_msre = (
+    #     compute_mean_sq_err(im_full_df) 
+    #     if base_strategy == "metric_matched_mse" else None
+    # )
     # if base_strategy == "metric_matched_mse":
     #     breakpoint()
 
@@ -677,6 +679,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             effective_mse_target = im_mse_target
 
         # ── Sample once (only incremental IDs beyond forced_ids) ───────────────
+        # breakpoint()
         if base_strategy == "random":
             np.random.seed(seed)
             # available = np.setdiff1d(text_ids, forced_ids)
@@ -693,58 +696,112 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                 text_ids, k, target_scores_for_stratified, seed=seed, forced_ids=forced_ids
             )
         elif base_strategy in _SCORE_METHOD_MAP:
-            sampled_ids = variance_matched_selection_ms(
-                text_ids, k, im_full_df, effective_msb_target, effective_mse_target,
-                fast_ms_fn, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
-                score_method=_SCORE_METHOD_MAP[base_strategy],
-                msb_weight=_WEIGHTED_MSB_WEIGHTS.get(base_strategy, 0.5),
-                forced_ids=forced_ids
-            )
+            if COMPARISON_MODE == "pairwise_average":
+                sampled_ids = pairwise_variance_matched_selection_ms(
+                    text_ids, k, im_pair_df, effective_msb_target, effective_mse_target,
+                    fast_ms_fn, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
+                    score_method=_SCORE_METHOD_MAP[base_strategy],
+                    msb_weight=_WEIGHTED_MSB_WEIGHTS.get(base_strategy, 0.5),
+                    forced_ids=forced_ids, target_model=model
+                )
+            else:
+                sampled_ids = variance_matched_selection_ms(
+                    text_ids, k, im_full_df, effective_msb_target, effective_mse_target,
+                    fast_ms_fn, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
+                    score_method=_SCORE_METHOD_MAP[base_strategy],
+                    msb_weight=_WEIGHTED_MSB_WEIGHTS.get(base_strategy, 0.5),
+                    forced_ids=forced_ids
+                )
             if sampled_ids is None:
                 continue
         elif base_strategy == "metric_matched_icc":
-            sampled_ids = metric_matched_selection(
-                text_ids, k, im_full_df, true_im_icc, "icc",
-                fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
-                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
-                forced_ids=forced_ids
-            )
+            if COMPARISON_MODE == "pairwise_average":
+                sampled_ids = pairwise_metric_matched_selection(
+                    text_ids, k, im_pair_df, true_im_icc, "icc",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids, target_model=model,
+                    compute_rho_fn=compute_spearman_rho, compute_tau_fn=compute_kendall_tau
+                )
+            else:
+                sampled_ids = metric_matched_selection(
+                    text_ids, k, im_full_df, true_im_icc, "icc",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids
+                )
             if sampled_ids is None:
                 continue
         elif base_strategy == "metric_matched_alpha":
-            sampled_ids = metric_matched_selection(
-                text_ids, k, im_full_df, true_im_alpha, "alpha",
-                fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
-                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
-                forced_ids=forced_ids
-            )
+            if COMPARISON_MODE == "pairwise_average":
+                sampled_ids = pairwise_metric_matched_selection(
+                    text_ids, k, im_pair_df, true_im_alpha, "alpha",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids, target_model=model,
+                    compute_rho_fn=compute_spearman_rho, compute_tau_fn=compute_kendall_tau
+                )
+            else:
+                sampled_ids = metric_matched_selection(
+                    text_ids, k, im_full_df, true_im_alpha, "alpha",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids
+                )
             if sampled_ids is None:
                 continue
         elif base_strategy == "metric_matched_rho":
-            sampled_ids = metric_matched_selection(
-                text_ids, k, im_full_df, true_im_rho, "rho",
-                fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
-                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
-                forced_ids=forced_ids, compute_rho_fn=compute_spearman_rho
-            )
+            if COMPARISON_MODE == "pairwise_average":
+                sampled_ids = pairwise_metric_matched_selection(
+                    text_ids, k, im_pair_df, true_im_rho, "rho",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids, target_model=model,
+                    compute_rho_fn=compute_spearman_rho, compute_tau_fn=compute_kendall_tau
+                )
+            else:
+                sampled_ids = metric_matched_selection(
+                    text_ids, k, im_full_df, true_im_rho, "rho",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids, compute_rho_fn=compute_spearman_rho
+                )
             if sampled_ids is None:
                 continue
         elif base_strategy == "metric_matched_tau":
-            sampled_ids = metric_matched_selection(
-                text_ids, k, im_full_df, true_im_tau, "tau",
-                fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
-                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
-                forced_ids=forced_ids, compute_tau_fn=compute_kendall_tau
-            )
+            if COMPARISON_MODE == "pairwise_average":
+                sampled_ids = pairwise_metric_matched_selection(
+                    text_ids, k, im_pair_df, true_im_tau, "tau",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids, target_model=model,
+                    compute_rho_fn=compute_spearman_rho, compute_tau_fn=compute_kendall_tau
+                )
+            else:
+                sampled_ids = metric_matched_selection(
+                    text_ids, k, im_full_df, true_im_tau, "tau",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids, compute_tau_fn=compute_kendall_tau
+                )
             if sampled_ids is None:
                 continue
         elif base_strategy == "metric_matched_mse":
-            sampled_ids = metric_matched_selection(
-                text_ids, k, im_full_df, im_standalone_msre, "mse",
-                fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
-                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
-                forced_ids=forced_ids
-            )
+            if COMPARISON_MODE == "pairwise_average":
+                sampled_ids = pairwise_metric_matched_selection(
+                    text_ids, k, im_pair_df, true_im_msre, "mse",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids, target_model=model,
+                    compute_rho_fn=compute_spearman_rho, compute_tau_fn=compute_kendall_tau
+                )
+            else:
+                sampled_ids = metric_matched_selection(
+                    text_ids, k, im_full_df, true_im_msre, "mse",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids
+                )
             if sampled_ids is None:
                 continue
         elif base_strategy in _PROXY_ORACLE_BASES:
@@ -889,7 +946,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
 
 def evaluate_reliability_estimators(df, target_models, ensemble_models, per_model_variance,
                                      budgets=range(5, 55, 5), n_trials=None,
-                                     online_acquisition=True):
+                                     online_acquisition=False):
     """
     Evaluate ICC and Krippendorff's alpha estimators with different sampling strategies.
 
@@ -951,6 +1008,8 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
         # Build inter-model DataFrame using the target + ensemble (excluding target from its own ensemble)
         eff_ensemble = [e for e in ensemble_models if e != model]
         im_model_set = [model] + eff_ensemble
+        # breakpoint()
+        im_pair_df = []
         if COMPARISON_MODE == "average_pairwise":
             im_full_df = _build_im_pairwise_df(df, model, im_model_set)
             im_models = [model, "avg_other"]
@@ -987,7 +1046,9 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
             im_tau = np.nanmean(pair_tau_list) if pair_tau_list else np.nan
             im_msre = np.nanmean(pair_msre_list) if pair_msre_list else np.nan
             # Use average_pairwise df for selection strategies (candidate subset evaluation)
+            # breakpoint()
             im_full_df = _build_im_pairwise_df(df, model, im_model_set)
+            im_pair_df = df.copy()  # Keep full pairwise df for selection strategies that need it
             im_models = [model, "avg_other"]
         else:
             im_subset = df[df["model_name"].isin(im_model_set)]
@@ -1033,7 +1094,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
                 trial_results, new_im_msb, new_im_mse, new_hm_msb, new_hm_mse, prev_selected_per_trial, sampled_ids_list = (
                     _run_trials_for_base(
                         base_strategy, strategy_variants, text_ids, k, n_trials,
-                        hm_full_df, im_full_df, model, true_icc, true_alpha, true_msre,
+                        hm_full_df, im_full_df, im_pair_df, model, true_icc, true_alpha, true_msre,
                         true_rho=true_rho, true_tau=true_tau,
                         im_msb_target=im_msb_target, im_mse_target=im_mse_target,
                         hm_msb_target=hm_msb_target, hm_mse_target=hm_mse_target,

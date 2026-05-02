@@ -16,8 +16,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-DEFAULT_RESULTS_DIR = "/Users/alyssaunell/code/SmartSample_local/results/05_01_VM_audit"
-OUTPUT_PATH = "/Users/alyssaunell/code/SmartSample_local/results/05_01_VM_audit/estimation_error_plots"
+DEFAULT_RESULTS_DIR = "/Users/alyssaunell/code/SmartSample_local/results/05_02_VM_alyssa_full"
+OUTPUT_PATH = "/Users/alyssaunell/code/SmartSample_local/results/05_02_VM_alyssa_full/estimation_error_plots"
 # Base methods always included (resolved per-metric below for metric_matched)
 BASE_METHODS = [
     "random",
@@ -33,7 +33,7 @@ METRIC_MATCHED = {
     "alpha": "metric_matched_alpha",
     "rho": "metric_matched_rho",
     "tau": "metric_matched_tau",
-    "mse": "metric_matched_mean_squared_error",
+    "mse": "metric_matched_mse",
 }
 
 METRIC_YLABELS = {
@@ -53,19 +53,19 @@ METHOD_DISPLAY = {
     "metric_matched_alpha": "metric_matched",
     "metric_matched_rho": "metric_matched",
     "metric_matched_tau": "metric_matched",
-    "metric_matched_mean_squared_error": "metric_matched",
+    "metric_matched_mse": "metric_matched",
     "variance_matched_msb": "variance_matched_msb",
     "variance_matched_weighted_.9": "variance_matched_weighted_.9",
 }
 
-METHOD_COLORS = {
-    "random": "#1f77b4",
-    "random_imc": "#aec7e8",
-    "stratified": "#ffbb78",
-    "metric_matched": "#2ca02c",
-    "variance_matched_msb": "#17becf",
-    "variance_matched_weighted_.9": "#9467bd",
-}
+# METHOD_COLORS = {
+#     "random": "#1f77b4",
+#     "random_imc": "#aec7e8",
+#     "stratified": "#ffbb78",
+#     "metric_matched": "#2ca02c",
+#     "variance_matched_msb": "#17becf",
+#     "variance_matched_weighted_.9": "#9467bd",
+# }
 
 
 def find_datasets(results_dir):
@@ -75,7 +75,7 @@ def find_datasets(results_dir):
 
     for name in dataset_names:
         # Inject dataset name into the path
-        dataset_root = results_dir.replace("_audit", f"_{name}_audit")
+        dataset_root = results_dir.replace("_alyssa", f"_{name}_alyssa")
 
         candidate = os.path.join(dataset_root, name, "dataframes")
 
@@ -139,11 +139,11 @@ def plot_metric(all_df, metric, methods, output_dir, datasets_used, dataset_filt
         mdata = ci_df[ci_df["method"] == method].sort_values("budget")
         if mdata.empty:
             continue
-        color = METHOD_COLORS.get(display)
+        # color = METHOD_COLORS.get(display)
         ax.errorbar(
             mdata["budget"], mdata["mean"], yerr=mdata["ci_hw"],
             marker="o", linewidth=2.5, capsize=5, capthick=2,
-            label=display, color=color, alpha=0.85,
+            label=display, alpha=0.85,
         )
 
     ax.set_xlabel("Human Annotation Budget", fontsize=13)
@@ -219,9 +219,9 @@ def main():
         plot_metric(all_df, metric, methods, output_dir, [d[0] for d in datasets])
 
         # For alpha metric, also create a plot for just the hanna dataset
-        if metric == "alpha" and "hanna" in all_df["dataset"].values:
-            print(f"  Creating additional hanna-only plot for alpha")
-            plot_metric(all_df, metric, methods, output_dir, [d[0] for d in datasets], dataset_filter="hanna")
+        # if metric == "alpha" and "hanna" in all_df["dataset"].values:
+        #     print(f"  Creating additional hanna-only plot for alpha")
+        #     plot_metric(all_df, metric, methods, output_dir, [d[0] for d in datasets], dataset_filter="hanna")
 
     print(f"\nAll plots saved to: {output_dir}")
 

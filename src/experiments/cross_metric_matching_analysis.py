@@ -36,8 +36,8 @@ np.random.seed(42)
 # -------------------------
 # CONFIGURATION
 # -------------------------
-N_BOOTSTRAP_SAMPLES = 3
-N_CANDIDATE_SUBSETS = 3
+N_BOOTSTRAP_SAMPLES = 100
+N_CANDIDATE_SUBSETS = 20
 
 EVALUATION_AXES = {
     "hanna": ["Coherence", "Complexity", "Empathy", "Engagement", "Relevance", "Surprise"],
@@ -99,7 +99,7 @@ datasets = ["mslr", "mslr", "summeval", "hanna"]
 # model_names = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
 model_names = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "deepseek-r1", "gemini-2.5-pro"]
 DATA_DIR = "data/judge_scores"
-PLOTS_DIR = "results/05_01_natalie_audit/metric_matched_subsets"
+PLOTS_DIR = "results/05_02_natalie_all/metric_matched_subsets"
 COMPARISON_MODE = "pairwise"  # "pairwise" or "aggregate"
 
 # os.makedirs(os.path.join(PLOTS_DIR, dataset), exist_ok=True)
