@@ -4,10 +4,17 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-DEFAULT_RESULTS_DIR = "/Users/alyssaunell/code/SmartSample_local/results/05_02_VM_alyssa_full"
-OUTPUT_PATH = "/Users/alyssaunell/code/SmartSample_local/results/05_02_VM_alyssa_full/annotations_saved"
+TITLE = "Metric"
+DEFAULT_RESULTS_DIR = "/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_alyssa_40_pairwise_average"
+if TITLE == "Metric":
+    OUTPUT_PATH =f"{DEFAULT_RESULTS_DIR}/annotations_saved"
+    TARGET_METHOD_STRATEGY = "metric_matched"
+else:
+    OUTPUT_PATH = f"{DEFAULT_RESULTS_DIR}/annotations_saved_vm"
+    TARGET_METHOD_STRATEGY = "variance_matched_weighted_.9"
+
 DATASETS = ["hanna", "medval", "mslr", "summeval"]
-METRICS = ["alpha", "icc", "rho", "tau", "mse"]
+METRICS = ["alpha", "icc", "rho", "tau"]
 BASELINE = "random"
 BUDGETS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
 PLOT_BUDGETS = [b for b in BUDGETS if b >= 10]  # rb=5 excluded: no vm budgets below 5 to observe
@@ -26,8 +33,8 @@ METRIC_MATCHED = {
 # "metric_matched": Use per-metric methods (metric_matched_icc, metric_matched_alpha, etc.)
 # "variance_matched_weighted_.9": Use fixed method variance_matched_weighted_.9 for all metrics
 # Any other string: Use that specific method name for all metrics
-TARGET_METHOD_STRATEGY = "variance_matched_weighted_.9" #"metric_matched"  # Default to metric_matched
-TARGET_METHOD_STRATEGY = "metric_matched"
+# TARGET_METHOD_STRATEGY = "variance_matched_weighted_.9" #"metric_matched"  # Default to metric_matched
+# TARGET_METHOD_STRATEGY = "metric_matched"
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -60,7 +67,7 @@ def get_target_method(metric, strategy=TARGET_METHOD_STRATEGY):
 def find_datasets(results_dir):
     """Return list of (dataset_name, dataframes_path) using template path."""
     datasets = []
-    dataset_names = ["medval", "mslr", "summeval", "hanna"]
+    dataset_names = DATASETS
 
     for name in dataset_names:
         # Inject dataset name into the path
@@ -344,7 +351,7 @@ def _style_equiv_ax(ax, plot_budgets=None):
     ax.set_xticks(x)
     ax.set_yticks(np.array(BUDGETS))
     ax.set_xlabel("Random Sampling Budget", fontsize=11)
-    ax.set_ylabel("Equivalent metric_matched Budget", fontsize=11)
+    ax.set_ylabel(f"Equivalent {TITLE} Matched Budget", fontsize=11)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
@@ -361,7 +368,7 @@ def plot_budget_equiv_summary(equivs, out_dir):
         mdata = avg[avg["metric"] == metric].sort_values("random_budget")
         label = _savings_label(metric, mdata["random_budget"].values, mdata["equivalent_budget"].values)
         ax.plot(mdata["random_budget"], mdata["equivalent_budget"], marker="o", color=color, label=label)
-    ax.set_title("Budget Equivalence Metric Matching— All Datasets (averaged)", fontsize=13)
+    ax.set_title(f"Budget Equivalence {TITLE} Matching — All Datasets (averaged)", fontsize=13)
     ax.legend(fontsize=9)
     plt.tight_layout()
     out_path = os.path.join(out_dir, "budget_equiv_summary.jpg")

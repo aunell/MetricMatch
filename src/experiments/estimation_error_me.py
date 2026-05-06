@@ -16,15 +16,17 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-DEFAULT_RESULTS_DIR = "/Users/alyssaunell/code/SmartSample_local/results/05_02_VM_alyssa_full"
-OUTPUT_PATH = "/Users/alyssaunell/code/SmartSample_local/results/05_02_VM_alyssa_full/estimation_error_plots"
+BEST= "/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_alyssa_40_pairwise_average"
+DEFAULT_RESULTS_DIR = "/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_alyssa_40_pairwise_average" #"/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_small_20"
+OUTPUT_PATH = f"{DEFAULT_RESULTS_DIR}/estimation_error_plots"
+SPLIT_ON = "alyssa"  # Used to identify where to inject dataset names in the path template
 # Base methods always included (resolved per-metric below for metric_matched)
 BASE_METHODS = [
     "random",
     "random_imc",
     "stratified",
-    "variance_matched_msb",
-    "variance_matched_weighted_.9",
+    # "variance_matched_msb",
+    # "variance_matched_weighted_.9",
 ]
 
 # Per-metric variant of the metric_matched method
@@ -37,25 +39,33 @@ METRIC_MATCHED = {
 }
 
 METRIC_YLABELS = {
-    "icc": "Absolute ICC Error",
-    "alpha": "Absolute Alpha Error",
-    "rho": "Absolute Rho Error",
-    "tau": "Absolute Tau Error",
-    "mse": "Absolute MSE Error",
+    "icc": "ICC Estimation Error",
+    "alpha": "Alpha Estimation Error",
+    "rho": "Rho Estimation Error",
+    "tau": "Tau Estimation Error",
+    "mse": "MSE Estimation Error",
 }
 
 # Canonical display labels (metric_matched_* all display as "metric_matched")
 METHOD_DISPLAY = {
-    "random": "random",
-    "random_imc": "random_imc",
-    "stratified": "stratified",
-    "metric_matched_icc": "metric_matched",
-    "metric_matched_alpha": "metric_matched",
-    "metric_matched_rho": "metric_matched",
-    "metric_matched_tau": "metric_matched",
-    "metric_matched_mse": "metric_matched",
-    "variance_matched_msb": "variance_matched_msb",
-    "variance_matched_weighted_.9": "variance_matched_weighted_.9",
+    "random": "Random",
+    "random_imc": "Random_bc",
+    "stratified": "Stratified",
+    "metric_matched_icc": "Metric_matched",
+    "metric_matched_alpha": "Metric_matched",
+    "metric_matched_rho": "Metric_matched",
+    "metric_matched_tau": "Metric_matched",
+    "metric_matched_mse": "Metric_matched",
+    "variance_matched_msb": "Variance_matched_msb",
+    "variance_matched_weighted_.9": "Variance_matched",
+}
+
+TITLE =  {
+    "icc": "ICC",
+    "alpha": "Krippendorff's Alpha",
+    "rho": "Spearman's Rho",
+    "tau": "Kendall's Tau",
+    "mse": "Mean Squared Error",
 }
 
 # METHOD_COLORS = {
@@ -75,7 +85,7 @@ def find_datasets(results_dir):
 
     for name in dataset_names:
         # Inject dataset name into the path
-        dataset_root = results_dir.replace("_alyssa", f"_{name}_alyssa")
+        dataset_root = results_dir.replace(f"_{SPLIT_ON}", f"_{name}_{SPLIT_ON}")
 
         candidate = os.path.join(dataset_root, name, "dataframes")
 
@@ -146,19 +156,21 @@ def plot_metric(all_df, metric, methods, output_dir, datasets_used, dataset_filt
             label=display, alpha=0.85,
         )
 
-    ax.set_xlabel("Human Annotation Budget", fontsize=13)
-    ax.set_ylabel(METRIC_YLABELS.get(metric, f"Absolute {metric.upper()} Error"), fontsize=13)
+    ax.set_xlabel("Human Annotation Budget", fontsize=16)
+    ax.set_ylabel(METRIC_YLABELS.get(metric, f"Absolute {metric.upper()} Error"), fontsize=16)
     if dataset_filter:
         datasets_str = dataset_filter
         title_suffix = f"Dataset: {datasets_str} | Averaged over all models & axes with 95% CI"
     else:
+        # datasets_used[-1] = "hanna" if "hannaaa" in datasets_used[-1] else datasets_used[-1]
         datasets_str = ", ".join(datasets_used)
         title_suffix = f"Datasets: {datasets_str} | Averaged over all models & axes with 95% CI"
     ax.set_title(
-        f"{metric.upper()} Estimation Error — Selected Methods\n{title_suffix}",
-        fontsize=11,
+        f"{TITLE.get(metric)} Estimation Error",
+        fontsize=18,
     )
-    ax.legend(title="Method", fontsize=10, bbox_to_anchor=(1.02, 1), loc="upper left", borderaxespad=0)
+    ax.legend(title="Method", fontsize=16, title_fontsize=16, loc="upper right")
+    ax.tick_params(axis='both', which='major', labelsize=14)
     ax.grid(alpha=0.3)
     fig.tight_layout()
 
