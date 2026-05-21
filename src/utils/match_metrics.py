@@ -160,7 +160,7 @@ def compute_pearson(data: pd.DataFrame):
     
     return pearson_r
 
-def compute_spearman(data: pd.DataFrame):
+def compute_spearman(data: pd.DataFrame, models=None):
     model_names = data["model_name"].unique()
     n_raters = len(model_names)
     if n_raters != 2:

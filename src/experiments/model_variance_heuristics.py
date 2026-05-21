@@ -27,31 +27,44 @@ import matplotlib.pyplot as plt
 from scipy import stats
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from src.utils.reliability_metrics import (
+
+from src.utils.match_metrics import (
     compute_ms_components,
     compute_icc_pingouin,
     compute_krippendorff_alpha,
-    compute_spearman_rho,
+    compute_spearman,
     compute_kendall_tau,
+    compute_mean_sq_err
 )
-from src.utils.match_metrics import compute_mean_sq_err
 
-RESULTS_DIR = "/Users/alyssaunell/code/SmartSample_local/data/metric_matched_subsets"
-DATASETS = ["hanna", "mslr", "summeval", "medval"]
-METRICS = ["icc", "alpha", "spearman", "kendalltau", "mean_sq_error"]
-OUR_METHOD = "metric_match"
+# Updated to use template-based directory structure like script 2
+DEFAULT_RESULTS_DIR = "/Users/alyssaunell/code/SmartSample_local/results/05_02_VM_alyssa_20_pairwise_average"
+DATASETS = ["hannaaa", "medval", "mslr", "summeval"]
+METRICS = ["icc", "alpha", "rho", "tau", "mse"]  # Updated to match script 2
 BASELINE = "random"
+
+# Per-metric variant of the metric_matched method (like script 2)
+METRIC_MATCHED = {
+    "icc": "metric_matched_icc",
+    "alpha": "metric_matched_alpha",
+    "rho": "metric_matched_rho",
+    "tau": "metric_matched_tau",
+    "mse": "metric_matched_mse",
+}
+
+# Target method strategy
+TARGET_METHOD_STRATEGY = "metric_matched"  # or "variance_matched_weighted_.9"
 
 # Mapping of datasets to their predictor input directories
 PREDICTOR_DIRS = {
-    "hanna": "/Users/alyssaunell/code/SmartSample_local/results/04_31_hanna/hanna/dataframes/predictor_inputs",
-    "medval": "/Users/alyssaunell/code/SmartSample_local/results/04_30_medval/medval/dataframes/predictor_inputs",
-    "mslr": "/Users/alyssaunell/code/SmartSample_local/results/03_17/mslr/mslr/dataframes/predictor_inputs",
-    "summeval": "/Users/alyssaunell/code/SmartSample_local/results/03_17/summeval/summeval/dataframes/predictor_inputs",
+    "hannaaa": "/Users/alyssaunell/code/SmartSample_local/results/05_02_VM_hannaa_alyssa_20_pairwise_average/hannaa/dataframes/predictor_inputs",
+    "medval": "/Users/alyssaunell/code/SmartSample_local/results/05_02_VM_medval_alyssa_20_pairwise_average/medval/dataframes/predictor_inputs",
+    "mslr": "/Users/alyssaunell/code/SmartSample_local/results/05_02_VM_mslr_alyssa_20_pairwise_average/mslr/dataframes/predictor_inputs",
+    "summeval": "/Users/alyssaunell/code/SmartSample_local/results/05_02_VM_summeval_alyssa_20_pairwise_average/summeval/dataframes/predictor_inputs",
 }
 
 DATASET_COLORS = {
-    "hanna": "#1f77b4",
+    "hannaaa": "#1f77b4",
     "mslr": "#ff7f0e",
     "summeval": "#2ca02c",
     "medval": "#d62728",
@@ -63,6 +76,51 @@ PREDICTORS = [
     ("im_hm_ratio",  "IM-MSB / HM-MSB Ratio"),
     ("snr",          "MSB / MSE (Signal-to-Noise)"),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Helper functions (from script 2)
+# ---------------------------------------------------------------------------
+
+def get_target_method(metric, strategy=TARGET_METHOD_STRATEGY):
+    """
+    Get the target method name based on the strategy.
+
+    Args:
+        metric: The metric name (e.g., "icc", "alpha")
+        strategy: The target method strategy
+            - "metric_matched": Use per-metric methods from METRIC_MATCHED dict
+            - Any other string: Use that method name for all metrics
+
+    Returns:
+        Method name string, or None if not found
+    """
+    if strategy == "metric_matched":
+        return METRIC_MATCHED.get(metric)
+    else:
+        # Use the strategy string as the method name directly
+        return strategy
+
+
+def find_datasets(results_dir):
+    """Return list of (dataset_name, dataframes_path) using template path."""
+    datasets = []
+    for name in DATASETS:
+        # Inject dataset name into the path (handle both old and new naming)
+        dataset_root = results_dir.replace("_alyssa", f"_{name}_alyssa")
+        
+        candidate = os.path.join(dataset_root, name, "dataframes")
+        
+        if os.path.isdir(candidate):
+            if any(os.path.exists(os.path.join(candidate, f"{m}_results.csv"))
+                   for m in METRICS):
+                datasets.append((name, candidate))
+            else:
+                print(f"  Found dir but no metric CSVs: {candidate}")
+        else:
+            print(f"  Missing dataset dir: {candidate}")
+    
+    return datasets
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +225,6 @@ def compute_msb_features(datasets):
                 im_msb = axis_var.get("im_msb", np.nan)
                 hm_msb = axis_var.get("hm_msb", np.nan)
                 im_mse = axis_var.get("im_mse", np.nan)
-
                 hm_mse = axis_var.get("hm_mse", np.nan)
 
                 im_hm_ratio = im_msb / hm_msb if hm_msb and hm_msb != 0 else np.nan
@@ -189,48 +246,63 @@ def compute_msb_features(datasets):
     return pd.DataFrame(records)
 
 
-def load_estimation_errors(results_dir, datasets, metrics):
+def load_estimation_errors(results_dir, datasets, metrics, target_method_strategy=TARGET_METHOD_STRATEGY):
     """
-    Load estimation errors from the combined results CSV files.
-    New format: model, budget, method, match_metric, est_metric, est_error, axis
+    Load estimation errors from per-metric CSV files (like script 2).
+    Format: {metric}_results.csv with columns: model, budget, method, estimation_error, axis
     """
+    dataset_paths = find_datasets(results_dir)
+    if not dataset_paths:
+        print(f"No datasets with dataframes found in {results_dir}")
+        return pd.DataFrame()
+    
+    print(f"Found datasets: {[d[0] for d in dataset_paths]}")
+    print(f"Using target method strategy: {target_method_strategy}")
+    
     frames = []
-    for dataset in datasets:
-        csv_path = os.path.join(results_dir, f"{dataset}_combined_results2.csv")
-        if not os.path.exists(csv_path):
-            print(f"  Missing: {dataset}_combined_results2.csv — skipping")
+    for dataset_name, df_dir in dataset_paths:
+        if dataset_name not in datasets:
             continue
+            
+        for metric in metrics:
+            csv_path = os.path.join(df_dir, f"{metric}_results.csv")
+            if not os.path.exists(csv_path):
+                print(f"  Missing: {dataset_name}/{metric}_results.csv — skipping")
+                continue
 
-        df = pd.read_csv(csv_path, low_memory=False)
+            df = pd.read_csv(csv_path)
+            
+            # Get method name based on strategy
+            our_method = get_target_method(metric, target_method_strategy)
+            if our_method is None:
+                print(f"  Skipping {metric} | {dataset_name}: no target method defined")
+                continue
+            
+            # Filter for our method and baseline
+            available = [m for m in [our_method, BASELINE] if m in df["method"].values]
+            df = df[df["method"].isin(available)].copy()
 
-        # Filter for methods we care about
-        available = [m for m in [OUR_METHOD, BASELINE] if m in df["method"].values]
-        df = df[df["method"].isin(available)].copy()
+            if len(df) == 0:
+                print(f"  Skipping {metric} | {dataset_name}: no data for methods {available}")
+                continue
 
-        # Rename columns to match expected format
-        df = df.rename(columns={
-            "est_error": "estimation_error",
-            "est_metric": "metric"
-        })
+            # Select relevant columns
+            cols = ["model", "budget", "method", "estimation_error", "axis"]
+            df = df[cols].copy()
+            
+            # Add dataset and metric columns
+            df["dataset"] = dataset_name
+            df["metric"] = metric
 
-        # Add dataset column
-        df["dataset"] = dataset
-
-        # Filter for metrics we care about
-        df = df[df["metric"].isin(metrics)].copy()
-
-        # Select relevant columns
-        cols = ["model", "budget", "method", "estimation_error", "axis", "dataset", "metric"]
-        df = df[cols].copy()
-
-        frames.append(df)
+            frames.append(df)
+            print(f"  Loaded {len(df)} rows from {dataset_name} - {metric} (using {our_method})")
 
     if not frames:
         raise RuntimeError("No estimation error data found.")
     return pd.concat(frames, ignore_index=True)
 
 
-def compute_improvement(est_df):
+def compute_improvement(est_df, target_method_strategy=TARGET_METHOD_STRATEGY):
     """
     Improvement = mean(our_err) − mean(random_err), averaged over budgets.
     """
@@ -239,21 +311,31 @@ def compute_improvement(est_df):
         .agg(estimation_error=("estimation_error", "mean"))
         .reset_index()
     )
-    ours = avg[avg["method"] == OUR_METHOD].rename(columns={"estimation_error": "our_err"}).drop(columns="method")
+    
+    # Filter for our target method (varies by strategy)
+    if target_method_strategy == "metric_matched":
+        # Filter for any method starting with "metric_matched_"
+        ours = avg[avg["method"].str.startswith("metric_matched_")].rename(columns={"estimation_error": "our_err"}).drop(columns="method")
+    else:
+        # Filter for the specific method name
+        ours = avg[avg["method"] == target_method_strategy].rename(columns={"estimation_error": "our_err"}).drop(columns="method")
+    
     base = avg[avg["method"] == BASELINE].rename(columns={"estimation_error": "random_err"}).drop(columns="method")
     merged = ours.merge(base[["dataset", "axis", "model", "metric", "random_err"]],
                         on=["dataset", "axis", "model", "metric"])
     merged["improvement"] = merged["our_err"] - merged["random_err"]
     return merged
 
-
 # ---------------------------------------------------------------------------
 # IM Metric Variance Computation
 # ---------------------------------------------------------------------------
 
-def compute_im_metric_variance(dataset, axis, models, n_samples=100, budget_sizes=[5, 10, 20, 30, 40, 50]):
+def compute_im_metric_variance(dataset, axis, models, n_samples=5, budget_sizes=[5, 10, 20, 30, 40, 50]):
     """
-    Compute variance of IM metric predictions by randomly sampling subsets.
+    Compute variance of IM (inter-model) metric predictions by randomly sampling subsets.
+    
+    For each target model, compute metrics pairwise against all other models,
+    then return the mean and variance of those pairwise metric values.
 
     Args:
         dataset: Dataset name
@@ -263,7 +345,7 @@ def compute_im_metric_variance(dataset, axis, models, n_samples=100, budget_size
         budget_sizes: List of budget sizes to test
 
     Returns:
-        DataFrame with variance values for each metric and budget
+        DataFrame with mean and variance values for each (metric, model, axis, budget) triple
     """
     predictor_dir = PREDICTOR_DIRS.get(dataset)
     if not predictor_dir:
@@ -288,72 +370,110 @@ def compute_im_metric_variance(dataset, axis, models, n_samples=100, budget_size
 
     results = []
 
-    for budget in budget_sizes:
-        if budget > len(shared_ids):
-            continue
+    # For each target model
+    for target_model in models:
+        other_models = [m for m in models if m != target_model]
+        
+        for budget in budget_sizes:
+            if budget > len(shared_ids):
+                continue
 
-        metric_predictions = {
-            "icc": [],
-            "alpha": [],
-            "spearman": [],
-            "kendalltau": [],
-            "mean_sq_error": []
-        }
+            # Store pairwise metric values for each trial
+            # Structure: {metric: [[trial_0_pairwise_values], [trial_1_pairwise_values], ...]}
+            trial_pairwise_metrics = {
+                "icc": [],
+                "alpha": [],
+                "rho": [],
+                "tau": [],
+                "mse": []
+            }
 
-        for trial in range(n_samples):
-            # Randomly sample text_ids
-            np.random.seed(42 + trial)
-            sampled_ids = np.random.choice(shared_ids, size=budget, replace=False)
-            subset_df = df[df["text_id"].isin(sampled_ids)]
+            for trial in range(n_samples):
+                # Randomly sample text_ids
+                np.random.seed(42 + trial)
+                sampled_ids = np.random.choice(shared_ids, size=budget, replace=False)
+                subset_df = df[df["text_id"].isin(sampled_ids)]
 
-            # Compute each metric
-            try:
-                icc = compute_icc_pingouin(subset_df, models=models)
-                if np.isfinite(icc):
-                    metric_predictions["icc"].append(icc)
-            except:
-                pass
+                # Compute pairwise metrics for this target model vs each other model
+                pairwise_icc = []
+                pairwise_alpha = []
+                pairwise_rho = []
+                pairwise_tau = []
+                pairwise_mse = []
 
-            try:
-                alpha = compute_krippendorff_alpha(subset_df, models=models)
-                if np.isfinite(alpha):
-                    metric_predictions["alpha"].append(alpha)
-            except:
-                pass
+                for other_model in other_models:
+                    pair_models = [target_model, other_model]
+                    pair_df = subset_df[subset_df["model_name"].isin(pair_models)]
 
-            try:
-                rho = compute_spearman_rho(subset_df, models=models)
-                if np.isfinite(rho):
-                    metric_predictions["spearman"].append(rho)
-            except:
-                pass
+                    # ICC
+                    try:
+                        icc = compute_icc_pingouin(pair_df, models=pair_models)
+                        if np.isfinite(icc):
+                            pairwise_icc.append(icc)
+                    except:
+                        pass
 
-            try:
-                tau = compute_kendall_tau(subset_df, models=models)
-                if np.isfinite(tau):
-                    metric_predictions["kendalltau"].append(tau)
-            except:
-                pass
+                    # Krippendorff's Alpha
+                    try:
+                        alpha = compute_krippendorff_alpha(pair_df, models=pair_models)
+                        if np.isfinite(alpha):
+                            pairwise_alpha.append(alpha)
+                    except:
+                        pass
 
-            try:
-                mse = compute_mean_sq_err(subset_df)
-                if mse is not None and np.isfinite(mse):
-                    metric_predictions["mean_sq_error"].append(mse)
-            except:
-                pass
+                    # Spearman's Rho
+                    try:
+                        rho = compute_spearman(pair_df, models=pair_models)
+                        if np.isfinite(rho):
+                            pairwise_rho.append(rho)
+                    except:
+                        pass
 
-        # Compute variance for each metric
-        for metric, preds in metric_predictions.items():
-            if len(preds) > 1:
-                variance = np.var(preds, ddof=1)
-                results.append({
-                    "dataset": dataset,
-                    "axis": axis,
-                    "budget": budget,
-                    "metric": metric,
-                    "im_metric_variance": variance,
-                    "n_valid_samples": len(preds)
-                })
+                    # Kendall's Tau
+                    try:
+                        tau = compute_kendall_tau(pair_df, models=pair_models)
+                        if np.isfinite(tau):
+                            pairwise_tau.append(tau)
+                    except:
+                        pass
+
+                    # MSE
+                    try:
+                        mse = compute_mean_sq_err(pair_df)
+                        if mse is not None and np.isfinite(mse):
+                            pairwise_mse.append(mse)
+                    except:
+                        pass
+
+                # Store the pairwise values for this trial (averaged across pairs)
+                if len(pairwise_icc) > 0:
+                    trial_pairwise_metrics["icc"].append(np.mean(pairwise_icc))
+                if len(pairwise_alpha) > 0:
+                    trial_pairwise_metrics["alpha"].append(np.mean(pairwise_alpha))
+                if len(pairwise_rho) > 0:
+                    trial_pairwise_metrics["rho"].append(np.mean(pairwise_rho))
+                if len(pairwise_tau) > 0:
+                    trial_pairwise_metrics["tau"].append(np.mean(pairwise_tau))
+                if len(pairwise_mse) > 0:
+                    trial_pairwise_metrics["mse"].append(np.mean(pairwise_mse))
+
+            # Compute mean and variance across trials for each metric
+            for metric, trial_values in trial_pairwise_metrics.items():
+                if len(trial_values) > 1:
+                    mean_value = np.mean(trial_values)
+                    variance = np.var(trial_values, ddof=1)
+                    
+                    results.append({
+                        "dataset": dataset,
+                        "axis": axis,
+                        "model": target_model,
+                        "budget": budget,
+                        "metric": metric,
+                        "im_metric_mean": mean_value,
+                        "im_metric_variance": variance,
+                        "n_valid_samples": len(trial_values)
+                    })
+                    # breakpoint()
 
     return pd.DataFrame(results)
 
@@ -515,8 +635,6 @@ def _snr_figure_by_metric(plot_df, pred_col, pred_label, output_dir, filename):
     fig.savefig(path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"Plot saved: {path}")
-
-
 def _snr_figure_by_dataset(plot_df, pred_col, pred_label, output_dir, filename):
     n_datasets = len(DATASETS)
     fig, axes = plt.subplots(1, n_datasets, figsize=(4.5 * n_datasets, 4), sharey=False)
@@ -566,7 +684,7 @@ def _snr_figure_by_dataset(plot_df, pred_col, pred_label, output_dir, filename):
     print(f"Plot saved: {path}")
 
 
-def compute_all_im_metric_variances(datasets, n_samples=100):
+def compute_all_im_metric_variances(datasets, n_samples=5):
     """Compute IM metric variance for all datasets/axes/models."""
     all_results = []
 
@@ -583,8 +701,9 @@ def compute_all_im_metric_variances(datasets, n_samples=100):
             variance_df = compute_im_metric_variance(
                 dataset, axis, ensemble_models,
                 n_samples=n_samples,
-                budget_sizes=[5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
+                budget_sizes=[15] #, 10, 15, 20, 25, 30, 35, 40, 45, 50]
             )
+            breakpoint()
             if variance_df is not None and len(variance_df) > 0:
                 all_results.append(variance_df)
 
@@ -729,7 +848,7 @@ def plot_and_analyze(plot_df, output_dir):
 # Main
 # ---------------------------------------------------------------------------
 
-def main(results_dir=RESULTS_DIR):
+def main(results_dir=DEFAULT_RESULTS_DIR, target_method_strategy=TARGET_METHOD_STRATEGY):
     output_dir = os.path.join(results_dir, "model_variance_analysis")
 
     print("Step 1: Computing MSB features per (dataset, axis, target_model)...")
@@ -737,27 +856,27 @@ def main(results_dir=RESULTS_DIR):
     print(f"  {len(feat_df)} triples")
 
     print("\nStep 2: Loading estimation errors...")
-    est_df = load_estimation_errors(results_dir, DATASETS, METRICS)
+    est_df = load_estimation_errors(results_dir, DATASETS, METRICS, target_method_strategy)
     print(f"  Loaded {len(est_df)} rows")
 
     print("\nStep 3: Computing improvement over random...")
-    improvement_df = compute_improvement(est_df)
+    improvement_df = compute_improvement(est_df, target_method_strategy)
 
     print("\nStep 4: Merging...")
     plot_df = feat_df.merge(improvement_df, on=["dataset", "axis", "model"])
     print(f"  {len(plot_df)} data points ({plot_df['metric'].nunique()} metrics × {len(feat_df)} triples)")
 
-    print("\nStep 5: Plotting SNR vs. delta broken down by metric and dataset...")
-    plot_snr_breakdown(plot_df, output_dir)
+    # print("\nStep 5: Plotting SNR vs. delta broken down by metric and dataset...")
+    # plot_snr_breakdown(plot_df, output_dir)
 
-    print("\nStep 6: Plotting all predictors × metrics (all points)...")
-    all_results = plot_and_analyze(plot_df, output_dir)
+    # print("\nStep 6: Plotting all predictors × metrics (all points)...")
+    # all_results = plot_and_analyze(plot_df, output_dir)
 
-    print("\nStep 7: Plotting extremes (top 15 + bottom 15 per metric)...")
-    ext_results = plot_extremes(plot_df, output_dir, n=15)
+    # print("\nStep 7: Plotting extremes (top 15 + bottom 15 per metric)...")
+    # ext_results = plot_extremes(plot_df, output_dir, n=15)
 
     print("\nStep 8: Computing IM metric variance for all datasets...")
-    variance_df = compute_all_im_metric_variances(DATASETS, n_samples=100)
+    variance_df = compute_all_im_metric_variances(DATASETS, n_samples=5)
     if len(variance_df) > 0:
         print(f"  Computed variance for {len(variance_df)} (dataset, axis, budget, metric) combinations")
 
@@ -779,7 +898,19 @@ def main(results_dir=RESULTS_DIR):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--results-dir", default=RESULTS_DIR)
+    parser = argparse.ArgumentParser(
+        description="Predictors of Estimation Error Improvement Analysis",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Target method strategies:
+  metric_matched                Use per-metric methods (metric_matched_icc, metric_matched_alpha, etc.)
+  variance_matched_weighted_.9  Use this fixed method for all metrics
+  <any_other_string>            Use that specific method name for all metrics
+        """
+    )
+    parser.add_argument("--results-dir", default=DEFAULT_RESULTS_DIR,
+                        help="Root results directory (default: %(default)s)")
+    parser.add_argument("--target-method", default=TARGET_METHOD_STRATEGY,
+                        help="Target method strategy (default: %(default)s)")
     args = parser.parse_args()
-    main(results_dir=args.results_dir)
+    main(results_dir=args.results_dir, target_method_strategy=args.target_method)

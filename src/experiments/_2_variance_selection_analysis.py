@@ -14,6 +14,8 @@ import multiprocessing as mp
 from functools import partial
 import numpy as np
 import pandas as pd
+import warnings
+warnings.filterwarnings("ignore")
 
 from src.utils.data_loading import load_judge_scores
 from src.utils.reliability_metrics import (
@@ -49,18 +51,19 @@ from src.utils.plotting import plot_all_results, load_results_dataframes, save_p
 # Set random seed for reproducibility
 np.random.seed(42)
 
+SEED = 52
 # -------------------------
 # CONFIGURATION (defaults)
 # -------------------------
-DEFAULT_N_BOOTSTRAP_SAMPLES = 20
+DEFAULT_N_BOOTSTRAP_SAMPLES = 10
 DEFAULT_N_CANDIDATE_SUBSETS = 20
 DEFAULT_TOTAL_ANNOTATIONS = 300
-DEFAULT_DATASET = "medval"
-DEFAULT_MODEL_NAMES = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "deepseek-r1", "gemini-2.5-pro"] #["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"] #["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "deepseek-r1", "gemini-2.5-pro"]
+DEFAULT_DATASET = "hanna"
+DEFAULT_MODEL_NAMES = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"] #["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "deepseek-r1", "gemini-2.5-pro"]
 DEFAULT_TARGET_MODELS = None   # None → same as model_names
 DEFAULT_ENSEMBLE_MODELS = None #["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"] #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct") #("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro") #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")   # None → same as model_names
 DEFAULT_DATA_DIR = "data/judge_scores"
-DEFAULT_PLOTS_DIR = f"results/05_02_VM_{DEFAULT_DATASET}_alyssa_20_pairwise_average"
+DEFAULT_PLOTS_DIR = f"results/05_03_VM_{DEFAULT_DATASET}_small_20"
 DEFAULT_COMPARISON_MODE = "pairwise_average"
 # ONLINE_ACQUISITION=True  → cumulative/incremental selection: IDs chosen at budget k are
 #                            locked in and carried forward to budget k+n (simulates a real
@@ -638,7 +641,8 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
     updated_selected_per_trial = dict(prev_selected_per_trial)
     sampled_ids_list=[]
     for trial_idx in range(actual_trials):
-        seed = 42 + trial_idx
+        print(trial_idx)
+        seed = SEED + trial_idx
 
         # IDs locked in from prior budget levels for this trial (online mode only).
         if online_acquisition:
@@ -1187,14 +1191,14 @@ def main():
     n_workers = min(len(axis_jobs), os.cpu_count() or 1)
     print(f"\nRunning {len(axis_jobs)} axes across {n_workers} parallel workers...")
 
-    # if n_workers > 1:
-    #     # Use fork-based pool so worker processes inherit all module-level globals
-    #     # (COMPARISON_MODE, ONLINE_ACQUISITION, N_BOOTSTRAP_SAMPLES, etc.).
-    #     ctx = mp.get_context("fork")
-    #     with ctx.Pool(processes=n_workers) as pool:
-    #         axis_results = pool.map(_run_axis_worker, axis_jobs)
-    # else:
-    axis_results = [_run_axis_worker(job) for job in axis_jobs]
+    if n_workers > 1:
+        # Use fork-based pool so worker processes inherit all module-level globals
+        # (COMPARISON_MODE, ONLINE_ACQUISITION, N_BOOTSTRAP_SAMPLES, etc.).
+        ctx = mp.get_context("fork")
+        with ctx.Pool(processes=n_workers) as pool:
+            axis_results = pool.map(_run_axis_worker, axis_jobs)
+    else:
+        axis_results = [_run_axis_worker(job) for job in axis_jobs]
     results = axis_results[0][1]
     icc_results_by_axis = {}
     alpha_results_by_axis = {}
