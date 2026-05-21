@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 
 BEST= "/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_alyssa_40_pairwise_average"
 DEFAULT_RESULTS_DIR = "/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_alyssa_40_pairwise_average" #"/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_small_20"
-OUTPUT_PATH = f"{DEFAULT_RESULTS_DIR}/estimation_error_plots"
+OUTPUT_PATH = f"{DEFAULT_RESULTS_DIR}/estimation_error_plots_0521"
 SPLIT_ON = "alyssa"  # Used to identify where to inject dataset names in the path template
 # Base methods always included (resolved per-metric below for metric_matched)
 BASE_METHODS = [
@@ -130,6 +130,88 @@ def compute_bootstrap_cis(df, n_bootstrap=1000, seed=42):
     return pd.DataFrame(records)
 
 
+def compute_relative_improvement(df, metric_matched_method, n_bootstrap=1000, seed=42):
+    """
+    Calculate the average relative improvement of metric_matched over random with 95% CI.
+
+    For each budget point:
+        - Calculate average estimation error for random
+        - Calculate average estimation error for metric_matched
+        - Compute relative improvement: (random_error - metric_error) / random_error
+
+    Returns a dict with 'mean', 'ci_lower', and 'ci_upper' for the average relative improvement,
+    or None if data is missing.
+    """
+    if "random" not in df["method"].values or metric_matched_method not in df["method"].values:
+        return None
+
+    budgets = sorted(df["budget"].unique())
+
+    # Collect all individual error pairs for bootstrap resampling
+    random_errors_by_budget = []
+    metric_errors_by_budget = []
+
+    for budget in budgets:
+        random_errors = df[(df["method"] == "random") & (df["budget"] == budget)]["estimation_error"].values
+        metric_errors = df[(df["method"] == metric_matched_method) & (df["budget"] == budget)]["estimation_error"].values
+
+        # Clip errors between 0 and 2 (same as in compute_bootstrap_cis)
+        random_errors = np.clip(random_errors, 0, 2)
+        metric_errors = np.clip(metric_errors, 0, 2)
+
+        if len(random_errors) == 0 or len(metric_errors) == 0:
+            continue
+
+        random_errors_by_budget.append(random_errors)
+        metric_errors_by_budget.append(metric_errors)
+
+    if len(random_errors_by_budget) == 0:
+        return None
+
+    # Compute observed mean relative improvement
+    relative_improvements = []
+    for random_errors, metric_errors in zip(random_errors_by_budget, metric_errors_by_budget):
+        random_mean = random_errors.mean()
+        metric_mean = metric_errors.mean()
+        if random_mean > 0:
+            rel_improvement = (random_mean - metric_mean) / random_mean
+            relative_improvements.append(rel_improvement)
+
+    if len(relative_improvements) == 0:
+        return None
+
+    observed_mean = np.mean(relative_improvements)
+
+    # Bootstrap confidence intervals
+    rng = np.random.default_rng(seed)
+    bootstrap_means = []
+
+    for _ in range(n_bootstrap):
+        boot_relative_improvements = []
+        for random_errors, metric_errors in zip(random_errors_by_budget, metric_errors_by_budget):
+            # Resample with replacement for each budget
+            boot_random = rng.choice(random_errors, size=len(random_errors), replace=True)
+            boot_metric = rng.choice(metric_errors, size=len(metric_errors), replace=True)
+
+            boot_random_mean = boot_random.mean()
+            boot_metric_mean = boot_metric.mean()
+
+            if boot_random_mean > 0:
+                boot_rel_improvement = (boot_random_mean - boot_metric_mean) / boot_random_mean
+                boot_relative_improvements.append(boot_rel_improvement)
+
+        if len(boot_relative_improvements) > 0:
+            bootstrap_means.append(np.mean(boot_relative_improvements))
+
+    if len(bootstrap_means) == 0:
+        return {"mean": observed_mean, "ci_lower": observed_mean, "ci_upper": observed_mean}
+
+    ci_lower = np.percentile(bootstrap_means, 2.5)
+    ci_upper = np.percentile(bootstrap_means, 97.5)
+
+    return {"mean": observed_mean, "ci_lower": ci_lower, "ci_upper": ci_upper}
+
+
 def plot_metric(all_df, metric, methods, output_dir, datasets_used, dataset_filter=None):
     df = all_df[all_df["method"].isin(methods)].copy()
     if dataset_filter:
@@ -201,6 +283,9 @@ def main():
         sys.exit(1)
     print(f"Found datasets: {[d[0] for d in datasets]}")
 
+    # Store relative improvements for summary
+    relative_improvements = {}
+
     for metric in ["icc", "alpha", "rho", "tau", "mse"]:
         print(f"\nProcessing: {metric}")
         frames = []
@@ -227,6 +312,19 @@ def main():
             print(f"  Methods not found in data (skipped): {missing}")
         print(f"  Plotting methods: {methods}")
 
+        # Compute relative improvement for metric_matched vs random
+        if mm:
+            rel_improvement_result = compute_relative_improvement(all_df, mm)
+            if rel_improvement_result is not None:
+                relative_improvements[metric] = rel_improvement_result
+                mean = rel_improvement_result["mean"]
+                ci_lower = rel_improvement_result["ci_lower"]
+                ci_upper = rel_improvement_result["ci_upper"]
+                print(f"  Average relative improvement over random: {mean:.4f} ({mean*100:.2f}%) "
+                      f"[95% CI: {ci_lower:.4f} to {ci_upper:.4f}]")
+            else:
+                print(f"  Could not compute relative improvement (missing data)")
+
         # Plot averaged over all datasets
         plot_metric(all_df, metric, methods, output_dir, [d[0] for d in datasets])
 
@@ -236,6 +334,21 @@ def main():
         #     plot_metric(all_df, metric, methods, output_dir, [d[0] for d in datasets], dataset_filter="hanna")
 
     print(f"\nAll plots saved to: {output_dir}")
+
+    # Print summary of relative improvements
+    if relative_improvements:
+        print("\n" + "="*80)
+        print("SUMMARY: Average Relative Improvement over Random with 95% CI")
+        print("="*80)
+        for metric, result in relative_improvements.items():
+            mean = result["mean"]
+            ci_lower = result["ci_lower"]
+            ci_upper = result["ci_upper"]
+            print(f"{metric.upper():8s}: {mean:7.4f} ({mean*100:6.2f}%) "
+                  f"[95% CI: {ci_lower:.4f} to {ci_upper:.4f}]")
+        print("="*80)
+
+    return relative_improvements
 
 
 if __name__ == "__main__":

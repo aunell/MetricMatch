@@ -2,12 +2,14 @@ import argparse
 import os
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 DEFAULT_RESULTS_DIR = "/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_alyssa_40_pairwise_average"
-OUTPUT_PATH = "/Users/alyssaunell/code/SmartSample_local/results05_03_VM_alyssa_40_pairwise_average/win_rates_random_imc"
+OUTPUT_PATH = "/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_alyssa_40_pairwise_average/win_rates_0521"
 DATASETS = ["hanna", "medval", "mslr", "summeval"]
 METRICS = ["alpha", "icc", "rho", "tau", "mse"]
-BASELINE = "random_imc"
+BASELINE = "random"
 BUDGETS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
 THRESHOLDS = [.6, .7, .8]
 SPLIT_ON = "alyssa"  # Part of the path to split on when injecting dataset names
@@ -570,6 +572,61 @@ def compute_threshold_summary(thr_dir, avg_type="macro"):
 
 
 # ---------------------------------------------------------------------------
+# Plotting
+# ---------------------------------------------------------------------------
+
+def plot_win_rates(df, title, output_path, metrics_to_plot=None):
+    """
+    Plot win rates across budgets for each metric.
+
+    Args:
+        df: DataFrame with budget as index and metrics as columns
+        title: Title for the plot
+        output_path: Path to save the plot
+        metrics_to_plot: List of metrics to plot (default: alpha, icc, rho, tau)
+    """
+    # Default to plotting alpha, icc, rho, tau (excluding mse)
+    if metrics_to_plot is None:
+        metrics_to_plot = ["alpha", "icc", "rho", "tau"]
+
+    # Filter to only available metrics
+    metrics_to_plot = [m for m in metrics_to_plot if m in df.columns]
+
+    if not metrics_to_plot:
+        print(f"  No metrics available for plotting in {title}")
+        return
+
+    # Remove 'average' row if present for plotting
+    plot_df = df.copy()
+    if "average" in plot_df.index:
+        plot_df = plot_df.drop("average")
+
+    # Create figure
+    plt.figure(figsize=(10, 6))
+
+    # Plot each metric as a line
+    for metric in metrics_to_plot:
+        plt.plot(plot_df.index, plot_df[metric], marker='o', label=metric, linewidth=2)
+
+    # Add horizontal line at 0.5 (tie with random)
+    plt.axhline(y=0.5, color='gray', linestyle='--', linewidth=1.5, alpha=0.7, label='Tie with random')
+
+    # Formatting
+    plt.xlabel('Budget', fontsize=12)
+    plt.ylabel('Win Rate', fontsize=12)
+    plt.title(title, fontsize=14, fontweight='bold')
+    plt.ylim(0.4, 1.0)
+    plt.legend(fontsize=10, loc='best')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    # Save plot
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"Saved plot: {output_path}")
+    plt.close()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -604,26 +661,58 @@ def main(results_dir=DEFAULT_RESULTS_DIR, target_method_strategy=TARGET_METHOD_S
     else:
         print("\n--- Macro estimation win rates ---")
         macro_merged = _macro_merge(est_df, target_method_strategy)
-        save(_estimation_pivot(macro_merged), os.path.join(est_dir, "macro_win_rates_estimation.csv"))
+        macro_pivot = _estimation_pivot(macro_merged)
+        save(macro_pivot, os.path.join(est_dir, "macro_win_rates_estimation.csv"))
+
+        # Plot macro estimation win rates
+        plot_win_rates(
+            macro_pivot,
+            "Macro Estimation Win Rates (All Datasets)",
+            os.path.join(est_dir, "macro_win_rates_estimation.png")
+        )
+
         for dataset in DATASETS:
+            dataset_pivot = _estimation_pivot(macro_merged[macro_merged["dataset"] == dataset])
             save(
-                _estimation_pivot(macro_merged[macro_merged["dataset"] == dataset]),
+                dataset_pivot,
                 os.path.join(est_dir, f"macro_win_rates_estimation_{dataset}.csv"),
             )
-        
+            # Plot per-dataset macro estimation win rates
+            plot_win_rates(
+                dataset_pivot,
+                f"Macro Estimation Win Rates ({dataset.capitalize()})",
+                os.path.join(est_dir, f"macro_win_rates_estimation_{dataset}.png")
+            )
+
         # Save dataset-axis level win rates for macro estimation
         dataset_axis_macro = compute_dataset_axis_win_rates(macro_merged, "estimation")
         save(dataset_axis_macro, os.path.join(est_dir, "dataset_results_estimation_error_win_rate_macro.csv"))
 
         print("\n--- Micro estimation win rates ---")
         micro_merged = _micro_merge(est_df, target_method_strategy)
-        save(_estimation_pivot(micro_merged), os.path.join(est_dir, "micro_win_rates_estimation.csv"))
+        micro_pivot = _estimation_pivot(micro_merged)
+        save(micro_pivot, os.path.join(est_dir, "micro_win_rates_estimation.csv"))
+
+        # Plot micro estimation win rates
+        plot_win_rates(
+            micro_pivot,
+            "Micro Estimation Win Rates (All Datasets)",
+            os.path.join(est_dir, "micro_win_rates_estimation.png")
+        )
+
         for dataset in DATASETS:
+            dataset_pivot = _estimation_pivot(micro_merged[micro_merged["dataset"] == dataset])
             save(
-                _estimation_pivot(micro_merged[micro_merged["dataset"] == dataset]),
+                dataset_pivot,
                 os.path.join(est_dir, f"micro_win_rates_estimation_{dataset}.csv"),
             )
-        
+            # Plot per-dataset micro estimation win rates
+            plot_win_rates(
+                dataset_pivot,
+                f"Micro Estimation Win Rates ({dataset.capitalize()})",
+                os.path.join(est_dir, f"micro_win_rates_estimation_{dataset}.png")
+            )
+
         # Save dataset-axis level win rates for micro estimation
         dataset_axis_micro = compute_dataset_axis_win_rates(micro_merged, "estimation")
         save(dataset_axis_micro, os.path.join(est_dir, "dataset_results_estimation_error_win_rate_micro.csv"))
@@ -654,25 +743,57 @@ def main(results_dir=DEFAULT_RESULTS_DIR, target_method_strategy=TARGET_METHOD_S
             micro_merged = _threshold_micro_merge(thr_raw, threshold, target_method_strategy)
 
             print(f"\n--- Macro threshold win rates ({t_str}) ---")
-            save(_threshold_pivot(macro_merged), os.path.join(thr_dir, f"macro_win_rates_threshold_{t_str}.csv"))
+            macro_pivot = _threshold_pivot(macro_merged)
+            save(macro_pivot, os.path.join(thr_dir, f"macro_win_rates_threshold_{t_str}.csv"))
+
+            # Plot macro threshold win rates
+            plot_win_rates(
+                macro_pivot,
+                f"Macro Threshold Win Rates {t_str} (All Datasets)",
+                os.path.join(thr_dir, f"macro_win_rates_threshold_{t_str}.png")
+            )
+
             for dataset in DATASETS:
+                dataset_pivot = _threshold_pivot(macro_merged[macro_merged["dataset"] == dataset])
                 save(
-                    _threshold_pivot(macro_merged[macro_merged["dataset"] == dataset]),
+                    dataset_pivot,
                     os.path.join(thr_dir, f"macro_win_rates_threshold_{t_str}_{dataset}.csv"),
                 )
-            
+                # Plot per-dataset macro threshold win rates
+                plot_win_rates(
+                    dataset_pivot,
+                    f"Macro Threshold Win Rates {t_str} ({dataset.capitalize()})",
+                    os.path.join(thr_dir, f"macro_win_rates_threshold_{t_str}_{dataset}.png")
+                )
+
             # Save dataset-axis level win rates for macro threshold
             dataset_axis_macro = compute_dataset_axis_win_rates(macro_merged, f"threshold_{t_str}")
             save(dataset_axis_macro, os.path.join(thr_dir, f"dataset_results_threshold_win_rate_{t_str}_macro.csv"))
 
             print(f"\n--- Micro threshold win rates ({t_str}) ---")
-            save(_threshold_pivot(micro_merged), os.path.join(thr_dir, f"micro_win_rates_threshold_{t_str}.csv"))
+            micro_pivot = _threshold_pivot(micro_merged)
+            save(micro_pivot, os.path.join(thr_dir, f"micro_win_rates_threshold_{t_str}.csv"))
+
+            # Plot micro threshold win rates
+            plot_win_rates(
+                micro_pivot,
+                f"Micro Threshold Win Rates {t_str} (All Datasets)",
+                os.path.join(thr_dir, f"micro_win_rates_threshold_{t_str}.png")
+            )
+
             for dataset in DATASETS:
+                dataset_pivot = _threshold_pivot(micro_merged[micro_merged["dataset"] == dataset])
                 save(
-                    _threshold_pivot(micro_merged[micro_merged["dataset"] == dataset]),
+                    dataset_pivot,
                     os.path.join(thr_dir, f"micro_win_rates_threshold_{t_str}_{dataset}.csv"),
                 )
-            
+                # Plot per-dataset micro threshold win rates
+                plot_win_rates(
+                    dataset_pivot,
+                    f"Micro Threshold Win Rates {t_str} ({dataset.capitalize()})",
+                    os.path.join(thr_dir, f"micro_win_rates_threshold_{t_str}_{dataset}.png")
+                )
+
             # Save dataset-axis level win rates for micro threshold
             dataset_axis_micro = compute_dataset_axis_win_rates(micro_merged, f"threshold_{t_str}")
             save(dataset_axis_micro, os.path.join(thr_dir, f"dataset_results_threshold_win_rate_{t_str}_micro.csv"))
@@ -684,11 +805,23 @@ def main(results_dir=DEFAULT_RESULTS_DIR, target_method_strategy=TARGET_METHOD_S
         macro_summary = compute_threshold_summary(thr_dir, avg_type="macro")
         if macro_summary is not None:
             save(macro_summary, os.path.join(thr_dir, "macro_win_rates_threshold_summary.csv"))
-        
+            # Plot macro threshold summary
+            plot_win_rates(
+                macro_summary,
+                "Macro Threshold Win Rates Summary (Avg Across Thresholds)",
+                os.path.join(thr_dir, "macro_win_rates_threshold_summary.png")
+            )
+
         print("\n--- Micro threshold summary ---")
         micro_summary = compute_threshold_summary(thr_dir, avg_type="micro")
         if micro_summary is not None:
             save(micro_summary, os.path.join(thr_dir, "micro_win_rates_threshold_summary.csv"))
+            # Plot micro threshold summary
+            plot_win_rates(
+                micro_summary,
+                "Micro Threshold Win Rates Summary (Avg Across Thresholds)",
+                os.path.join(thr_dir, "micro_win_rates_threshold_summary.png")
+            )
         
         # -- Compute dataset-axis level win rates averaged across thresholds --
         print("\n--- Computing dataset-axis threshold summary (average across thresholds) ---")
