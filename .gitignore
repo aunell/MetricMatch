@@ -9,3 +9,4 @@ pyproject.toml
 *.out
 *.sh
 deprecated_experiments/*
+deprecated_merge/
