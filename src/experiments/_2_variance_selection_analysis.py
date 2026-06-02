@@ -14,28 +14,45 @@ import multiprocessing as mp
 from functools import partial
 import numpy as np
 import pandas as pd
+import warnings
+warnings.filterwarnings("ignore")
 
 from src.utils.data_loading import load_judge_scores
 from src.utils.reliability_metrics import (
     compute_ms_components,
-    compute_icc_pingouin,
-    compute_krippendorff_alpha,
+    # compute_icc_pingouin,
+    # compute_krippendorff_alpha,
     compute_spearman_rho,
     compute_kendall_tau,
     compute_reliability_ppi_corrected,
     compute_pairwise_mean_squared_error,
+)
+
+from src.utils.match_metrics import (
+    compute_msb,
+    compute_msre,
+    compute_weighted_msb_msre,
+    compute_mean_sq_err,
+    compute_icc_pingouin,
+    compute_krippendorff_alpha,
+    compute_spearman,
+    compute_pearson,
+    # compute_kendall_tau
 )
 from src.utils.selection_strategies import (
     variance_matched_selection_ms,
     metric_matched_selection,
     max_expand_selection,
     stratified_target_selection,
+    pairwise_metric_matched_selection,
+    pairwise_variance_matched_selection_ms
 )
-from src.utils.match_metrics import compute_mean_sq_err_multi, compute_mean_sq_err
+
 from src.utils.plotting import plot_all_results, load_results_dataframes, save_predictor_inputs
 # Set random seed for reproducibility
 np.random.seed(42)
 
+SEED = 52
 # -------------------------
 # CONFIGURATION (defaults)
 # -------------------------
@@ -43,19 +60,18 @@ DEFAULT_N_BOOTSTRAP_SAMPLES = 10
 DEFAULT_N_CANDIDATE_SUBSETS = 20
 DEFAULT_TOTAL_ANNOTATIONS = 300
 DEFAULT_DATASET = "hanna"
-DEFAULT_MODEL_NAMES = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
-# ["claude-3.5-sonnet", "gpt-4.1", "gpt-5"]
+DEFAULT_MODEL_NAMES = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"] #["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "deepseek-r1", "gemini-2.5-pro"]
 DEFAULT_TARGET_MODELS = None   # None → same as model_names
-DEFAULT_ENSEMBLE_MODELS = None  # None → same as model_names
+DEFAULT_ENSEMBLE_MODELS = None #["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"] #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct") #("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro") #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")   # None → same as model_names
 DEFAULT_DATA_DIR = "data/judge_scores"
-DEFAULT_PLOTS_DIR = "results/02_18_large"
-DEFAULT_COMPARISON_MODE = "average_pairwise"
+DEFAULT_PLOTS_DIR = f"results/05_03_VM_{DEFAULT_DATASET}_small_20"
+DEFAULT_COMPARISON_MODE = "pairwise_average"
 # ONLINE_ACQUISITION=True  → cumulative/incremental selection: IDs chosen at budget k are
 #                            locked in and carried forward to budget k+n (simulates a real
 #                            annotation session where labels already collected are reused).
 # ONLINE_ACQUISITION=False → batch selection: each budget level independently samples k
 #                            items from scratch without any carryover.
-DEFAULT_ONLINE_ACQUISITION = True
+DEFAULT_ONLINE_ACQUISITION = False
 DEFAULT_STEP_SIZE = 5
 DEFAULT_MAX_BUDGET = 50
 
@@ -67,43 +83,39 @@ DEFAULT_MAX_BUDGET = 50
 #               "_tc" and "_imc" can be combined (e.g. "variance_matched_combined_tc_imc").
 SAMPLING_STRATEGIES = [
     "random",
-    "random_imc",
-    "stratified",
-    "variance_matched_combined",
+    # "random_imc",
+    # "stratified",
+    # "variance_matched_combined",
     # "variance_matched_combined_imc",
     # "variance_matched_combined_tc",
     # "variance_matched_combined_tc_imc",
-    "variance_matched_msb",
+    # "variance_matched_msb",
     # "variance_matched_msb_imc",
     # "variance_matched_msb_tc",
     # "variance_matched_msb_tc_imc",
-    "variance_matched_weighted_.2",
+    # "variance_matched_weighted_.2",
     # "variance_matched_weighted_.2_imc",
-    "variance_matched_weighted_.5",
+    # "variance_matched_weighted_.5",
     # "variance_matched_weighted_.5_imc",
-    "variance_matched_weighted_.7",
+    # "variance_matched_weighted_.7",
     # "variance_matched_weighted_.7_imc",
-    "variance_matched_weighted_.9",
+    # "variance_matched_weighted_.9",
     # "variance_matched_weighted_.9_imc",
     # "proxy_oracle",
     # "proxy_oracle_imc",
-    "oracle_msb_mse",
-    "oracle_msb",
-    "oracle_mse",
-    "oracle_weighted_.2",
-    "oracle_weighted_.5",
-    "oracle_weighted_.7",
-    "oracle_weighted_.9",
-    "oracle_icc",
-    "oracle_alpha",
-    "oracle_mean_squared_error",
-    "oracle_rho",
-    "oracle_tau",
-    "metric_matched_icc",
+    # "oracle_msb_mse",
+    # "oracle_msb",
+    # "oracle_mse",
+    # "oracle_icc",
+    # "oracle_alpha",
+    # "oracle_mean_squared_error",
+    # "oracle_rho",
+    # "oracle_tau",
+    "metric_matched_icc", 
     "metric_matched_alpha",
-    "metric_matched_mean_squared_error",
     "metric_matched_rho",
     "metric_matched_tau",
+    # "metric_matched_mse",
 ]
 
 EVALUATION_AXES = {
@@ -251,15 +263,14 @@ def compute_variance_alignment(df, target_models, ensemble_models, mode="aggrega
 
             im_icc_obj = compute_ms_components(im_df)
             im_msb = im_icc_obj.msb
-            im_mse = im_icc_obj.mse
+            im_mse = im_icc_obj.mse  # ANOVA MSE
             im_msb_list.append(im_msb)
             im_mse_list.append(im_mse)
 
-            hm_icc_obj = compute_ms_components(
-                df[df["model_name"].isin([m, "original"])]
-            )
+            hm_df = df[df["model_name"].isin([m, "original"])]
+            hm_icc_obj = compute_ms_components(hm_df)
             hm_msb = hm_icc_obj.msb
-            hm_mse = hm_icc_obj.mse
+            hm_mse = hm_icc_obj.mse  # ANOVA MSE
             hm_msb_list.append(hm_msb)
             hm_mse_list.append(hm_mse)
 
@@ -293,18 +304,21 @@ def compute_variance_alignment(df, target_models, ensemble_models, mode="aggrega
             if len(im_pair_df) > 0:
                 im_icc_obj = compute_ms_components(im_pair_df)
                 im_msb = im_icc_obj.msb
-                im_mse = im_icc_obj.mse
+                im_mse = im_icc_obj.mse  # ANOVA MSE
             else:
                 im_msb, im_mse = np.nan, np.nan
             im_msb_list.append(im_msb)
             im_mse_list.append(im_mse)
 
             # Human-model: this model vs human
-            hm_icc_obj = compute_ms_components(
-                df[df["model_name"].isin([m, "original"])]
-            )
-            hm_msb = hm_icc_obj.msb
-            hm_mse = hm_icc_obj.mse
+            hm_df = df[df["model_name"].isin([m, "original"])]
+            hm_icc_obj = compute_ms_components(hm_df)
+            try:
+                hm_msb = hm_icc_obj.msb
+                hm_mse = hm_icc_obj.mse  # ANOVA MSE
+            except Exception as e:
+                print(f"Error computing HM MS components for model {m}: {e}")
+                hm_msb, hm_mse = np.nan, np.nan
             hm_msb_list.append(hm_msb)
             hm_mse_list.append(hm_mse)
 
@@ -343,7 +357,7 @@ def compute_variance_alignment(df, target_models, ensemble_models, mode="aggrega
                 pair_icc_obj = compute_ms_components(pair_df)
                 if pair_icc_obj is not None:
                     pair_msb_list.append(pair_icc_obj.msb)
-                    pair_mse_list.append(pair_icc_obj.mse)
+                    pair_mse_list.append(pair_icc_obj.mse)  # ANOVA MSE
 
             im_msb = np.nanmean(pair_msb_list) if pair_msb_list else np.nan
             im_mse = np.nanmean(pair_mse_list) if pair_mse_list else np.nan
@@ -351,11 +365,10 @@ def compute_variance_alignment(df, target_models, ensemble_models, mode="aggrega
             im_mse_list.append(im_mse)
 
             # Human-model: this model vs human
-            hm_icc_obj = compute_ms_components(
-                df[df["model_name"].isin([m, "original"])]
-            )
+            hm_df = df[df["model_name"].isin([m, "original"])]
+            hm_icc_obj = compute_ms_components(hm_df)
             hm_msb = hm_icc_obj.msb
-            hm_mse = hm_icc_obj.mse
+            hm_mse = hm_icc_obj.mse  # ANOVA MSE
             hm_msb_list.append(hm_msb)
             hm_mse_list.append(hm_mse)
 
@@ -411,12 +424,33 @@ def _build_im_pairwise_df(df, model, model_names):
         .reset_index()
     )
     avg_rows["model_name"] = "avg_other"
-
-    return pd.concat(
+    ret = pd.concat(
         [model_rows[["text_id", "model_name", "evaluation_score"]],
          avg_rows[["text_id", "model_name", "evaluation_score"]]],
         ignore_index=True
     )
+    # Filter to only the models we care about
+    im_subset = df[df["model_name"].isin(model_names)]
+
+    # Count how many models each text_id has
+    text_id_model_counts = im_subset.groupby("text_id")["model_name"].nunique()
+
+    # Find text_ids that have ALL models
+    shared_text_ids = text_id_model_counts[text_id_model_counts == len(model_names)].index
+
+    # Count of shared text_ids
+    num_shared = len(shared_text_ids)
+
+    print(f"Number of models required: {len(model_names)}")
+    print(f"Model names: {model_names}")
+    print(f"Number of text_ids with ALL models: {num_shared}")
+    print(f"Total text_ids in df: {df['text_id'].nunique()}")
+
+    # Optional: See the distribution of how many models each text_id has
+    print("\nDistribution of model counts per text_id:")
+    print(text_id_model_counts.value_counts().sort_index())
+    # breakpoint()
+    return ret
 
 
 def _parse_strategy(strategy_name):
@@ -487,13 +521,13 @@ _ORACLE_WEIGHTED_MSB_WEIGHTS = {
 # Each strategy matches on its respective metric — upper bound for that metric's estimation.
 # oracle_icc                – matches on ICC
 # oracle_alpha              – matches on Krippendorff's alpha
-# oracle_mean_squared_error – matches on MSE (the estimation target, not the ANOVA component)
+# oracle_mean_squared_error – matches on MSRE (Mean Squared Residual Error, not ANOVA MSE)
 # oracle_rho                – matches on Spearman rho
 # oracle_tau                – matches on Kendall tau
 _ORACLE_TARGET_BASES = {
     "oracle_icc":                ("icc",   "true_icc"),
     "oracle_alpha":              ("alpha", "true_alpha"),
-    "oracle_mean_squared_error": ("mean_squared_error", "true_mean_squared_error"),
+    "oracle_mean_squared_error": ("msre",  "true_msre"),
     "oracle_rho":                ("rho",   "true_rho"),
     "oracle_tau":                ("tau",   "true_tau"),
 }
@@ -508,25 +542,24 @@ _TARGET_BC_BASES = {"variance_matched_combined_tc", "variance_matched_msb_tc"}
 _METRIC_MATCH_TARGET = {
     "metric_matched_icc":        "icc",
     "metric_matched_alpha":      "alpha",
-    "metric_matched_mean_squared_error": "mean_squared_error",
     "metric_matched_rho":        "rho",
     "metric_matched_tau":        "tau",
+    "metric_matched_mse":        "msre",
     "oracle_icc":                "icc",
     "oracle_alpha":              "alpha",
-    "oracle_mean_squared_error": "mean_squared_error",
+    "oracle_mean_squared_error": "msre",
     "oracle_rho":                "rho",
     "oracle_tau":                "tau",
 }
 
 
 def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials,
-                          hm_full_df, im_full_df, model, true_icc, true_alpha, true_mean_squared_error,
+                          hm_full_df, im_full_df, im_pair_df, model, true_icc, true_alpha, true_msre,
                           true_rho=None, true_tau=None,
                           im_msb_target=None, im_mse_target=None,
                           im_mean_squared_error_target=None,
                           hm_msb_target=None, hm_mse_target=None,
-                          im_models=None, true_im_icc=None, true_im_alpha=None,
-                          true_im_rho=None, true_im_tau=None,
+                          im_models=None, true_im_icc=None, true_im_alpha=None, true_im_rho=None, true_im_tau=None, true_im_msre=None,
                           past_im_msb_obs=None, past_im_mse_obs=None,
                           past_hm_msb_obs=None, past_hm_mse_obs=None,
                           prev_selected_per_trial=None,
@@ -591,10 +624,12 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
     if fast_ms_fn is None:
         fast_ms_fn = compute_ms_components
 
-    im_standalone_mse = (
-        compute_mean_sq_err_multi(im_full_df, models=im_models)
-        if base_strategy == "metric_matched_mean_squared_error" else None
-    )
+    # im_standalone_msre = (
+    #     compute_mean_sq_err(im_full_df) 
+    #     if base_strategy == "metric_matched_mse" else None
+    # )
+    # if base_strategy == "metric_matched_mse":
+    #     breakpoint()
 
     target_scores_for_stratified = (
         hm_full_df[hm_full_df["model_name"] == model]
@@ -605,9 +640,9 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
     needs_ppi = any(imc for _, imc in [_parse_strategy(s) for s in strategy_variants])
     needs_plain = any(not imc for _, imc in [_parse_strategy(s) for s in strategy_variants])
 
-    results = {s: {"icc_errors": [], "alpha_errors": [], "mean_squared_error_errors": [],
+    results = {s: {"icc_errors": [], "alpha_errors": [], "msre_errors": [],
                    "rho_errors": [], "tau_errors": [],
-                   "icc_preds": [], "alpha_preds": [],
+                   "icc_preds": [], "alpha_preds": [], "msre_preds": [],
                    "rho_preds": [], "tau_preds": []} for s in strategy_variants}
 
     actual_trials = 1 if base_strategy == "max_expand" else n_trials
@@ -621,12 +656,14 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
 
     # Copy so we can update and return without mutating the caller's dict.
     updated_selected_per_trial = dict(prev_selected_per_trial)
-
+    sampled_ids_list=[]
     for trial_idx in range(actual_trials):
-        seed = 42 + trial_idx
+        print(trial_idx)
+        seed = SEED + trial_idx
 
         # IDs locked in from prior budget levels for this trial (online mode only).
         if online_acquisition:
+            breakpoint()
             forced_ids = updated_selected_per_trial.get(trial_idx, np.array([], dtype=text_ids.dtype))
         else:
             forced_ids = np.array([], dtype=text_ids.dtype)
@@ -663,72 +700,129 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             effective_mse_target = im_mse_target
 
         # ── Sample once (only incremental IDs beyond forced_ids) ───────────────
+        # breakpoint()
         if base_strategy == "random":
             np.random.seed(seed)
-            available = np.setdiff1d(text_ids, forced_ids)
-            n_new = min(k - len(forced_ids), len(available))
-            if n_new > 0:
-                new_ids = np.random.choice(available, size=n_new, replace=False)
-                sampled_ids = np.concatenate([forced_ids, new_ids]) if len(forced_ids) > 0 else new_ids
-            else:
-                sampled_ids = forced_ids[:k]
+            # available = np.setdiff1d(text_ids, forced_ids)
+            # n_new = min(k - len(forced_ids), len(available))
+            # if n_new > 0:
+            sampled_ids = np.random.choice(text_ids, size=min(k, len(text_ids)), replace=False)
+            # breakpoint()
+                # sampled_ids = np.concatenate([forced_ids, new_ids]) if len(forced_ids) > 0 else new_ids
+            # else:
+                # sampled_ids = forced_ids[:k]
+
         elif base_strategy == "stratified":
             sampled_ids = stratified_target_selection(
                 text_ids, k, target_scores_for_stratified, seed=seed, forced_ids=forced_ids
             )
         elif base_strategy in _SCORE_METHOD_MAP:
-            sampled_ids = variance_matched_selection_ms(
-                text_ids, k, im_full_df, effective_msb_target, effective_mse_target,
-                fast_ms_fn, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
-                score_method=_SCORE_METHOD_MAP[base_strategy],
-                msb_weight=_WEIGHTED_MSB_WEIGHTS.get(base_strategy, 0.5),
-                forced_ids=forced_ids
-            )
+            if COMPARISON_MODE == "pairwise_average":
+                sampled_ids = pairwise_variance_matched_selection_ms(
+                    text_ids, k, im_pair_df, effective_msb_target, effective_mse_target,
+                    fast_ms_fn, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
+                    score_method=_SCORE_METHOD_MAP[base_strategy],
+                    msb_weight=_WEIGHTED_MSB_WEIGHTS.get(base_strategy, 0.5),
+                    forced_ids=forced_ids, target_model=model
+                )
+            else:
+                sampled_ids = variance_matched_selection_ms(
+                    text_ids, k, im_full_df, effective_msb_target, effective_mse_target,
+                    fast_ms_fn, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
+                    score_method=_SCORE_METHOD_MAP[base_strategy],
+                    msb_weight=_WEIGHTED_MSB_WEIGHTS.get(base_strategy, 0.5),
+                    forced_ids=forced_ids
+                )
             if sampled_ids is None:
                 continue
         elif base_strategy == "metric_matched_icc":
-            sampled_ids = metric_matched_selection(
-                text_ids, k, im_full_df, true_im_icc, "icc",
-                fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
-                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
-                forced_ids=forced_ids
-            )
+            if COMPARISON_MODE == "pairwise_average":
+                sampled_ids = pairwise_metric_matched_selection(
+                    text_ids, k, im_pair_df, true_im_icc, "icc",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids, target_model=model,
+                    compute_rho_fn=compute_spearman_rho, compute_tau_fn=compute_kendall_tau
+                )
+            else:
+                sampled_ids = metric_matched_selection(
+                    text_ids, k, im_full_df, true_im_icc, "icc",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids
+                )
             if sampled_ids is None:
                 continue
         elif base_strategy == "metric_matched_alpha":
-            sampled_ids = metric_matched_selection(
-                text_ids, k, im_full_df, true_im_alpha, "alpha",
-                fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
-                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
-                forced_ids=forced_ids
-            )
-            if sampled_ids is None:
-                continue
-        elif base_strategy == "metric_matched_mean_squared_error":
-            sampled_ids = metric_matched_selection(
-                text_ids, k, im_full_df, im_standalone_mse, "mean_squared_error",
-                fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
-                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
-                forced_ids=forced_ids, target_model=model
-            )
+            if COMPARISON_MODE == "pairwise_average":
+                sampled_ids = pairwise_metric_matched_selection(
+                    text_ids, k, im_pair_df, true_im_alpha, "alpha",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids, target_model=model,
+                    compute_rho_fn=compute_spearman_rho, compute_tau_fn=compute_kendall_tau
+                )
+            else:
+                sampled_ids = metric_matched_selection(
+                    text_ids, k, im_full_df, true_im_alpha, "alpha",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids
+                )
             if sampled_ids is None:
                 continue
         elif base_strategy == "metric_matched_rho":
-            sampled_ids = metric_matched_selection(
-                text_ids, k, im_full_df, true_im_rho, "rho",
-                fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
-                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
-                forced_ids=forced_ids, compute_rho_fn=compute_spearman_rho
-            )
+            if COMPARISON_MODE == "pairwise_average":
+                sampled_ids = pairwise_metric_matched_selection(
+                    text_ids, k, im_pair_df, true_im_rho, "rho",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids, target_model=model,
+                    compute_rho_fn=compute_spearman_rho, compute_tau_fn=compute_kendall_tau
+                )
+            else:
+                sampled_ids = metric_matched_selection(
+                    text_ids, k, im_full_df, true_im_rho, "rho",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids, compute_rho_fn=compute_spearman_rho
+                )
             if sampled_ids is None:
                 continue
         elif base_strategy == "metric_matched_tau":
-            sampled_ids = metric_matched_selection(
-                text_ids, k, im_full_df, true_im_tau, "tau",
-                fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
-                seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
-                forced_ids=forced_ids, compute_tau_fn=compute_kendall_tau
-            )
+            if COMPARISON_MODE == "pairwise_average":
+                sampled_ids = pairwise_metric_matched_selection(
+                    text_ids, k, im_pair_df, true_im_tau, "tau",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids, target_model=model,
+                    compute_rho_fn=compute_spearman_rho, compute_tau_fn=compute_kendall_tau
+                )
+            else:
+                sampled_ids = metric_matched_selection(
+                    text_ids, k, im_full_df, true_im_tau, "tau",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids, compute_tau_fn=compute_kendall_tau
+                )
+            if sampled_ids is None:
+                continue
+        elif base_strategy == "metric_matched_mse":
+            if COMPARISON_MODE == "pairwise_average":
+                sampled_ids = pairwise_metric_matched_selection(
+                    text_ids, k, im_pair_df, true_im_msre, "mse",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids, target_model=model,
+                    compute_rho_fn=compute_spearman_rho, compute_tau_fn=compute_kendall_tau
+                )
+            else:
+                sampled_ids = metric_matched_selection(
+                    text_ids, k, im_full_df, true_im_msre, "mse",
+                    fast_ms_fn, compute_icc_pingouin, compute_krippendorff_alpha,
+                    seed=seed, n_candidates=N_CANDIDATE_SUBSETS, im_models=im_models,
+                    forced_ids=forced_ids
+                )
             if sampled_ids is None:
                 continue
         elif base_strategy in _PROXY_ORACLE_BASES:
@@ -759,7 +853,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             # True oracle for target metric: uses HM scores for both scoring and targeting.
             target_metric, target_attr = _ORACLE_TARGET_BASES[base_strategy]
             target_val = {"true_icc": true_icc, "true_alpha": true_alpha,
-                          "true_mean_squared_error": true_mean_squared_error, "true_rho": true_rho,
+                          "true_msre": true_msre, "true_rho": true_rho,
                           "true_tau": true_tau}[target_attr]
             sampled_ids = metric_matched_selection(
                 text_ids, k, hm_full_df, target_val, target_metric,
@@ -784,7 +878,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             updated_selected_per_trial[trial_idx] = np.asarray(sampled_ids)
 
         hm_sample = hm_full_df[hm_full_df["text_id"].isin(sampled_ids)]
-
+        sampled_ids_list.append(sampled_ids)
         # ── Observe IM and HM MS components on this subset ───────────────────
         im_sample = im_full_df[im_full_df["text_id"].isin(sampled_ids)]
         im_ms = fast_ms_fn(im_sample)
@@ -798,8 +892,8 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             new_hm_mse_obs.append(hm_ms.mse)
 
         # ── Compute each correction type exactly once ───────────────────────
-        plain_icc = plain_alpha = plain_rho = plain_tau = None
-        ppi_icc = ppi_alpha = ppi_rho = ppi_tau = None
+        plain_icc = plain_alpha = plain_rho = plain_tau = plain_msre = None
+        ppi_icc = ppi_alpha = ppi_rho = ppi_tau = ppi_msre = None
 
         try:
             if needs_plain:
@@ -807,22 +901,31 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                 plain_alpha = compute_krippendorff_alpha(hm_sample, models=[model, "original"])
                 plain_rho = compute_spearman_rho(hm_sample, models=[model, "original"])
                 plain_tau = compute_kendall_tau(hm_sample, models=[model, "original"])
+                plain_msre = compute_mean_sq_err(hm_sample) if len(hm_sample) > 0 else None
 
             if needs_ppi:
-                ppi_icc, ppi_alpha, ppi_rho, ppi_tau = compute_reliability_ppi_corrected(
-                    hm_sample, im_full_df, true_im_icc, true_im_alpha,
-                    hm_models=[model, "original"], im_models=im_models,
-                    true_im_rho=true_im_rho, true_im_tau=true_im_tau,
+                ppi_results = compute_reliability_ppi_corrected(
+                    hm_sample, im_full_df, true_im_icc, true_im_alpha, true_im_rho, true_im_tau, true_im_msre,
+                    hm_models=[model, "original"], im_models=im_models
                 )
+
+                ppi_icc = ppi_results.get("icc")
+                ppi_alpha = ppi_results.get("alpha")
+                ppi_rho = ppi_results.get("rho")
+                ppi_tau = ppi_results.get("tau")
+                ppi_msre = ppi_results.get("msre")
         except Exception:
             continue
-
-        # ── Mean Squared Error (plain and PPI-corrected) ─────────────────────
-        plain_mean_squared_error = compute_mean_sq_err(hm_sample)
-        ppi_mean_squared_error = None
-        if (im_mse_target is not None and hm_ms is not None and im_ms is not None
-                and np.isfinite(im_mse_target) and np.isfinite(hm_ms.mse) and np.isfinite(im_ms.mse)):
-            ppi_mean_squared_error = im_mse_target + (hm_ms.mse - im_ms.mse)
+        # ── MSRE (Mean Squared Residual Error - plain and PPI-corrected) ────
+        # Note: plain_msre uses Mean Squared Error, NOT ANOVA MSE
+        # plain_msre = compute_mean_sq_err(hm_sample) if len(hm_sample) > 0 else None
+        # ppi_msre = None
+        # For PPI correction of MSRE, we still use ANOVA MSE components for the control variate
+        # if (im_mse_target is not None and hm_ms is not None and im_ms is not None
+        #         and np.isfinite(im_mse_target) and np.isfinite(hm_ms.mse) and np.isfinite(im_ms.mse)):
+        #     ppi_msre_via_mse = im_mse_target + (hm_ms.mse - im_ms.mse)
+        #     # TODO: could also compute PPI using MSRE directly, but keeping MSE-based control variate for now
+        #     ppi_msre = ppi_msre_via_mse
 
         # ── Record errors for each strategy variant ─────────────────────────
         for strategy in strategy_variants:
@@ -831,12 +934,13 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
 
             if imc:
                 est_icc, est_alpha = ppi_icc, ppi_alpha
-                est_mean_squared_error = ppi_mean_squared_error
-                est_rho = ppi_rho if ppi_rho is not None else plain_rho
-                est_tau = ppi_tau if ppi_tau is not None else plain_tau
+                est_msre = ppi_msre
+                est_rho = ppi_rho
+                est_tau = ppi_tau
             else:
                 est_icc, est_alpha = plain_icc, plain_alpha
-                est_mean_squared_error = plain_mean_squared_error
+                est_msre = plain_msre
+            # Rho and tau use plain estimates only (no PPI correction defined)
                 est_rho = plain_rho
                 est_tau = plain_tau
 
@@ -848,24 +952,24 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                 if est_alpha is not None and np.isfinite(est_alpha):
                     results[strategy]["alpha_errors"].append(min(2, abs(est_alpha - true_alpha)))
                     results[strategy]["alpha_preds"].append(est_alpha)
-            if matched_metric in (None, "mean_squared_error"):
-                if est_mean_squared_error is not None and np.isfinite(est_mean_squared_error) and true_mean_squared_error is not None and np.isfinite(true_mean_squared_error):
-                    results[strategy]["mean_squared_error_errors"].append(abs(est_mean_squared_error - true_mean_squared_error))
+            if matched_metric in (None, "msre"):
+                if est_msre is not None and np.isfinite(est_msre) and true_msre is not None and np.isfinite(true_msre):
+                    results[strategy]["msre_errors"].append(abs(est_msre - true_msre))
+                    results[strategy]["msre_preds"].append(est_msre)
             if matched_metric in (None, "rho"):
                 if est_rho is not None and np.isfinite(est_rho) and true_rho is not None and np.isfinite(true_rho):
-                    results[strategy]["rho_errors"].append(abs(est_rho - true_rho))
+                    results[strategy]["rho_errors"].append(min(2, abs(est_rho - true_rho)))
                     results[strategy]["rho_preds"].append(est_rho)
             if matched_metric in (None, "tau"):
                 if est_tau is not None and np.isfinite(est_tau) and true_tau is not None and np.isfinite(true_tau):
-                    results[strategy]["tau_errors"].append(abs(est_tau - true_tau))
+                    results[strategy]["tau_errors"].append(min(2, abs(est_tau - true_tau)))
                     results[strategy]["tau_preds"].append(est_tau)
-
-    return results, new_im_msb_obs, new_im_mse_obs, new_hm_msb_obs, new_hm_mse_obs, updated_selected_per_trial
+    return results, new_im_msb_obs, new_im_mse_obs, new_hm_msb_obs, new_hm_mse_obs, updated_selected_per_trial, sampled_ids_list
 
 
 def evaluate_reliability_estimators(df, target_models, ensemble_models, per_model_variance,
                                      budgets=range(5, 55, 5), n_trials=None,
-                                     online_acquisition=True):
+                                     online_acquisition=False):
     """
     Evaluate ICC and Krippendorff's alpha estimators with different sampling strategies.
 
@@ -889,7 +993,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
     """
     icc_results = []
     alpha_results = []
-    mean_squared_error_results = []
+    msre_results = []
     rho_results = []
     tau_results = []
     reliability_metadata = {}
@@ -902,7 +1006,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
     for strategy in SAMPLING_STRATEGIES:
         base, _ = _parse_strategy(strategy)
         strategies_by_base.setdefault(base, []).append(strategy)
-
+    print("STRATEGIES BY BASE", strategies_by_base)
     # Reusable fast MS function that skips expensive pivot_table validation.
     # Safe because all candidate subsets are drawn from pre-filtered shared text_ids.
     _fast_ms = partial(compute_ms_components, validate=False)
@@ -920,14 +1024,16 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
         print(f"\nComputing true Krippendorff's alpha for model: {model}")
         true_alpha = compute_krippendorff_alpha(hm_full_df, models=[model, "original"])
         hm_ms_full = compute_ms_components(hm_full_df[hm_full_df["model_name"].isin([model, "original"])])
-        true_mean_squared_error = compute_mean_sq_err(hm_full_df[hm_full_df["model_name"].isin([model, "original"])])
+        true_msre = compute_mean_sq_err(hm_full_df[hm_full_df["model_name"].isin([model, "original"])])
         true_rho = compute_spearman_rho(hm_full_df, models=[model, "original"])
         true_tau = compute_kendall_tau(hm_full_df, models=[model, "original"])
-        print(f"{model}: ICC={true_icc:.4f}, Alpha={true_alpha:.4f}, Mean_Sq_Err={true_mean_squared_error:.4f}, Rho={true_rho:.4f}, Tau={true_tau:.4f}")
+        print(f"{model}: ICC={true_icc:.4f}, Alpha={true_alpha:.4f}, MSRE={true_msre:.4f}, Rho={true_rho:.4f}, Tau={true_tau:.4f}")
 
         # Build inter-model DataFrame using the target + ensemble (excluding target from its own ensemble)
         eff_ensemble = [e for e in ensemble_models if e != model]
         im_model_set = [model] + eff_ensemble
+        # breakpoint()
+        im_pair_df = []
         if COMPARISON_MODE == "average_pairwise":
             im_full_df = _build_im_pairwise_df(df, model, im_model_set)
             im_models = [model, "avg_other"]
@@ -935,15 +1041,19 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
             im_alpha = compute_krippendorff_alpha(im_full_df, models=im_models)
             im_rho = compute_spearman_rho(im_full_df, models=im_models)
             im_tau = compute_kendall_tau(im_full_df, models=im_models)
+            im_msre = compute_mean_sq_err(im_full_df)
+            # breakpoint()
         elif COMPARISON_MODE == "pairwise_average":
-            # Compute ICC, alpha, rho, tau for each (target, ensemble_model) pair, then average
-            pair_icc_list, pair_alpha_list, pair_rho_list, pair_tau_list = [], [], [], []
+            # Compute ICC and alpha for each (target, ensemble_model) pair, then average
+            pair_icc_list, pair_alpha_list, pair_rho_list, pair_tau_list, pair_msre_list = [], [], [], [], []
             for e in eff_ensemble:
                 pair_df = df[df["model_name"].isin([model, e])]
                 pair_icc = compute_icc_pingouin(pair_df, models=[model, e])
                 pair_alpha = compute_krippendorff_alpha(pair_df, models=[model, e])
                 pair_rho = compute_spearman_rho(pair_df, models=[model, e])
                 pair_tau = compute_kendall_tau(pair_df, models=[model, e])
+                pair_msre = compute_mean_sq_err(pair_df) if len(pair_df) > 0 else None
+
                 if np.isfinite(pair_icc):
                     pair_icc_list.append(pair_icc)
                 if np.isfinite(pair_alpha):
@@ -952,12 +1062,17 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
                     pair_rho_list.append(pair_rho)
                 if np.isfinite(pair_tau):
                     pair_tau_list.append(pair_tau)
+                if pair_msre is not None and np.isfinite(pair_msre):
+                    pair_msre_list.append(pair_msre)
             im_icc = np.nanmean(pair_icc_list) if pair_icc_list else np.nan
             im_alpha = np.nanmean(pair_alpha_list) if pair_alpha_list else np.nan
             im_rho = np.nanmean(pair_rho_list) if pair_rho_list else np.nan
             im_tau = np.nanmean(pair_tau_list) if pair_tau_list else np.nan
+            im_msre = np.nanmean(pair_msre_list) if pair_msre_list else np.nan
             # Use average_pairwise df for selection strategies (candidate subset evaluation)
+            # breakpoint()
             im_full_df = _build_im_pairwise_df(df, model, im_model_set)
+            im_pair_df = df.copy()  # Keep full pairwise df for selection strategies that need it
             im_models = [model, "avg_other"]
         else:
             im_subset = df[df["model_name"].isin(im_model_set)]
@@ -969,30 +1084,32 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
             im_alpha = compute_krippendorff_alpha(im_full_df, models=im_models)
             im_rho = compute_spearman_rho(im_full_df, models=im_models)
             im_tau = compute_kendall_tau(im_full_df, models=im_models)
-
-        im_mean_squared_error_target = compute_pairwise_mean_squared_error(im_full_df, model)
+            im_msre = compute_mean_sq_err(im_full_df) #, models=im_models)
 
         reliability_metadata[model] = {
             "true_hm_icc": true_icc,
             "true_hm_alpha": true_alpha,
-            "true_hm_mean_squared_error": true_mean_squared_error,
+            "true_hm_msre": true_msre,
             "true_hm_rho": true_rho,
             "true_hm_tau": true_tau,
             "im_icc": im_icc,
             "im_alpha": im_alpha,
             "im_rho": im_rho,
             "im_tau": im_tau,
+            "im_msre": im_msre,
             "im_mse": im_mse_target,
             "im_mean_squared_error": im_mean_squared_error_target,
         }
 
         text_ids = hm_full_df["text_id"].unique()
+        text_ids.sort()
 
         # Outer loop over strategies so each base strategy accumulates its own
         # observation history across budget levels for bias-corrected targeting,
         # and so that each trial's selected IDs are carried forward to the next
         # budget level (cumulative selection).
         for base_strategy, strategy_variants in strategies_by_base.items():
+            print(f"\nEvaluating strategies with base sampling method: {base_strategy}")
             past_im_msb_obs = []
             past_im_mse_obs = []
             past_hm_msb_obs = []
@@ -1000,16 +1117,15 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
             prev_selected_per_trial = {}  # trial_idx -> array of IDs selected so far
 
             for k in budgets:
-                trial_results, new_im_msb, new_im_mse, new_hm_msb, new_hm_mse, prev_selected_per_trial = (
+                trial_results, new_im_msb, new_im_mse, new_hm_msb, new_hm_mse, prev_selected_per_trial, sampled_ids_list = (
                     _run_trials_for_base(
                         base_strategy, strategy_variants, text_ids, k, n_trials,
-                        hm_full_df, im_full_df, model, true_icc, true_alpha, true_mean_squared_error,
+                        hm_full_df, im_full_df, im_pair_df, model, true_icc, true_alpha, true_msre,
                         true_rho=true_rho, true_tau=true_tau,
                         im_msb_target=im_msb_target, im_mse_target=im_mse_target,
                         im_mean_squared_error_target=im_mean_squared_error_target,
                         hm_msb_target=hm_msb_target, hm_mse_target=hm_mse_target,
-                        im_models=im_models, true_im_icc=im_icc, true_im_alpha=im_alpha,
-                        true_im_rho=im_rho, true_im_tau=im_tau,
+                        im_models=im_models, true_im_icc=im_icc, true_im_alpha=im_alpha, true_im_rho=im_rho, true_im_tau=im_tau, true_im_msre=im_msre,
                         past_im_msb_obs=past_im_msb_obs, past_im_mse_obs=past_im_mse_obs,
                         past_hm_msb_obs=past_hm_msb_obs, past_hm_mse_obs=past_hm_mse_obs,
                         prev_selected_per_trial=prev_selected_per_trial,
@@ -1017,6 +1133,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
                         fast_ms_fn=_fast_ms,
                     )
                 )
+
                 # Extend history with this budget level's observations so the
                 # next budget level benefits from all prior data.
                 past_im_msb_obs.extend(new_im_msb)
@@ -1025,26 +1142,28 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
                 past_hm_mse_obs.extend(new_hm_mse)
 
                 for strategy, errors in trial_results.items():
-                    for error, pred in zip(errors["icc_errors"], errors["icc_preds"]):
+                    for i, (error, pred) in enumerate(zip(errors["icc_errors"], errors["icc_preds"])):
                         icc_results.append({"model": model, "budget": k, "method": strategy,
                                             "estimation_error": error, "predicted_icc": pred,
-                                            "true_icc": true_icc})
-                    for error, pred in zip(errors["alpha_errors"], errors["alpha_preds"]):
+                                            "true_icc": true_icc, "best_ids": sampled_ids_list[i]})
+                    for i, (error, pred) in enumerate(zip(errors["alpha_errors"], errors["alpha_preds"])):
                         alpha_results.append({"model": model, "budget": k, "method": strategy,
                                               "estimation_error": error, "predicted_alpha": pred,
-                                              "true_alpha": true_alpha})
-                    for error in errors["mean_squared_error_errors"]:
-                        mean_squared_error_results.append({"model": model, "budget": k, "method": strategy, "estimation_error": error})
-                    for error, pred in zip(errors["rho_errors"], errors["rho_preds"]):
+                                              "true_alpha": true_alpha, "best_ids": sampled_ids_list[i]})
+                    for i, (error, pred) in enumerate(zip(errors["msre_errors"], errors["msre_preds"])):
+                        msre_results.append({"model": model, "budget": k, "method": strategy,
+                                            "estimation_error": error, "predicted_msre": pred,
+                                            "true_msre": true_msre, "best_ids": sampled_ids_list[i]})
+                    for i, (error, pred) in enumerate(zip(errors["rho_errors"], errors["rho_preds"])):
                         rho_results.append({"model": model, "budget": k, "method": strategy,
                                             "estimation_error": error, "predicted_rho": pred,
-                                            "true_rho": true_rho})
-                    for error, pred in zip(errors["tau_errors"], errors["tau_preds"]):
+                                            "true_rho": true_rho, "best_ids": sampled_ids_list[i]})
+                    for i, (error, pred) in enumerate(zip(errors["tau_errors"], errors["tau_preds"])):
                         tau_results.append({"model": model, "budget": k, "method": strategy,
                                             "estimation_error": error, "predicted_tau": pred,
-                                            "true_tau": true_tau})
-
-    return (pd.DataFrame(icc_results), pd.DataFrame(alpha_results), pd.DataFrame(mean_squared_error_results),
+                                            "true_tau": true_tau, "best_ids": sampled_ids_list[i]})
+    print("returning base strategy", base_strategy)
+    return (pd.DataFrame(icc_results), pd.DataFrame(alpha_results), pd.DataFrame(msre_results),
             pd.DataFrame(rho_results), pd.DataFrame(tau_results), reliability_metadata)
 
 
@@ -1057,12 +1176,12 @@ def _run_axis_worker(args):
     axis_per_model_variance, _ = compute_variance_alignment(
         axis_df, target_models, ensemble_models, mode=COMPARISON_MODE
     )
-    axis_icc, axis_alpha, axis_mean_squared_error, axis_rho, axis_tau, axis_metadata = evaluate_reliability_estimators(
+    axis_icc, axis_alpha, axis_msre, axis_rho, axis_tau, axis_metadata = evaluate_reliability_estimators(
         axis_df, target_models, ensemble_models, axis_per_model_variance,
         budgets=range(5, MAX_BUDGET + 1, STEP_SIZE),
         online_acquisition=ONLINE_ACQUISITION
     )
-    return axis, axis_icc, axis_alpha, axis_mean_squared_error, axis_rho, axis_tau, axis_metadata, axis_per_model_variance
+    return axis, axis_icc, axis_alpha, axis_msre, axis_rho, axis_tau, axis_metadata, axis_per_model_variance
 
 
 # -------------------------
@@ -1104,29 +1223,29 @@ def main():
             axis_results = pool.map(_run_axis_worker, axis_jobs)
     else:
         axis_results = [_run_axis_worker(job) for job in axis_jobs]
-
+    results = axis_results[0][1]
     icc_results_by_axis = {}
     alpha_results_by_axis = {}
-    mean_squared_error_results_by_axis = {}
+    msre_results_by_axis = {}
     rho_results_by_axis = {}
     tau_results_by_axis = {}
     reliability_metadata_by_axis = {}
     per_model_variance_by_axis = {}
-    for axis, axis_icc, axis_alpha, axis_mean_squared_error, axis_rho, axis_tau, axis_metadata, axis_per_model_var in axis_results:
+    for axis, axis_icc, axis_alpha, axis_msre, axis_rho, axis_tau, axis_metadata, axis_per_model_var in axis_results:
         icc_results_by_axis[axis] = axis_icc
         alpha_results_by_axis[axis] = axis_alpha
-        mean_squared_error_results_by_axis[axis] = axis_mean_squared_error
+        msre_results_by_axis[axis] = axis_msre
         rho_results_by_axis[axis] = axis_rho
         tau_results_by_axis[axis] = axis_tau
         reliability_metadata_by_axis[axis] = axis_metadata
         per_model_variance_by_axis[axis] = axis_per_model_var
-        print(f"Collected {len(axis_icc)} ICC, {len(axis_alpha)} Alpha, {len(axis_mean_squared_error)} Mean_Sq_Err, "
+        print(f"Collected {len(axis_icc)} ICC, {len(axis_alpha)} Alpha, {len(axis_msre)} MSRE, "
               f"{len(axis_rho)} Rho, {len(axis_tau)} Tau results for {axis}")
 
     # Combine per-axis results
     all_icc_results = []
     all_alpha_results = []
-    all_mean_squared_error_results = []
+    all_msre_results = []
     all_rho_results = []
     all_tau_results = []
     for axis in EVALUATION_AXES[dataset]:
@@ -1138,10 +1257,10 @@ def main():
             axis_alpha = alpha_results_by_axis[axis].copy()
             axis_alpha["axis"] = axis
             all_alpha_results.append(axis_alpha)
-        if axis in mean_squared_error_results_by_axis and len(mean_squared_error_results_by_axis[axis]) > 0:
-            axis_mean_squared_error = mean_squared_error_results_by_axis[axis].copy()
-            axis_mean_squared_error["axis"] = axis
-            all_mean_squared_error_results.append(axis_mean_squared_error)
+        if axis in msre_results_by_axis and len(msre_results_by_axis[axis]) > 0:
+            axis_msre = msre_results_by_axis[axis].copy()
+            axis_msre["axis"] = axis
+            all_msre_results.append(axis_msre)
         if axis in rho_results_by_axis and len(rho_results_by_axis[axis]) > 0:
             axis_rho = rho_results_by_axis[axis].copy()
             axis_rho["axis"] = axis
@@ -1153,7 +1272,7 @@ def main():
 
     icc_results = pd.concat(all_icc_results, ignore_index=True) if all_icc_results else pd.DataFrame()
     alpha_results = pd.concat(all_alpha_results, ignore_index=True) if all_alpha_results else pd.DataFrame()
-    mean_squared_error_results = pd.concat(all_mean_squared_error_results, ignore_index=True) if all_mean_squared_error_results else pd.DataFrame()
+    msre_results = pd.concat(all_msre_results, ignore_index=True) if all_msre_results else pd.DataFrame()
     rho_results = pd.concat(all_rho_results, ignore_index=True) if all_rho_results else pd.DataFrame()
     tau_results = pd.concat(all_tau_results, ignore_index=True) if all_tau_results else pd.DataFrame()
 
@@ -1172,11 +1291,11 @@ def main():
             if model in reliability_metadata_by_axis[ax]
             and np.isfinite(reliability_metadata_by_axis[ax][model]["true_hm_alpha"])
         ]
-        hm_mean_squared_error_vals = [
-            reliability_metadata_by_axis[ax][model]["true_hm_mean_squared_error"]
+        hm_msre_vals = [
+            reliability_metadata_by_axis[ax][model]["true_hm_msre"]
             for ax in reliability_metadata_by_axis
             if model in reliability_metadata_by_axis[ax]
-            and np.isfinite(reliability_metadata_by_axis[ax][model]["true_hm_mean_squared_error"])
+            and np.isfinite(reliability_metadata_by_axis[ax][model]["true_hm_msre"])
         ]
         im_icc_vals = [
             reliability_metadata_by_axis[ax][model]["im_icc"]
@@ -1224,7 +1343,7 @@ def main():
         reliability_metadata_all[model] = {
             "true_hm_icc": np.mean(hm_icc_vals) if hm_icc_vals else np.nan,
             "true_hm_alpha": np.mean(hm_alpha_vals) if hm_alpha_vals else np.nan,
-            "true_hm_mean_squared_error": np.mean(hm_mean_squared_error_vals) if hm_mean_squared_error_vals else np.nan,
+            "true_hm_msre": np.mean(hm_msre_vals) if hm_msre_vals else np.nan,
             "true_hm_rho": np.mean(hm_rho_vals) if hm_rho_vals else np.nan,
             "true_hm_tau": np.mean(hm_tau_vals) if hm_tau_vals else np.nan,
             "im_icc": np.mean(im_icc_vals) if im_icc_vals else np.nan,
@@ -1239,7 +1358,7 @@ def main():
     print(f"{'=' * 50}")
     print(f"Total ICC results collected: {len(icc_results)}")
     print(f"Total Alpha results collected: {len(alpha_results)}")
-    print(f"Total Mean Squared Error results collected: {len(mean_squared_error_results)}")
+    print(f"Total MSRE results collected: {len(msre_results)}")
     print(f"Total Rho results collected: {len(rho_results)}")
     print(f"Total Tau results collected: {len(tau_results)}")
 
@@ -1249,8 +1368,8 @@ def main():
             count = len(icc_results[icc_results["method"] == method])
             print(f"  {method}: {count}")
 
-    return (icc_results, alpha_results, mean_squared_error_results, rho_results, tau_results,
-            icc_results_by_axis, alpha_results_by_axis, mean_squared_error_results_by_axis,
+    return (icc_results, alpha_results, msre_results, rho_results, tau_results,
+            icc_results_by_axis, alpha_results_by_axis, msre_results_by_axis,
             rho_results_by_axis, tau_results_by_axis,
             reliability_metadata_all, reliability_metadata_by_axis,
             axis_jobs, per_model_variance_by_axis)
@@ -1262,22 +1381,22 @@ if __name__ == "__main__":
 
     if args.results_dir is not None:
         print(f"\nLoading saved results from: {args.results_dir} (dataset={dataset})")
-        (icc_results, alpha_results, mean_squared_error_results,
-         icc_results_by_axis, alpha_results_by_axis, mean_squared_error_results_by_axis,
+        (icc_results, alpha_results, msre_results,
+         icc_results_by_axis, alpha_results_by_axis, msre_results_by_axis,
          reliability_metadata_all, reliability_metadata_by_axis,
          rho_results_by_axis, tau_results_by_axis) = load_results_dataframes(args.results_dir, dataset)
         rho_results = pd.DataFrame()
         tau_results = pd.DataFrame()
     else:
-        (icc_results, alpha_results, mean_squared_error_results, rho_results, tau_results,
-         icc_results_by_axis, alpha_results_by_axis, mean_squared_error_results_by_axis,
+        (icc_results, alpha_results, msre_results, rho_results, tau_results,
+         icc_results_by_axis, alpha_results_by_axis, msre_results_by_axis,
          rho_results_by_axis, tau_results_by_axis,
          reliability_metadata_all, reliability_metadata_by_axis,
          axis_jobs_for_predictors, per_model_variance_by_axis_for_predictors) = main()
 
     plot_all_results(
-        icc_results, alpha_results, mean_squared_error_results, rho_results, tau_results,
-        icc_results_by_axis, alpha_results_by_axis, mean_squared_error_results_by_axis,
+        icc_results, alpha_results, msre_results, rho_results, tau_results,
+        icc_results_by_axis, alpha_results_by_axis, msre_results_by_axis,
         rho_results_by_axis, tau_results_by_axis,
         reliability_metadata_all, reliability_metadata_by_axis,
         dataset, PLOTS_DIR, COMPARISON_MODE

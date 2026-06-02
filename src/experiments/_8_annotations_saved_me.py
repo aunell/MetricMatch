@@ -4,33 +4,131 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-RESULTS_DIR = "/share/pi/nigam/users/aunell/SmartSample_local/results/04_16_new_baselines"
+TITLE = "Metric"
+DEFAULT_RESULTS_DIR = "/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_alyssa_40_pairwise_average"
+if TITLE == "Metric":
+    OUTPUT_PATH =f"{DEFAULT_RESULTS_DIR}/annotations_saved"
+    TARGET_METHOD_STRATEGY = "metric_matched"
+else:
+    OUTPUT_PATH = f"{DEFAULT_RESULTS_DIR}/annotations_saved_vm"
+    TARGET_METHOD_STRATEGY = "variance_matched_weighted_.9"
+
 DATASETS = ["hanna", "medval", "mslr", "summeval"]
 METRICS = ["alpha", "icc", "rho", "tau"]
-OUR_METHOD = "variance_matched_weighted_.9"
 BASELINE = "random"
 BUDGETS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
 PLOT_BUDGETS = [b for b in BUDGETS if b >= 10]  # rb=5 excluded: no vm budgets below 5 to observe
 BASELINE_BUDGET = 50
 
+# Per-metric variant of the metric_matched method
+METRIC_MATCHED = {
+    "icc": "metric_matched_icc",
+    "alpha": "metric_matched_alpha",
+    "rho": "metric_matched_rho",
+    "tau": "metric_matched_tau",
+    "mse": "metric_matched_mse",
+}
 
-def load_data(results_dir=RESULTS_DIR):
+# Target method strategies
+# "metric_matched": Use per-metric methods (metric_matched_icc, metric_matched_alpha, etc.)
+# "variance_matched_weighted_.9": Use fixed method variance_matched_weighted_.9 for all metrics
+# Any other string: Use that specific method name for all metrics
+# TARGET_METHOD_STRATEGY = "variance_matched_weighted_.9" #"metric_matched"  # Default to metric_matched
+# TARGET_METHOD_STRATEGY = "metric_matched"
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
+def get_target_method(metric, strategy=TARGET_METHOD_STRATEGY):
+    """
+    Get the target method name based on the strategy.
+
+    Args:
+        metric: The metric name (e.g., "icc", "alpha")
+        strategy: The target method strategy
+            - "metric_matched": Use per-metric methods from METRIC_MATCHED dict
+            - Any other string: Use that method name for all metrics
+
+    Returns:
+        Method name string, or None if not found
+    """
+    if strategy == "metric_matched":
+        return METRIC_MATCHED.get(metric)
+    else:
+        # Use the strategy string as the method name directly
+        return strategy
+
+
+# ---------------------------------------------------------------------------
+# Dataset discovery helpers
+# ---------------------------------------------------------------------------
+
+def find_datasets(results_dir):
+    """Return list of (dataset_name, dataframes_path) using template path."""
+    datasets = []
+    dataset_names = DATASETS
+
+    for name in dataset_names:
+        # Inject dataset name into the path
+        dataset_root = results_dir.replace("_alyssa", f"_{name}_alyssa")
+
+        candidate = os.path.join(dataset_root, name, "dataframes")
+
+        if os.path.isdir(candidate):
+            if any(os.path.exists(os.path.join(candidate, f"{m}_results.csv"))
+                   for m in METRICS):
+                datasets.append((name, candidate))
+            else:
+                print(f"  Found dir but no metric CSVs: {candidate}")
+        else:
+            print(f"  Missing dataset dir: {candidate}")
+
+    return datasets
+
+
+def load_data(results_dir=DEFAULT_RESULTS_DIR, target_method_strategy=TARGET_METHOD_STRATEGY):
+    """Load data for each dataset and metric, return combined df."""
+    datasets = find_datasets(results_dir)
+    if not datasets:
+        print(f"No datasets with dataframes found in {results_dir}")
+        return pd.DataFrame()
+
+    print(f"Found datasets: {[d[0] for d in datasets]}")
+    print(f"Using target method strategy: {target_method_strategy}")
+
     frames = []
-    for dataset in DATASETS:
+    for dataset_name, df_dir in datasets:
         for metric in METRICS:
-            csv_path = os.path.join(
-                results_dir, dataset, dataset, "dataframes", f"{metric}_results.csv"
-            )
+            csv_path = os.path.join(df_dir, f"{metric}_results.csv")
             if not os.path.exists(csv_path):
-                print(f"  Skipping {metric} | {dataset}: file not found")
+                print(f"  Skipping {metric} | {dataset_name}: file not found")
                 continue
             df = pd.read_csv(csv_path)
-            df = df[df["method"].isin([OUR_METHOD, BASELINE])][
+            # Get method name based on strategy
+            our_method = get_target_method(metric, target_method_strategy)
+            if our_method is None:
+                print(f"  Skipping {metric} | {dataset_name}: no target method defined")
+                continue
+            # Filter for our method and baseline
+            df = df[df["method"].isin([our_method, BASELINE])][
                 ["model", "budget", "method", "estimation_error", "axis"]
             ]
-            df["dataset"] = dataset
+            if len(df) == 0:
+                print(f"  Skipping {metric} | {dataset_name}: no data for method {our_method}")
+                continue
+            df["dataset"] = dataset_name
             df["metric"] = metric
+            # Mark "is_ours" based on strategy
+            if target_method_strategy == "metric_matched":
+                df["is_ours"] = df["method"].str.startswith("metric_matched_")
+            else:
+                df["is_ours"] = df["method"] == target_method_strategy
             frames.append(df)
+            print(f"  Loaded {len(df)} rows from {dataset_name} - {metric} (using {our_method})")
+
+    if not frames:
+        return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
 
 
@@ -45,13 +143,13 @@ def compute_annotations_saved(df):
     Returns a detail DataFrame with one row per (dataset, axis, model, metric).
     """
     avg = (
-        df.groupby(["dataset", "axis", "model", "budget", "method", "metric"])["estimation_error"]
+        df.groupby(["dataset", "axis", "model", "budget", "method", "metric", "is_ours"])["estimation_error"]
         .mean()
         .reset_index()
         .rename(columns={"estimation_error": "mean_error"})
     )
 
-    random_all = avg[avg["method"] == BASELINE][
+    random_all = avg[~avg["is_ours"]][
         ["dataset", "axis", "model", "budget", "metric", "mean_error"]
     ].rename(columns={"mean_error": "random_error"})
 
@@ -59,7 +157,7 @@ def compute_annotations_saved(df):
         ["dataset", "axis", "model", "metric", "random_error"]
     ].rename(columns={"random_error": "random_error_50"})
 
-    ours = avg[avg["method"] == OUR_METHOD][
+    ours = avg[avg["is_ours"]][
         ["dataset", "axis", "model", "budget", "metric", "mean_error"]
     ].rename(columns={"mean_error": "our_error"})
 
@@ -68,7 +166,7 @@ def compute_annotations_saved(df):
 
     # Also prepare random at all budgets for the reverse calculation
     our_baseline = avg[
-        (avg["method"] == OUR_METHOD) & (avg["budget"] == BASELINE_BUDGET)
+        avg["is_ours"] & (avg["budget"] == BASELINE_BUDGET)
     ][["dataset", "axis", "model", "metric", "mean_error"]].rename(
         columns={"mean_error": "our_error_50"}
     )
@@ -153,19 +251,19 @@ def compute_budget_equivalence(df):
       Returns NaN where the crossover falls outside [5, 50].
     """
     avg = (
-        df.groupby(["dataset", "axis", "model", "budget", "method", "metric"])["estimation_error"]
+        df.groupby(["dataset", "axis", "model", "budget", "method", "metric", "is_ours"])["estimation_error"]
         .mean()
         .reset_index()
         .rename(columns={"estimation_error": "mean_error"})
     )
 
     random_avg = (
-        avg[avg["method"] == BASELINE]
+        avg[~avg["is_ours"]]
         [["dataset", "axis", "model", "metric", "budget", "mean_error"]]
         .rename(columns={"budget": "random_budget", "mean_error": "random_error"})
     )
     vm_avg = (
-        avg[avg["method"] == OUR_METHOD]
+        avg[avg["is_ours"]]
         [["dataset", "axis", "model", "metric", "budget", "mean_error"]]
         .sort_values(["dataset", "axis", "model", "metric", "budget"])
     )
@@ -205,7 +303,6 @@ def summary_table(detail, index_col, col_order=None):
 
 
 def plot_distribution(detail, out_path, col="annotations_saved", title_suffix="", subtitle=""):
-    """Bar plot of annotation savings distribution in bins of 10."""
     """Bar plot of annotation savings distribution in bins of 10."""
     bins = [0, 10, 20, 30, 40, 50]
     labels = ["0–10", "10–20", "20–30", "30–40", "40–50"]
@@ -254,7 +351,7 @@ def _style_equiv_ax(ax, plot_budgets=None):
     ax.set_xticks(x)
     ax.set_yticks(np.array(BUDGETS))
     ax.set_xlabel("Random Sampling Budget", fontsize=11)
-    ax.set_ylabel(f"Equivalent {OUR_METHOD} Budget", fontsize=11)
+    ax.set_ylabel(f"Equivalent {TITLE} Matched Budget", fontsize=11)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
@@ -263,14 +360,15 @@ def plot_budget_equiv_summary(equivs, out_dir):
     """One plot: lines = metrics, averaged over all datasets/axes/models."""
     equivs = equivs[equivs["random_budget"].isin(PLOT_BUDGETS)]
     avg = equivs.groupby(["metric", "random_budget"])["equivalent_budget"].mean().reset_index()
+    active_metrics = sorted(equivs["metric"].unique())
     fig, ax = plt.subplots(figsize=(8, 6))
     _style_equiv_ax(ax, PLOT_BUDGETS)
-    colors = plt.cm.tab10(np.linspace(0, 0.4, len(METRICS)))
-    for color, metric in zip(colors, METRICS):
+    colors = plt.cm.tab10(np.linspace(0, 0.4, len(active_metrics)))
+    for color, metric in zip(colors, active_metrics):
         mdata = avg[avg["metric"] == metric].sort_values("random_budget")
         label = _savings_label(metric, mdata["random_budget"].values, mdata["equivalent_budget"].values)
         ax.plot(mdata["random_budget"], mdata["equivalent_budget"], marker="o", color=color, label=label)
-    ax.set_title("Budget Equivalence — All Datasets (averaged)", fontsize=13)
+    ax.set_title(f"Budget Equivalence {TITLE} Matching — All Datasets (averaged)", fontsize=13)
     ax.legend(fontsize=9)
     plt.tight_layout()
     out_path = os.path.join(out_dir, "budget_equiv_summary.jpg")
@@ -282,13 +380,14 @@ def plot_budget_equiv_summary(equivs, out_dir):
 def plot_budget_equiv_by_dataset(equivs, out_dir):
     """4 plots (one per dataset): lines = metrics, averaged over axes/models."""
     equivs = equivs[equivs["random_budget"].isin(PLOT_BUDGETS)]
-    colors = plt.cm.tab10(np.linspace(0, 0.4, len(METRICS)))
+    active_metrics = sorted(equivs["metric"].unique())
+    colors = plt.cm.tab10(np.linspace(0, 0.4, len(active_metrics)))
     for dataset in DATASETS:
         ddata = equivs[equivs["dataset"] == dataset]
         avg = ddata.groupby(["metric", "random_budget"])["equivalent_budget"].mean().reset_index()
         fig, ax = plt.subplots(figsize=(8, 6))
         _style_equiv_ax(ax, PLOT_BUDGETS)
-        for color, metric in zip(colors, METRICS):
+        for color, metric in zip(colors, active_metrics):
             mdata = avg[avg["metric"] == metric].sort_values("random_budget")
             label = _savings_label(metric, mdata["random_budget"].values, mdata["equivalent_budget"].values)
             ax.plot(mdata["random_budget"], mdata["equivalent_budget"], marker="o", color=color, label=label)
@@ -302,14 +401,14 @@ def plot_budget_equiv_by_dataset(equivs, out_dir):
 
 
 def plot_budget_equiv_by_metric(equivs, out_dir):
-    """4 plots (one per metric): lines = dataset-axis combos, averaged over models."""
+    """One plot per metric: lines = dataset-axis combos, averaged over models."""
     equivs = equivs[equivs["random_budget"].isin(PLOT_BUDGETS)]
     da_combos = sorted(
         equivs[["dataset", "axis"]].drop_duplicates().itertuples(index=False, name=None)
     )
     cmap = plt.cm.tab20
     colors = [cmap(i / max(len(da_combos) - 1, 1)) for i in range(len(da_combos))]
-    for metric in METRICS:
+    for metric in sorted(equivs["metric"].unique()):
         mdata = equivs[equivs["metric"] == metric]
         avg = mdata.groupby(["dataset", "axis", "random_budget"])["equivalent_budget"].mean().reset_index()
         fig, ax = plt.subplots(figsize=(11, 7))
@@ -332,12 +431,15 @@ def plot_budget_equiv_by_metric(equivs, out_dir):
         print(f"Saved: {out_path}")
 
 
-def main(results_dir=RESULTS_DIR):
-    out_dir = os.path.join(results_dir, "annotations_saved")
-    os.makedirs(out_dir, exist_ok=True)
+def main(results_dir=DEFAULT_RESULTS_DIR, target_method_strategy=TARGET_METHOD_STRATEGY):
+    os.makedirs(OUTPUT_PATH, exist_ok=True)
 
     print("Loading data...")
-    df = load_data(results_dir)
+    df = load_data(results_dir, target_method_strategy)
+
+    if df.empty:
+        print("No data found. Exiting.")
+        return
 
     print("Computing annotations saved...")
     detail = compute_annotations_saved(df)
@@ -346,21 +448,21 @@ def main(results_dir=RESULTS_DIR):
     print(f"Combos where our method never reached random@50 error: {never_achieved} / {len(detail)}")
 
     # Save full detail
-    detail_path = os.path.join(out_dir, "annotations_saved_detail.csv")
+    detail_path = os.path.join(OUTPUT_PATH, "annotations_saved_detail.csv")
     detail.to_csv(detail_path, index=False)
     print(f"Saved: {detail_path}")
 
     # Summary by dataset x metric
     available_metrics = [m for m in METRICS if m in detail["metric"].unique()]
     by_dataset = summary_table(detail, "dataset", col_order=available_metrics)
-    ds_path = os.path.join(out_dir, "annotations_saved_by_dataset.csv")
+    ds_path = os.path.join(OUTPUT_PATH, "annotations_saved_by_dataset.csv")
     by_dataset.to_csv(ds_path)
     print(f"\nSaved: {ds_path}")
     print(by_dataset.round(2).to_string())
 
     # Summary by model x metric
     by_model = summary_table(detail, "model", col_order=available_metrics)
-    model_path = os.path.join(out_dir, "annotations_saved_by_model.csv")
+    model_path = os.path.join(OUTPUT_PATH, "annotations_saved_by_model.csv")
     by_model.to_csv(model_path)
     print(f"\nSaved: {model_path}")
     print(by_model.round(2).to_string())
@@ -373,7 +475,7 @@ def main(results_dir=RESULTS_DIR):
         "mean_annotations_saved": detail["annotations_saved"].mean(),
         "median_annotations_saved": detail["annotations_saved"].median(),
     }])
-    overall_path = os.path.join(out_dir, "annotations_saved_overall.csv")
+    overall_path = os.path.join(OUTPUT_PATH, "annotations_saved_overall.csv")
     overall.to_csv(overall_path, index=False)
     print(f"\nSaved: {overall_path}")
     print(overall.round(2).to_string())
@@ -389,34 +491,35 @@ def main(results_dir=RESULTS_DIR):
         )
         .round(2)
     )
-    metric_path = os.path.join(out_dir, "annotations_saved_by_metric.csv")
+    metric_path = os.path.join(OUTPUT_PATH, "annotations_saved_by_metric.csv")
     per_metric.to_csv(metric_path)
     print(f"\nSaved: {metric_path}")
     print(per_metric.to_string())
 
     # Bar plot — our method wins
+    method_label = target_method_strategy if target_method_strategy != "metric_matched" else "metric_matched methods"
     plot_distribution(
         detail,
-        os.path.join(out_dir, "annotations_saved_distribution.jpg"),
+        os.path.join(OUTPUT_PATH, "annotations_saved_distribution.jpg"),
         col="annotations_saved",
-        title_suffix=" — Our Method vs Random@50",
-        subtitle=f"variance_matched_weighted_.9 matches random at budget 50",
+        title_suffix=f" — {method_label} vs Random@50",
+        subtitle=f"{method_label} match random at budget 50",
     )
 
-    # Bar plot — random wins (63 losing combos): how many annotations random saves vs our_method@50
+    # Bar plot — random wins (losing combos): how many annotations random saves vs our_method@50
     losing = detail[detail["annotations_saved"].isna()].copy()
     plot_distribution(
         losing,
-        os.path.join(out_dir, "annotations_saved_distribution_losing.jpg"),
+        os.path.join(OUTPUT_PATH, "annotations_saved_distribution_losing.jpg"),
         col="random_annotations_saved",
-        title_suffix=" — Random vs Our Method@50 (losing combos)",
-        subtitle=f"Random matches variance_matched_weighted_.9 at budget 50 ({len(losing)} combos)",
+        title_suffix=f" — Random vs {method_label}@50 (losing combos)",
+        subtitle=f"Random matches {method_label} at budget 50 ({len(losing)} combos)",
     )
 
     # Budget equivalence plots
     print("\nComputing budget equivalence...")
     equivs = compute_budget_equivalence(df)
-    equiv_dir = os.path.join(out_dir, "budget_equivalence")
+    equiv_dir = os.path.join(OUTPUT_PATH, "budget_equivalence")
     os.makedirs(equiv_dir, exist_ok=True)
     equiv_csv = os.path.join(equiv_dir, "budget_equivalence_detail.csv")
     equivs.to_csv(equiv_csv, index=False)
@@ -427,7 +530,19 @@ def main(results_dir=RESULTS_DIR):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Annotations saved analysis")
-    parser.add_argument("--folder", default=RESULTS_DIR, help="Results directory")
+    parser = argparse.ArgumentParser(
+        description="Annotations saved analysis",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Target method strategies:
+  metric_matched              Use per-metric methods (metric_matched_icc, metric_matched_alpha, etc.)
+  variance_matched_weighted_.9  Use this fixed method for all metrics
+  <any_other_string>          Use that specific method name for all metrics
+        """
+    )
+    parser.add_argument("results_dir", nargs="?", default=DEFAULT_RESULTS_DIR,
+                        help="Root results directory (default: %(default)s)")
+    parser.add_argument("--target-method", default=TARGET_METHOD_STRATEGY,
+                        help="Target method strategy (default: %(default)s)")
     args = parser.parse_args()
-    main(results_dir=args.folder)
+    main(results_dir=args.results_dir, target_method_strategy=args.target_method)
