@@ -5,23 +5,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-DEFAULT_RESULTS_DIR = "/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_alyssa_40_pairwise_average"
-OUTPUT_PATH = "/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_alyssa_40_pairwise_average/win_rates_0521"
+DEFAULT_RESULTS_DIR = "results/current_results"
+OUTPUT_PATH = "results/current_results/win_rates"
 DATASETS = ["hanna", "medval", "mslr", "summeval"]
 METRICS = ["alpha", "icc", "rho", "tau", "mse"]
 BASELINE = "random"
 BUDGETS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
 THRESHOLDS = [.6, .7, .8]
-SPLIT_ON = "alyssa"  # Part of the path to split on when injecting dataset names
-
-# EXCLUSIONS: List of (dataset, axis) tuples to exclude from analysis
-EXCLUSIONS = [
-    # ("summeval", "fluency"),
-    # ("mslr", "outcome"),
-    # ("hannaaa", "Coherence"),
-    # ("hannaaa", "surprise"),
-    # Add more tuples here as needed
-]
+SPLIT_ON = #TODO  # Part of the path to split on when injecting dataset names
 
 # Per-metric variant of the metric_matched method
 METRIC_MATCHED = {
@@ -32,50 +23,11 @@ METRIC_MATCHED = {
     "mse": "metric_matched_mse",
 }
 
-# Target method strategies
-# "metric_matched": Use per-metric methods (metric_matched_icc, metric_matched_alpha, etc.)
-# "variance_matched_weighted_.9": Use fixed method variance_matched_weighted_.9 for all metrics
-# Any other string: Use that specific method name for all metrics
-# TARGET_METHOD_STRATEGY = "variance_matched_weighted_.9" # "metric_matched"  # Default to metric_matched "variance_matched_weighted_.9"
 TARGET_METHOD_STRATEGY = "metric_matched"  # Use per-metric methods
 
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
-
-def apply_exclusions(df, exclusions=EXCLUSIONS):
-    """
-    Filter out rows matching any (dataset, axis) tuple in the exclusions list.
-    
-    Args:
-        df: DataFrame with 'dataset' and 'axis' columns
-        exclusions: List of (dataset, axis) tuples to exclude
-    
-    Returns:
-        Filtered DataFrame
-    """
-    if not exclusions or df.empty:
-        return df
-    
-    # Create a mask for rows to keep (those NOT in exclusions)
-    mask = pd.Series([True] * len(df), index=df.index)
-    
-    for dataset, axis in exclusions:
-        exclude_mask = (df["dataset"] == dataset) & (df["axis"] == axis)
-        mask = mask & ~exclude_mask
-        excluded_count = exclude_mask.sum()
-        if excluded_count > 0:
-            print(f"  Excluding {excluded_count} rows for ({dataset}, {axis})")
-    
-    original_len = len(df)
-    filtered_df = df[mask].copy()
-    total_excluded = original_len - len(filtered_df)
-    
-    if total_excluded > 0:
-        print(f"  Total excluded: {total_excluded} rows ({total_excluded/original_len*100:.1f}%)")
-    
-    return filtered_df
-
 
 def get_target_method(metric, strategy=TARGET_METHOD_STRATEGY):
     """
@@ -127,7 +79,7 @@ def find_datasets(results_dir):
 # True metric values extraction
 # ---------------------------------------------------------------------------
 
-def extract_true_metric_values(results_dir=DEFAULT_RESULTS_DIR, exclusions=EXCLUSIONS):
+def extract_true_metric_values(results_dir=DEFAULT_RESULTS_DIR):
     """
     Extract true metric values for each (dataset, axis) pair.
     Returns DataFrame with dataset,axis as rows and metrics as columns.
@@ -186,14 +138,6 @@ def extract_true_metric_values(results_dir=DEFAULT_RESULTS_DIR, exclusions=EXCLU
         available_metrics = [m for m in METRICS if m in result_df.columns]
         result_df = result_df[available_metrics]
         
-        # Apply exclusions
-        if exclusions:
-            print("Applying exclusions to true metric values:")
-            # Reset index to apply exclusions, then set it back
-            result_df = result_df.reset_index()
-            result_df = apply_exclusions(result_df, exclusions)
-            result_df = result_df.set_index(["dataset", "axis"])
-        
         result_df = result_df.sort_index()
     
     return result_df
@@ -247,7 +191,7 @@ def compute_dataset_axis_win_rates(merged_df, analysis_type="estimation"):
 # Estimation helpers
 # ---------------------------------------------------------------------------
 
-def load_estimation_data(results_dir=DEFAULT_RESULTS_DIR, target_method_strategy=TARGET_METHOD_STRATEGY, exclusions=EXCLUSIONS):
+def load_estimation_data(results_dir=DEFAULT_RESULTS_DIR, target_method_strategy=TARGET_METHOD_STRATEGY):
     """Load {metric}_results.csv for each dataset and metric, return combined df."""
     datasets = find_datasets(results_dir)
     if not datasets:
@@ -288,11 +232,7 @@ def load_estimation_data(results_dir=DEFAULT_RESULTS_DIR, target_method_strategy
         return pd.DataFrame()
     
     combined_df = pd.concat(frames, ignore_index=True)
-    
-    # Apply exclusions
-    if exclusions:
-        print("\nApplying exclusions to estimation data:")
-        combined_df = apply_exclusions(combined_df, exclusions)
+
     
     return combined_df
 
@@ -369,6 +309,7 @@ def _micro_merge(df, target_method_strategy=TARGET_METHOD_STRATEGY):
     merged = ours.merge(base, on=["dataset", "axis", "model", "budget", "metric", "run"])
     merged["win"] = merged["our_err"] < merged["random_err"]
     return merged
+
 def load_threshold_raw_data(results_dir=DEFAULT_RESULTS_DIR, target_method_strategy=TARGET_METHOD_STRATEGY, exclusions=EXCLUSIONS):
     """Load raw metric results with predicted and true values for threshold analysis."""
     datasets = find_datasets(results_dir)
@@ -417,11 +358,6 @@ def load_threshold_raw_data(results_dir=DEFAULT_RESULTS_DIR, target_method_strat
         return pd.DataFrame()
     
     combined_df = pd.concat(frames, ignore_index=True)
-    
-    # Apply exclusions
-    if exclusions:
-        print("\nApplying exclusions to threshold data:")
-        combined_df = apply_exclusions(combined_df, exclusions)
     
     return combined_df
 
@@ -637,7 +573,7 @@ def save(df, path):
     print()
 
 
-def main(results_dir=DEFAULT_RESULTS_DIR, target_method_strategy=TARGET_METHOD_STRATEGY, exclusions=EXCLUSIONS):
+def main(results_dir=DEFAULT_RESULTS_DIR, target_method_strategy=TARGET_METHOD_STRATEGY):
     est_dir = os.path.join(OUTPUT_PATH, "estimation")
     thr_dir = os.path.join(OUTPUT_PATH, "threshold")
     os.makedirs(est_dir, exist_ok=True)
@@ -879,9 +815,4 @@ Exclusions:
                         help="Exclude a specific (dataset, axis) pair. Can be used multiple times.")
     args = parser.parse_args()
     
-    # Combine hardcoded exclusions with command-line exclusions
-    exclusions = EXCLUSIONS.copy()
-    if args.exclude:
-        exclusions.extend([tuple(pair) for pair in args.exclude])
-    
-    main(results_dir=args.results_dir, target_method_strategy=args.target_method, exclusions=exclusions)
+    main(results_dir=args.results_dir, target_method_strategy=args.target_method)
