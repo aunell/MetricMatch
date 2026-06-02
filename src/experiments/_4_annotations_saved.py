@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 TITLE = "Metric"
-DEFAULT_RESULTS_DIR = "/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_alyssa_40_pairwise_average"
+DEFAULT_RESULTS_DIR = "results/current_results"
 if TITLE == "Metric":
     OUTPUT_PATH =f"{DEFAULT_RESULTS_DIR}/annotations_saved"
     TARGET_METHOD_STRATEGY = "metric_matched"
@@ -28,13 +28,6 @@ METRIC_MATCHED = {
     "tau": "metric_matched_tau",
     "mse": "metric_matched_mse",
 }
-
-# Target method strategies
-# "metric_matched": Use per-metric methods (metric_matched_icc, metric_matched_alpha, etc.)
-# "variance_matched_weighted_.9": Use fixed method variance_matched_weighted_.9 for all metrics
-# Any other string: Use that specific method name for all metrics
-# TARGET_METHOD_STRATEGY = "variance_matched_weighted_.9" #"metric_matched"  # Default to metric_matched
-# TARGET_METHOD_STRATEGY = "metric_matched"
 
 # ---------------------------------------------------------------------------
 # Helper functions

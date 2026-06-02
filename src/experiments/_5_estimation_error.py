@@ -16,15 +16,14 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-BEST= "/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_alyssa_40_pairwise_average"
-DEFAULT_RESULTS_DIR = "/share/pi/nigam/users/aunell/SmartSample_local/results/05_03_results" #"/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_small_20"
-OUTPUT_PATH = f"{DEFAULT_RESULTS_DIR}/estimation_error_plots_0601"
-SPLIT_ON = "alyssa"  # Used to identify where to inject dataset names in the path template
+DEFAULT_RESULTS_DIR = "results/current_results" #"/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_small_20"
+OUTPUT_PATH = f"{DEFAULT_RESULTS_DIR}/estimation_error_plots"
+SPLIT_ON = #TODO  # Used to identify where to inject dataset names in the path template
 # Base methods always included (resolved per-metric below for metric_matched)
 BASE_METHODS = [
     "random",
-    # "random_imc",
-    # "stratified",
+    "random_imc",
+    "stratified",
     # "variance_matched_msb",
     # "variance_matched_weighted_.9",
 ]
@@ -328,10 +327,6 @@ def main():
         # Plot averaged over all datasets
         plot_metric(all_df, metric, methods, output_dir, [d[0] for d in datasets])
 
-        # For alpha metric, also create a plot for just the hanna dataset
-        # if metric == "alpha" and "hanna" in all_df["dataset"].values:
-        #     print(f"  Creating additional hanna-only plot for alpha")
-        #     plot_metric(all_df, metric, methods, output_dir, [d[0] for d in datasets], dataset_filter="hanna")
 
     print(f"\nAll plots saved to: {output_dir}")
 

@@ -1,9 +1,7 @@
 import argparse
 import os
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 
 DEFAULT_RESULTS_DIR = "results/current_results"
 OUTPUT_PATH = "results/current_results/win_rates"
