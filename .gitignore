@@ -7,3 +7,5 @@ deprecated/
 smartsample.egg-info/
 pyproject.toml
 *.out
+*.sh
+deprecated_experiments/*

@@ -47,7 +47,7 @@
 N_BOOTSTRAP=40
 N_CANDIDATES=20
 TOTAL_ANNOTATIONS=300
-PLOTS_DIR="results/05_21_small_ens"
+PLOTS_DIR="results/06_01_small_ens_logging"
 DATA_DIR="data/judge_scores"
 COMPARISON_MODE="pairwise_average"
 ONLINE_ACQUISITION=false  # true → cumulative/incremental selection; false → batch selection

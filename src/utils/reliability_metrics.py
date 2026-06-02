@@ -54,107 +54,107 @@ def compute_ms_components(data: pd.DataFrame, targets: str = "text_id", raters: 
     return icc_obj
 
 
-def compute_icc_pingouin(data, models=None):
-    """
-    Compute ICC(3,k) using pingouin library.
+# def compute_icc_pingouin(data, models=None):
+#     """
+#     Compute ICC(3,k) using pingouin library.
 
-    Filters to only include text_ids that have all required raters.
+#     Filters to only include text_ids that have all required raters.
 
-    Args:
-        data: DataFrame with columns: text_id, model_name, evaluation_score
-        models: Optional list of model names to include. If None, uses all models in data.
-                Can include special names like "original" or "avg_other".
+#     Args:
+#         data: DataFrame with columns: text_id, model_name, evaluation_score
+#         models: Optional list of model names to include. If None, uses all models in data.
+#                 Can include special names like "original" or "avg_other".
 
-    Returns:
-        ICC(3,k) value or np.nan if computation fails
-    """
-    if len(data) == 0:
-        return np.nan
+#     Returns:
+#         ICC(3,k) value or np.nan if computation fails
+#     """
+#     if len(data) == 0:
+#         return np.nan
 
-    if models is not None:
-        data = data[data["model_name"].isin(models)].copy()
+#     if models is not None:
+#         data = data[data["model_name"].isin(models)].copy()
 
-    if len(data) == 0:
-        return np.nan
+#     if len(data) == 0:
+#         return np.nan
 
-    required_raters = data["model_name"].unique()
-    n_raters = len(required_raters)
+#     required_raters = data["model_name"].unique()
+#     n_raters = len(required_raters)
 
-    if n_raters < 2:
-        return np.nan
+#     if n_raters < 2:
+#         return np.nan
 
-    # Filter to only include text_ids that have all required raters
-    counts = data.groupby('text_id')['model_name'].nunique()
-    valid_ids = counts[counts == n_raters].index
-    data_filtered = data[data['text_id'].isin(valid_ids)]
+#     # Filter to only include text_ids that have all required raters
+#     counts = data.groupby('text_id')['model_name'].nunique()
+#     valid_ids = counts[counts == n_raters].index
+#     data_filtered = data[data['text_id'].isin(valid_ids)]
 
-    if len(data_filtered) == 0:
-        return np.nan
+#     if len(data_filtered) == 0:
+#         return np.nan
 
-    try:
-        icc_result = pg.intraclass_corr(
-            data=data_filtered,
-            targets='text_id',
-            raters='model_name',
-            ratings='evaluation_score'
-        )
+#     try:
+#         icc_result = pg.intraclass_corr(
+#             data=data_filtered,
+#             targets='text_id',
+#             raters='model_name',
+#             ratings='evaluation_score'
+#         )
 
-        icc_3k_row = icc_result[icc_result['Type'] == 'ICC3k']
-        if len(icc_3k_row) > 0:
-            return icc_3k_row['ICC'].values[0]
-        else:
-            return np.nan
-    except Exception:
-        return np.nan
+#         icc_3k_row = icc_result[icc_result['Type'] == 'ICC3k']
+#         if len(icc_3k_row) > 0:
+#             return icc_3k_row['ICC'].values[0]
+#         else:
+#             return np.nan
+#     except Exception:
+#         return np.nan
 
 
-def _compute_single_krippendorff_alpha(data):
-    """
-    Compute Krippendorff's alpha for a single evaluation axis.
+# def _compute_single_krippendorff_alpha(data):
+#     """
+#     Compute Krippendorff's alpha for a single evaluation axis.
 
-    Args:
-        data: DataFrame with text_id, model_name, evaluation_score (single axis)
+#     Args:
+#         data: DataFrame with text_id, model_name, evaluation_score (single axis)
 
-    Returns:
-        Krippendorff's alpha value or np.nan if computation fails
-    """
-    if len(data) == 0:
-        return np.nan
+#     Returns:
+#         Krippendorff's alpha value or np.nan if computation fails
+#     """
+#     if len(data) == 0:
+#         return np.nan
 
-    required_raters = data["model_name"].unique()
-    n_raters = len(required_raters)
+#     required_raters = data["model_name"].unique()
+#     n_raters = len(required_raters)
 
-    if n_raters < 2:
-        return np.nan
+#     if n_raters < 2:
+#         return np.nan
 
-    # Filter to only include text_ids that have all required raters
-    counts = data.groupby('text_id')['model_name'].nunique()
-    valid_ids = counts[counts == n_raters].index
-    data_filtered = data[data['text_id'].isin(valid_ids)]
+#     # Filter to only include text_ids that have all required raters
+#     counts = data.groupby('text_id')['model_name'].nunique()
+#     valid_ids = counts[counts == n_raters].index
+#     data_filtered = data[data['text_id'].isin(valid_ids)]
 
-    if len(data_filtered) == 0:
-        return np.nan
+#     if len(data_filtered) == 0:
+#         return np.nan
 
-    try:
-        # Drop duplicates before pivoting
-        data_filtered = data_filtered.drop_duplicates(
-            subset=['text_id', 'model_name'], keep='first'
-        )
+#     try:
+#         # Drop duplicates before pivoting
+#         data_filtered = data_filtered.drop_duplicates(
+#             subset=['text_id', 'model_name'], keep='first'
+#         )
 
-        # Pivot to create reliability data matrix (raters x units)
-        pivot_table = data_filtered.pivot(
-            index='model_name', columns='text_id', values='evaluation_score'
-        )
+#         # Pivot to create reliability data matrix (raters x units)
+#         pivot_table = data_filtered.pivot(
+#             index='model_name', columns='text_id', values='evaluation_score'
+#         )
 
-        # Convert to numpy array for krippendorff library
-        reliability_data = pivot_table.values
+#         # Convert to numpy array for krippendorff library
+#         reliability_data = pivot_table.values
 
-        # Compute Krippendorff's alpha (interval level for continuous scores)
-        alpha = krippendorff.alpha(reliability_data, level_of_measurement='interval')
-        return alpha
-    except Exception as e:
-        print(f"Krippendorff alpha computation failed: {e}")
-        return np.nan
+#         # Compute Krippendorff's alpha (interval level for continuous scores)
+#         alpha = krippendorff.alpha(reliability_data, level_of_measurement='interval')
+#         return alpha
+#     except Exception as e:
+#         print(f"Krippendorff alpha computation failed: {e}")
+#         return np.nan
 
 
 def compute_icc_bias_corrected(data, models=None, n_bootstrap=30, seed=None):
@@ -585,35 +585,35 @@ def compute_kendall_tau(data, models=None):
 #         return np.nan
 
 
-def compute_krippendorff_alpha(data, models=None):
-    """
-    Compute Krippendorff's alpha for inter-rater reliability.
+# def compute_krippendorff_alpha(data, models=None):
+#     """
+#     Compute Krippendorff's alpha for inter-rater reliability.
 
-    If data contains multiple evaluation axes, computes alpha for each axis separately.
+#     If data contains multiple evaluation axes, computes alpha for each axis separately.
 
-    Args:
-        data: DataFrame with text_id, model_name, evaluation_score, and optionally evaluation_axis
-        models: Optional list of model names to include. If None, uses all models in data.
+#     Args:
+#         data: DataFrame with text_id, model_name, evaluation_score, and optionally evaluation_axis
+#         models: Optional list of model names to include. If None, uses all models in data.
 
-    Returns:
-        If single axis (or no axis column): float alpha value or np.nan
-        If multiple axes: dict mapping axis -> alpha value
-    """
-    if len(data) == 0:
-        return np.nan
+#     Returns:
+#         If single axis (or no axis column): float alpha value or np.nan
+#         If multiple axes: dict mapping axis -> alpha value
+#     """
+#     if len(data) == 0:
+#         return np.nan
 
-    if models is not None:
-        data = data[data["model_name"].isin(models)].copy()
+#     if models is not None:
+#         data = data[data["model_name"].isin(models)].copy()
 
-    if len(data) == 0:
-        return np.nan
+#     if len(data) == 0:
+#         return np.nan
 
-    # Check if there are multiple evaluation axes
-    if "evaluation_axis" in data.columns and data["evaluation_axis"].nunique() > 1:
-        alphas = {}
-        for axis in data["evaluation_axis"].unique():
-            axis_data = data[data["evaluation_axis"] == axis]
-            alphas[axis] = _compute_single_krippendorff_alpha(axis_data)
-        return alphas
-    else:
-        return _compute_single_krippendorff_alpha(data)
+#     # Check if there are multiple evaluation axes
+#     if "evaluation_axis" in data.columns and data["evaluation_axis"].nunique() > 1:
+#         alphas = {}
+#         for axis in data["evaluation_axis"].unique():
+#             axis_data = data[data["evaluation_axis"] == axis]
+#             alphas[axis] = _compute_single_krippendorff_alpha(axis_data)
+#         return alphas
+#     else:
+#         return _compute_single_krippendorff_alpha(data)

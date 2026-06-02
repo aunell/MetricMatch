@@ -17,14 +17,14 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 BEST= "/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_alyssa_40_pairwise_average"
-DEFAULT_RESULTS_DIR = "/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_alyssa_40_pairwise_average" #"/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_small_20"
-OUTPUT_PATH = f"{DEFAULT_RESULTS_DIR}/estimation_error_plots_0521"
+DEFAULT_RESULTS_DIR = "/share/pi/nigam/users/aunell/SmartSample_local/results/05_03_results" #"/Users/alyssaunell/code/SmartSample_local/results/05_03_VM_small_20"
+OUTPUT_PATH = f"{DEFAULT_RESULTS_DIR}/estimation_error_plots_0601"
 SPLIT_ON = "alyssa"  # Used to identify where to inject dataset names in the path template
 # Base methods always included (resolved per-metric below for metric_matched)
 BASE_METHODS = [
     "random",
-    "random_imc",
-    "stratified",
+    # "random_imc",
+    # "stratified",
     # "variance_matched_msb",
     # "variance_matched_weighted_.9",
 ]
@@ -87,7 +87,7 @@ def find_datasets(results_dir):
         # Inject dataset name into the path
         dataset_root = results_dir.replace(f"_{SPLIT_ON}", f"_{name}_{SPLIT_ON}")
 
-        candidate = os.path.join(dataset_root, name, "dataframes")
+        candidate = os.path.join(dataset_root, name, f"{name}/dataframes")
 
         if os.path.isdir(candidate):
             if any(os.path.exists(os.path.join(candidate, f"{m}_results.csv"))

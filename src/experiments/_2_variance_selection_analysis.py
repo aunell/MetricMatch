@@ -82,13 +82,13 @@ DEFAULT_MAX_BUDGET = 50
 #               "_tc" and "_imc" can be combined (e.g. "variance_matched_combined_tc_imc").
 SAMPLING_STRATEGIES = [
     "random",
-    "random_imc",
-    "stratified",
+    # "random_imc",
+    # "stratified",
     # "variance_matched_combined",
     # "variance_matched_combined_imc",
     # "variance_matched_combined_tc",
     # "variance_matched_combined_tc_imc",
-    "variance_matched_msb",
+    # "variance_matched_msb",
     # "variance_matched_msb_imc",
     # "variance_matched_msb_tc",
     # "variance_matched_msb_tc_imc",
@@ -98,7 +98,7 @@ SAMPLING_STRATEGIES = [
     # "variance_matched_weighted_.5_imc",
     # "variance_matched_weighted_.7",
     # "variance_matched_weighted_.7_imc",
-    "variance_matched_weighted_.9",
+    # "variance_matched_weighted_.9",
     # "variance_matched_weighted_.9_imc",
     # "proxy_oracle",
     # "proxy_oracle_imc",
@@ -114,7 +114,7 @@ SAMPLING_STRATEGIES = [
     "metric_matched_alpha",
     "metric_matched_rho",
     "metric_matched_tau",
-    "metric_matched_mse",
+    # "metric_matched_mse",
 ]
 
 EVALUATION_AXES = {
@@ -987,6 +987,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
     for strategy in SAMPLING_STRATEGIES:
         base, _ = _parse_strategy(strategy)
         strategies_by_base.setdefault(base, []).append(strategy)
+    print("STRATEGIES BY BASE", strategies_by_base)
     # Reusable fast MS function that skips expensive pivot_table validation.
     # Safe because all candidate subsets are drawn from pre-filtered shared text_ids.
     _fast_ms = partial(compute_ms_components, validate=False)
@@ -1088,6 +1089,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
         # and so that each trial's selected IDs are carried forward to the next
         # budget level (cumulative selection).
         for base_strategy, strategy_variants in strategies_by_base.items():
+            print(f"\nEvaluating strategies with base sampling method: {base_strategy}")
             past_im_msb_obs = []
             past_im_mse_obs = []
             past_hm_msb_obs = []
@@ -1139,6 +1141,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
                         tau_results.append({"model": model, "budget": k, "method": strategy,
                                             "estimation_error": error, "predicted_tau": pred,
                                             "true_tau": true_tau, "best_ids": sampled_ids_list[i]})
+    print("returning base strategy", base_strategy)
     return (pd.DataFrame(icc_results), pd.DataFrame(alpha_results), pd.DataFrame(msre_results),
             pd.DataFrame(rho_results), pd.DataFrame(tau_results), reliability_metadata)
 
