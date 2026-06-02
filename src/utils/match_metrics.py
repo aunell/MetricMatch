@@ -19,6 +19,68 @@ from sklearn.metrics import mean_squared_error
 
 from src.utils.intraclass_corr import PointwiseICC
 
+def compute_reliability_ppi_corrected(
+    hm_data,
+    im_data,
+    true_im_icc,
+    true_im_alpha,
+    true_im_spearman,
+    true_im_kendall,
+    true_im_msre,
+    hm_models=None,
+    im_models=None,
+):
+    """
+    Compute PPI-corrected reliability metrics:
+        - ICC
+        - Krippendorff's alpha
+        - Spearman's rho
+        - Kendall's tau
+        - Mean Squared Error (MSE)
+
+    PPI correction:
+        corrected = true_im + (hm_subset - im_subset)
+    """
+
+    # --- HM metrics ---
+    hm_icc = compute_icc_pingouin(hm_data, models=hm_models)
+    hm_alpha = compute_krippendorff_alpha(hm_data, models=hm_models)
+    hm_spearman = compute_spearman_rho(hm_data, models=hm_models)
+    hm_kendall = compute_kendall_tau(hm_data, models=hm_models)
+    hm_msre = compute_mean_sq_err_multi(hm_data, models=hm_models)
+
+    # --- Restrict IM to same items ---
+    subset_ids = hm_data["text_id"].unique()
+    im_subset = im_data[im_data["text_id"].isin(subset_ids)]
+
+    # --- IM subset metrics ---
+    im_subset_icc = compute_icc_pingouin(im_subset, models=im_models)
+    im_subset_alpha = compute_krippendorff_alpha(im_subset, models=im_models)
+    im_subset_spearman = compute_spearman_rho(im_subset, models=im_models)
+    im_subset_kendall = compute_kendall_tau(im_subset, models=im_models)
+    im_subset_msre = compute_mean_sq_err_multi(im_subset, models=im_models)
+
+    # --- PPI corrections ---
+    def ppi_correct(hm, im_sub, true_im):
+        return (
+            true_im + (hm - im_sub)
+            if np.isfinite(hm) and np.isfinite(im_sub) and np.isfinite(true_im)
+            else hm
+        )
+
+    corrected_icc = ppi_correct(hm_icc, im_subset_icc, true_im_icc)
+    corrected_alpha = ppi_correct(hm_alpha, im_subset_alpha, true_im_alpha)
+    corrected_spearman = ppi_correct(hm_spearman, im_subset_spearman, true_im_spearman)
+    corrected_kendall = ppi_correct(hm_kendall, im_subset_kendall, true_im_kendall)
+    corrected_msre = ppi_correct(hm_msre, im_subset_msre, true_im_msre)
+
+    return {
+        "icc": corrected_icc,
+        "alpha": corrected_alpha,
+        "rho": corrected_spearman,
+        "tau": corrected_kendall,
+        "msre": corrected_msre,
+    }
 def compute_ms_components(data: pd.DataFrame, targets: str = "text_id", raters: str = "model_name", ratings: str = "evaluation_score"):
     """
     Compute MSB and MSE components for ICC calculation.
@@ -67,7 +129,7 @@ def compute_ms_components(data: pd.DataFrame, targets: str = "text_id", raters: 
 
     return icc_obj
 
-def compute_kendall_tau(data: pd.DataFrame, models=None):
+def compute_kendall_tau(data, models=None):
     model_names = data["model_name"].unique()
     n_raters = len(model_names)
     if n_raters != 2:
@@ -160,7 +222,8 @@ def compute_pearson(data: pd.DataFrame):
     
     return pearson_r
 
-def compute_spearman(data: pd.DataFrame, models=None):
+def compute_spearman_rho(data: pd.DataFrame, models=None):
+    # print(models)
     model_names = data["model_name"].unique()
     n_raters = len(model_names)
     if n_raters != 2:

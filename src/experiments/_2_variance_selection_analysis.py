@@ -1,13 +1,3 @@
-"""
-Variance Selection Analysis for Reliability Estimation.
-
-This experiment evaluates different sampling strategies for estimating ICC and
-Krippendorff's alpha with limited human annotation budgets. It compares:
-- Random sampling (baseline)
-- Variance-matched sampling (matches inter-model variance structure)
-- Max-expand sampling (selects most informative points)
-"""
-
 import os
 import argparse
 import multiprocessing as mp
@@ -18,26 +8,18 @@ import warnings
 warnings.filterwarnings("ignore")
 
 from src.utils.data_loading import load_judge_scores
-from src.utils.reliability_metrics import (
-    compute_ms_components,
-    # compute_icc_pingouin,
-    # compute_krippendorff_alpha,
-    compute_spearman_rho,
-    compute_kendall_tau,
-    compute_reliability_ppi_corrected,
-    compute_pairwise_mean_squared_error,
-)
 
 from src.utils.match_metrics import (
+    compute_ms_components,
     compute_msb,
     compute_msre,
     compute_weighted_msb_msre,
     compute_mean_sq_err,
     compute_icc_pingouin,
     compute_krippendorff_alpha,
-    compute_spearman,
-    compute_pearson,
-    # compute_kendall_tau
+    compute_spearman_rho,
+    compute_reliability_ppi_corrected,
+    compute_kendall_tau
 )
 from src.utils.selection_strategies import (
     variance_matched_selection_ms,
@@ -49,14 +31,16 @@ from src.utils.selection_strategies import (
 )
 
 from src.utils.plotting import plot_all_results, load_results_dataframes, save_predictor_inputs
-# Set random seed for reproducibility
-np.random.seed(42)
 
-SEED = 52
+# Set random seed for reproducibility
+SEED = 42
+np.random.seed(SEED)
+
 # -------------------------
 # CONFIGURATION (defaults)
 # -------------------------
-DEFAULT_N_BOOTSTRAP_SAMPLES = 10
+
+DEFAULT_N_BOOTSTRAP_SAMPLES = 40
 DEFAULT_N_CANDIDATE_SUBSETS = 20
 DEFAULT_TOTAL_ANNOTATIONS = 300
 DEFAULT_DATASET = "hanna"
@@ -64,23 +48,12 @@ DEFAULT_MODEL_NAMES = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "googl
 DEFAULT_TARGET_MODELS = None   # None → same as model_names
 DEFAULT_ENSEMBLE_MODELS = None #["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"] #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct") #("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro") #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")   # None → same as model_names
 DEFAULT_DATA_DIR = "data/judge_scores"
-DEFAULT_PLOTS_DIR = f"results/05_03_VM_{DEFAULT_DATASET}_small_20"
+DEFAULT_PLOTS_DIR = f"results/{DEFAULT_DATASET}"
 DEFAULT_COMPARISON_MODE = "pairwise_average"
-# ONLINE_ACQUISITION=True  → cumulative/incremental selection: IDs chosen at budget k are
-#                            locked in and carried forward to budget k+n (simulates a real
-#                            annotation session where labels already collected are reused).
-# ONLINE_ACQUISITION=False → batch selection: each budget level independently samples k
-#                            items from scratch without any carryover.
 DEFAULT_ONLINE_ACQUISITION = False
 DEFAULT_STEP_SIZE = 5
 DEFAULT_MAX_BUDGET = 50
 
-# Sampling strategies to compare
-# Variance matching methods: "variance_matched_msb", "variance_matched_mse", "variance_matched_combined"
-# Append "_imc" to any strategy name to apply inter-model control variate correction.
-# Append "_tc"  to any variance-matched strategy name to apply adaptive bias correction to
-#               the MSB/MSE selection targets (target = orig + mean(IM_obs) - mean(HM_obs)).
-#               "_tc" and "_imc" can be combined (e.g. "variance_matched_combined_tc_imc").
 SAMPLING_STRATEGIES = [
     "random",
     # "random_imc",
@@ -222,18 +195,9 @@ MAX_BUDGET = args.max_budget
 
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
-
-# -------------------------
-# VARIANCE ALIGNMENT
-# -------------------------
 def compute_variance_alignment(df, target_models, ensemble_models, mode="aggregate"):
     """
-    Compute inter-model and human-model variance components.
-
-    For each target model t, the inter-model (IM) comparison uses t together
-    with the ensemble models (excluding t itself so a model never compares
-    against itself).  Only text_ids shared by all models in the IM set are used
-    for IM computation.  The human-model (HM) comparison is always t vs "original".
+    Compute inter-model and human-model ICC variance components.
 
     Args:
         df: DataFrame with text_id, model_name, evaluation_score
@@ -243,7 +207,6 @@ def compute_variance_alignment(df, target_models, ensemble_models, mode="aggrega
 
     Returns:
         per_model_variance: dict mapping target model name to {im_msb, im_mse, hm_msb, hm_mse}
-        aggregate_stats: dict with overall statistics
     """
     per_model_variance = {}
     im_msb_list, im_mse_list = [], []
@@ -282,17 +245,8 @@ def compute_variance_alignment(df, target_models, ensemble_models, mode="aggrega
             }
 
         k_im = 1 + len([e for e in ensemble_models if e != target_models[0]]) if target_models else 0
-        print(f"\nMode: AGGREGATE (k={k_im} for IM, k=2 for HM)")
         im_msb_mean = np.nanmean(im_msb_list) if im_msb_list else np.nan
         im_mse_mean = np.nanmean(im_mse_list) if im_mse_list else np.nan
-        print(f"Inter-model (target + ensemble): MSB mean={im_msb_mean:.4f}, MSE mean={im_mse_mean:.4f}")
-
-        aggregate_stats = {
-            "im_msb": im_msb_mean,
-            "im_mse": im_mse_mean,
-            "hm_msb_list": hm_msb_list,
-            "hm_mse_list": hm_mse_list
-        }
 
     elif mode == "average_pairwise":
         for m in target_models:
@@ -336,12 +290,6 @@ def compute_variance_alignment(df, target_models, ensemble_models, mode="aggrega
         im_mse_mean = np.nanmean(im_mse_list) if im_mse_list else np.nan
         print(f"Inter-model mean: MSB={im_msb_mean:.4f}, MSE={im_mse_mean:.4f}")
 
-        aggregate_stats = {
-            "im_msb": im_msb_mean,
-            "im_mse": im_mse_mean,
-            "hm_msb_list": hm_msb_list,
-            "hm_mse_list": hm_mse_list
-        }
 
     elif mode == "pairwise_average":
         for m in target_models:
@@ -386,26 +334,9 @@ def compute_variance_alignment(df, target_models, ensemble_models, mode="aggrega
         im_mse_mean = np.nanmean(im_mse_list) if im_mse_list else np.nan
         print(f"Inter-model mean: MSB={im_msb_mean:.4f}, MSE={im_mse_mean:.4f}")
 
-        aggregate_stats = {
-            "im_msb": im_msb_mean,
-            "im_mse": im_mse_mean,
-            "hm_msb_list": hm_msb_list,
-            "hm_mse_list": hm_mse_list
-        }
-
-    print(f"Human-model MSBs: {[f'{x:.4f}' for x in aggregate_stats['hm_msb_list']]}")
-    print(f"Human-model MSEs: {[f'{x:.4f}' for x in aggregate_stats['hm_mse_list']]}")
-
-    if len(aggregate_stats['hm_msb_list']) > 1:
-        print(f"\nMSB: IM={aggregate_stats['im_msb']:.4f}, HM mean={np.nanmean(aggregate_stats['hm_msb_list']):.4f}")
-        print(f"MSE: IM={aggregate_stats['im_mse']:.4f}, HM mean={np.nanmean(aggregate_stats['hm_mse_list']):.4f}")
-
-    return per_model_variance, aggregate_stats
+    return per_model_variance
 
 
-# -------------------------
-# RELIABILITY ESTIMATION EXPERIMENT
-# -------------------------
 def _build_im_pairwise_df(df, model, model_names):
     """Build inter-model DataFrame for average_pairwise mode (model vs avg of others)."""
     other_models = [x for x in model_names if x != model]
@@ -445,11 +376,6 @@ def _build_im_pairwise_df(df, model, model_names):
     print(f"Model names: {model_names}")
     print(f"Number of text_ids with ALL models: {num_shared}")
     print(f"Total text_ids in df: {df['text_id'].nunique()}")
-
-    # Optional: See the distribution of how many models each text_id has
-    print("\nDistribution of model counts per text_id:")
-    print(text_id_model_counts.value_counts().sort_index())
-    # breakpoint()
     return ret
 
 
@@ -517,13 +443,7 @@ _ORACLE_WEIGHTED_MSB_WEIGHTS = {
     "oracle_weighted_.9": 0.9,
 }
 
-# True oracle for target metric: uses HM scores for both scoring and targeting.
-# Each strategy matches on its respective metric — upper bound for that metric's estimation.
-# oracle_icc                – matches on ICC
-# oracle_alpha              – matches on Krippendorff's alpha
-# oracle_mean_squared_error – matches on MSRE (Mean Squared Residual Error, not ANOVA MSE)
-# oracle_rho                – matches on Spearman rho
-# oracle_tau                – matches on Kendall tau
+
 _ORACLE_TARGET_BASES = {
     "oracle_icc":                ("icc",   "true_icc"),
     "oracle_alpha":              ("alpha", "true_alpha"),
@@ -557,7 +477,6 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                           hm_full_df, im_full_df, im_pair_df, model, true_icc, true_alpha, true_msre,
                           true_rho=None, true_tau=None,
                           im_msb_target=None, im_mse_target=None,
-                          im_mean_squared_error_target=None,
                           hm_msb_target=None, hm_mse_target=None,
                           im_models=None, true_im_icc=None, true_im_alpha=None, true_im_rho=None, true_im_tau=None, true_im_msre=None,
                           past_im_msb_obs=None, past_im_mse_obs=None,
@@ -565,40 +484,8 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                           prev_selected_per_trial=None,
                           online_acquisition=True,
                           fast_ms_fn=None):
-    """Run trials for all strategy variants that share the same base sampling method.
-
-    Samples text_ids once per trial, then computes every required correction
-    on that single subsample. The _imc suffix uses the PPI correction:
-
-        corrected = true_im + (hm_subset - im_subset)
-
-    max_expand is deterministic, so it is evaluated only once regardless of
-    n_trials.
-
-    Cumulative vs batch selection (controlled by online_acquisition):
-        online_acquisition=True  → IDs selected at a prior budget level are passed in via
-            prev_selected_per_trial (a dict mapping trial_idx -> previously selected ID
-            array). Each trial only samples the incremental IDs needed to reach k from
-            the remaining pool, so the final selected set always includes every ID chosen
-            at earlier budget levels.
-        online_acquisition=False → each budget level independently samples k items from
-            the full pool; prev_selected_per_trial is ignored and never updated.
-
-    Bias-corrected selection targets:
-        Before each trial the variance-matching targets are adjusted using the
-        average discrepancy between IM and HM MS components observed on past
-        subsets (from earlier trials in this call and from prior budget levels):
-
-            effective_msb_target = im_msb_target + mean(past_im_msb) - mean(past_hm_msb)
-            effective_mse_target = im_mse_target + mean(past_im_mse) - mean(past_hm_mse)
-
-        Intuitively: if past subsets show IM MSB > HM MSB on average, we raise
-        the selection target so chosen subsets better reflect the human-model
-        variance structure.  With no past observations the original targets are
-        used unchanged.
-
-    After every trial the observed IM/HM MS components are accumulated and
-    returned so the caller can thread them across budget levels.
+    """Run trials for all strategy variants that share the same base sampling method. Accepts strategy name as well as target values to match on
+    and past observations to use for bias correction of those targets (for "_tc" strategies).
 
     Returns:
         tuple: (
@@ -624,12 +511,6 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
     if fast_ms_fn is None:
         fast_ms_fn = compute_ms_components
 
-    # im_standalone_msre = (
-    #     compute_mean_sq_err(im_full_df) 
-    #     if base_strategy == "metric_matched_mse" else None
-    # )
-    # if base_strategy == "metric_matched_mse":
-    #     breakpoint()
 
     target_scores_for_stratified = (
         hm_full_df[hm_full_df["model_name"] == model]
@@ -658,7 +539,6 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
     updated_selected_per_trial = dict(prev_selected_per_trial)
     sampled_ids_list=[]
     for trial_idx in range(actual_trials):
-        print(trial_idx)
         seed = SEED + trial_idx
 
         # IDs locked in from prior budget levels for this trial (online mode only).
@@ -916,16 +796,6 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                 ppi_msre = ppi_results.get("msre")
         except Exception:
             continue
-        # ── MSRE (Mean Squared Residual Error - plain and PPI-corrected) ────
-        # Note: plain_msre uses Mean Squared Error, NOT ANOVA MSE
-        # plain_msre = compute_mean_sq_err(hm_sample) if len(hm_sample) > 0 else None
-        # ppi_msre = None
-        # For PPI correction of MSRE, we still use ANOVA MSE components for the control variate
-        # if (im_mse_target is not None and hm_ms is not None and im_ms is not None
-        #         and np.isfinite(im_mse_target) and np.isfinite(hm_ms.mse) and np.isfinite(im_ms.mse)):
-        #     ppi_msre_via_mse = im_mse_target + (hm_ms.mse - im_ms.mse)
-        #     # TODO: could also compute PPI using MSRE directly, but keeping MSE-based control variate for now
-        #     ppi_msre = ppi_msre_via_mse
 
         # ── Record errors for each strategy variant ─────────────────────────
         for strategy in strategy_variants:
@@ -971,10 +841,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
                                      budgets=range(5, 55, 5), n_trials=None,
                                      online_acquisition=False):
     """
-    Evaluate ICC and Krippendorff's alpha estimators with different sampling strategies.
-
-    For each target model, the inter-model DataFrame is built from that target
-    plus the ensemble models (excluding the target from its own ensemble).
+    Evaluate reliability estimators with different sampling strategies.
 
     Args:
         df: DataFrame with text_id, model_name, evaluation_score, evaluation_axis
@@ -987,8 +854,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
             levels. If False, each budget level samples k items independently (batch).
 
     Returns:
-        icc_results: DataFrame with ICC estimation errors
-        alpha_results: DataFrame with Krippendorff's alpha estimation errors
+        results for each target reliability metric
         reliability_metadata: dict with true ICC and alpha values for each model
     """
     icc_results = []
@@ -1023,7 +889,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
         true_icc = compute_icc_pingouin(hm_full_df, models=[model, "original"])
         print(f"\nComputing true Krippendorff's alpha for model: {model}")
         true_alpha = compute_krippendorff_alpha(hm_full_df, models=[model, "original"])
-        hm_ms_full = compute_ms_components(hm_full_df[hm_full_df["model_name"].isin([model, "original"])])
+        # hm_ms_full = compute_ms_components(hm_full_df[hm_full_df["model_name"].isin([model, "original"])])
         true_msre = compute_mean_sq_err(hm_full_df[hm_full_df["model_name"].isin([model, "original"])])
         true_rho = compute_spearman_rho(hm_full_df, models=[model, "original"])
         true_tau = compute_kendall_tau(hm_full_df, models=[model, "original"])
@@ -1098,7 +964,6 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
             "im_tau": im_tau,
             "im_msre": im_msre,
             "im_mse": im_mse_target,
-            "im_mean_squared_error": im_mean_squared_error_target,
         }
 
         text_ids = hm_full_df["text_id"].unique()
@@ -1123,7 +988,6 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
                         hm_full_df, im_full_df, im_pair_df, model, true_icc, true_alpha, true_msre,
                         true_rho=true_rho, true_tau=true_tau,
                         im_msb_target=im_msb_target, im_mse_target=im_mse_target,
-                        im_mean_squared_error_target=im_mean_squared_error_target,
                         hm_msb_target=hm_msb_target, hm_mse_target=hm_mse_target,
                         im_models=im_models, true_im_icc=im_icc, true_im_alpha=im_alpha, true_im_rho=im_rho, true_im_tau=im_tau, true_im_msre=im_msre,
                         past_im_msb_obs=past_im_msb_obs, past_im_mse_obs=past_im_mse_obs,
@@ -1173,7 +1037,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
 def _run_axis_worker(args):
     """Process a single evaluation axis. Runs in a worker process via multiprocessing."""
     axis, axis_df = args
-    axis_per_model_variance, _ = compute_variance_alignment(
+    axis_per_model_variance = compute_variance_alignment(
         axis_df, target_models, ensemble_models, mode=COMPARISON_MODE
     )
     axis_icc, axis_alpha, axis_msre, axis_rho, axis_tau, axis_metadata = evaluate_reliability_estimators(
@@ -1223,7 +1087,7 @@ def main():
             axis_results = pool.map(_run_axis_worker, axis_jobs)
     else:
         axis_results = [_run_axis_worker(job) for job in axis_jobs]
-    results = axis_results[0][1]
+
     icc_results_by_axis = {}
     alpha_results_by_axis = {}
     msre_results_by_axis = {}

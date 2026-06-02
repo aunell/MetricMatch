@@ -1,13 +1,6 @@
 import numpy as np
 import pandas as pd
-from sklearn.cluster import KMeans
 from src.utils.match_metrics import compute_mean_sq_err
-
-from collections import defaultdict
-from scipy.stats import spearmanr
-
-from collections import defaultdict
-from scipy.stats import spearmanr
 
 def random_selection(cheap_ratings, n_expensive, seed):
     """Random selection strategy."""
