@@ -62,7 +62,7 @@ sbatch \
     source \$CONDA_DIR/etc/profile.d/conda.sh
     conda activate pac_judge
     cd /share/pi/nigam/users/aunell/SmartSample_local
-    python -m src.experiments._8_annotations_saved \
+    python -m src.experiments._4_annotations_saved \
       --folder '$FOLDER'
   "
 
