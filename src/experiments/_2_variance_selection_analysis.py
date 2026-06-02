@@ -25,6 +25,7 @@ from src.utils.reliability_metrics import (
     compute_spearman_rho,
     compute_kendall_tau,
     compute_reliability_ppi_corrected,
+    compute_pairwise_mean_squared_error,
 )
 
 from src.utils.match_metrics import (
@@ -490,15 +491,30 @@ _PROXY_ORACLE_BASES = {"proxy_oracle"}
 
 # True oracle: uses HM scores directly for both scoring and targeting.
 # Upper bound — requires all human annotations at selection time.
-# oracle_msb_mse – matches combined MSB+MSE
-# oracle_msb     – matches MSB only
-# oracle_mse     – matches MSE only
-_ORACLE_BASES = {"oracle_msb_mse", "oracle_msb", "oracle_mse"}
+# oracle_msb_mse      – matches combined MSB+MSE
+# oracle_msb          – matches MSB only
+# oracle_mse          – matches MSE only
+# oracle_weighted_.X  – matches using weighted score (msb_weight=X) with HM targets
+_ORACLE_BASES = {"oracle_msb_mse", "oracle_msb", "oracle_mse",
+                 "oracle_weighted_.2", "oracle_weighted_.5",
+                 "oracle_weighted_.7", "oracle_weighted_.9"}
 
 _ORACLE_SCORE_METHOD = {
-    "oracle_msb_mse": "combined",
-    "oracle_msb": "msb_only",
-    "oracle_mse": "mse_only",
+    "oracle_msb_mse":     "combined",
+    "oracle_msb":         "msb_only",
+    "oracle_mse":         "mse_only",
+    "oracle_weighted_.2": "weighted",
+    "oracle_weighted_.5": "weighted",
+    "oracle_weighted_.7": "weighted",
+    "oracle_weighted_.9": "weighted",
+}
+
+# MSB weight for oracle weighted strategies.
+_ORACLE_WEIGHTED_MSB_WEIGHTS = {
+    "oracle_weighted_.2": 0.2,
+    "oracle_weighted_.5": 0.5,
+    "oracle_weighted_.7": 0.7,
+    "oracle_weighted_.9": 0.9,
 }
 
 # True oracle for target metric: uses HM scores for both scoring and targeting.
@@ -541,6 +557,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                           hm_full_df, im_full_df, im_pair_df, model, true_icc, true_alpha, true_msre,
                           true_rho=None, true_tau=None,
                           im_msb_target=None, im_mse_target=None,
+                          im_mean_squared_error_target=None,
                           hm_msb_target=None, hm_mse_target=None,
                           im_models=None, true_im_icc=None, true_im_alpha=None, true_im_rho=None, true_im_tau=None, true_im_msre=None,
                           past_im_msb_obs=None, past_im_mse_obs=None,
@@ -826,7 +843,9 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             sampled_ids = variance_matched_selection_ms(
                 text_ids, k, hm_full_df, hm_msb_target, hm_mse_target,
                 fast_ms_fn, seed=seed, n_candidates=N_CANDIDATE_SUBSETS,
-                score_method=_ORACLE_SCORE_METHOD[base_strategy], forced_ids=forced_ids
+                score_method=_ORACLE_SCORE_METHOD[base_strategy],
+                msb_weight=_ORACLE_WEIGHTED_MSB_WEIGHTS.get(base_strategy, 0.5),
+                forced_ids=forced_ids
             )
             if sampled_ids is None:
                 continue
@@ -1079,6 +1098,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
             "im_tau": im_tau,
             "im_msre": im_msre,
             "im_mse": im_mse_target,
+            "im_mean_squared_error": im_mean_squared_error_target,
         }
 
         text_ids = hm_full_df["text_id"].unique()
@@ -1103,6 +1123,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
                         hm_full_df, im_full_df, im_pair_df, model, true_icc, true_alpha, true_msre,
                         true_rho=true_rho, true_tau=true_tau,
                         im_msb_target=im_msb_target, im_mse_target=im_mse_target,
+                        im_mean_squared_error_target=im_mean_squared_error_target,
                         hm_msb_target=hm_msb_target, hm_mse_target=hm_mse_target,
                         im_models=im_models, true_im_icc=im_icc, true_im_alpha=im_alpha, true_im_rho=im_rho, true_im_tau=im_tau, true_im_msre=im_msre,
                         past_im_msb_obs=past_im_msb_obs, past_im_mse_obs=past_im_mse_obs,
@@ -1288,6 +1309,18 @@ def main():
             if model in reliability_metadata_by_axis[ax]
             and np.isfinite(reliability_metadata_by_axis[ax][model]["im_alpha"])
         ]
+        im_rho_vals = [
+            reliability_metadata_by_axis[ax][model]["im_rho"]
+            for ax in reliability_metadata_by_axis
+            if model in reliability_metadata_by_axis[ax]
+            and np.isfinite(reliability_metadata_by_axis[ax][model]["im_rho"])
+        ]
+        im_tau_vals = [
+            reliability_metadata_by_axis[ax][model]["im_tau"]
+            for ax in reliability_metadata_by_axis
+            if model in reliability_metadata_by_axis[ax]
+            and np.isfinite(reliability_metadata_by_axis[ax][model]["im_tau"])
+        ]
         im_mse_vals = [
             reliability_metadata_by_axis[ax][model]["im_mse"]
             for ax in reliability_metadata_by_axis
@@ -1315,6 +1348,8 @@ def main():
             "true_hm_tau": np.mean(hm_tau_vals) if hm_tau_vals else np.nan,
             "im_icc": np.mean(im_icc_vals) if im_icc_vals else np.nan,
             "im_alpha": np.mean(im_alpha_vals) if im_alpha_vals else np.nan,
+            "im_rho": np.mean(im_rho_vals) if im_rho_vals else np.nan,
+            "im_tau": np.mean(im_tau_vals) if im_tau_vals else np.nan,
             "im_mse": np.mean(im_mse_vals) if im_mse_vals else np.nan,
         }
 

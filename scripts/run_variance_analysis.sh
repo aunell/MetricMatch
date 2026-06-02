@@ -54,7 +54,7 @@ ONLINE_ACQUISITION=false  # true → cumulative/incremental selection; false →
 STEP_SIZE=5              # step size for annotation budget levels (e.g. 1, 5, 10)
 MAX_BUDGET=50            # maximum annotation budget to evaluate
 DATASETS=("medval" "summeval" "mslr" "hanna") #("hanna" "medval" "mslr" "summeval")
-MODEL_NAMES=("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro") # "gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")
+MODEL_NAMES=("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro") #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct") 
 # MODEL_NAMES=("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")
 TARGET_MODELS=("claude-3.5-sonnet" "gpt-4.1" "deepseek-r1" "gemini-2.5-pro" "gpt-5")  # empty = use MODEL_NAMES
 ENSEMBLE_MODELS=("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")  # empty = use MODEL_NAMES

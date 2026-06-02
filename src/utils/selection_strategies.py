@@ -3,6 +3,9 @@ import pandas as pd
 from sklearn.cluster import KMeans
 from src.utils.match_metrics import compute_mean_sq_err
 
+from collections import defaultdict
+from scipy.stats import spearmanr
+
 def random_selection(cheap_ratings, n_expensive, seed):
     """Random selection strategy."""
     np.random.seed(seed)
@@ -647,26 +650,129 @@ def dev_metric_matched_selection(text_ids, k, im_full_df, target_metric_values, 
             best_ids = candidate_ids
     return best_ids
 
+def dev_metric_matched_selection_include_metadata(text_ids, k, im_full_df, hm_full_df, target_metric_values, human_target_metric_values, compute_metric_fns, est_compute_metric_fns, alpha_weight, seed=42, n_candidates=20):
+    """
+    Select subset that best matches target inter-model metric.
+
+    Tries multiple random subsets and picks the one with metric value closest to target.
+    Used for reliability estimation experiments where we want to match the metric
+    structure of inter-model comparisons.
+
+    Args:
+        text_ids: Array of text IDs to sample from
+        k: Number of items to select
+        im_full_df: DataFrame with inter-model data (text_id, model_name, evaluation_score)
+        target_metric_values: Array of target metric values
+        compute_metric_fns: Function to compute metric value given a subset of data (must be same size as target metric values)
+        alpha_weight: weighting of metrics to match to target (must be same size as target metric values and sum to 1, will be normalized to sum to 1 otherwise)
+        seed: Random seed for reproducibility
+        n_candidates: Number of candidate subsets to try (default: 20)
+
+    Returns:
+        Array of selected text_ids, or None if no valid subset found
+    """
+
+    if isinstance(target_metric_values, list):
+        assert isinstance(compute_metric_fns, list)
+        assert isinstance(alpha_weight, list)
+        assert len(target_metric_values) == len(compute_metric_fns) and len(target_metric_values) == len(alpha_weight), \
+        "Each metric to match must have an associated function and relative weight."
+    else:
+        target_metric_values = [target_metric_values]
+        compute_metric_fns = [compute_metric_fns]
+        alpha_weight = [alpha_weight]
+    
+    if np.abs(1 - np.sum(alpha_weight)) > 1e-3:
+        print("WARNING: Given alpha weight does not sum to 1, will be re-normalized.")
+        alpha_weight = alpha_weight / np.sum(alpha_weight)
+    
+    rng = np.random.RandomState(seed)
+    best_ids = None
+    best_score = float('inf')
+    all_im_scores = []
+    all_im_values = []
+    all_hm_scores = defaultdict(list)
+    all_hm_values = defaultdict(list)
+
+    for _ in range(n_candidates):
+        candidate_ids = rng.choice(text_ids, size=min(k, len(text_ids)), replace=False)
+        im_candidate = im_full_df[im_full_df["text_id"].isin(candidate_ids)]
+
+        if len(im_candidate) == 0:
+            continue
+        
+        cand_metrics = []
+        for compute_metric_fn in compute_metric_fns:
+            cand_metric = compute_metric_fn(im_candidate)
+            cand_metrics.append(cand_metric)
+
+        if not (np.isfinite(np.all(cand_metrics)) and np.isfinite(np.all(cand_metrics))):
+            continue
+
+        score = np.array(alpha_weight).T @ np.abs(np.array(target_metric_values) - np.array(cand_metrics))
+
+        if score < best_score:
+            best_score = score
+            best_ids = candidate_ids
+
+        ## Correlations on specific subsets seen
+        if len(cand_metrics) == 1:
+            all_im_values.append(cand_metrics[0])
+        else:
+            all_im_values.append(cand_metrics)
+        all_im_scores.append(score)
+
+        hm_candidate = hm_full_df[hm_full_df["text_id"].isin(candidate_ids)]
+        for est_metric_name, hm_target_metric_value in human_target_metric_values.items():
+            if est_metric_name not in est_compute_metric_fns:
+                all_hm_values[est_metric_name].append(np.nan)
+                all_hm_scores[est_metric_name].append(np.nan)
+                continue
+            est_compute_metric_fn = est_compute_metric_fns[est_metric_name]
+            hm_metric = est_compute_metric_fn(hm_candidate)
+            all_hm_values[est_metric_name].append(hm_metric)
+            all_hm_scores[est_metric_name].append(
+                np.abs(hm_target_metric_value - hm_metric)
+            )
+    
+    metadata = defaultdict(dict)
+    for est_metric_name in all_hm_values:
+        if est_metric_name not in est_compute_metric_fns or est_metric_name not in human_target_metric_values:
+            metadata[est_metric_name]["sp_corr"] = np.nan
+            continue
+        metadata[est_metric_name]["sp_corr"], _ = spearmanr(all_hm_values[est_metric_name], all_im_values)
+    
+    for est_metric_name in all_hm_scores:
+        if est_metric_name not in est_compute_metric_fns or est_metric_name not in human_target_metric_values:
+            metadata[est_metric_name]["sp_corr_diff"] = np.nan
+            continue
+        metadata[est_metric_name]["sp_corr_diff"], _ = spearmanr(all_hm_scores[est_metric_name], all_im_scores)
+    
+    return best_ids, metadata
+
 
 def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metric,
                               compute_ms_fn, compute_icc_fn, compute_alpha_fn,
                               seed=42, n_candidates=20, im_models=None,
                               forced_ids=None,
-                              compute_rho_fn=None, compute_tau_fn=None):
+                              compute_rho_fn=None, compute_tau_fn=None,
+                              target_model=None):
     """
     Select subset whose inter-model metric best matches a target value.
 
     Analogous to variance_matched_selection_ms but matches on a scalar reliability
-    metric (ICC, Krippendorff's alpha, MSE, Spearman rho, or Kendall tau) rather than
-    MSB/MSE components.
+    metric (ICC, Krippendorff's alpha, mean_squared_error, Spearman rho, or Kendall tau)
+    rather than MSB/MSE components.
 
     Args:
         text_ids: Array of text IDs to sample from
         k: Number of items to select
         im_full_df: DataFrame with inter-model data (text_id, model_name, evaluation_score)
         target_value: Target metric value to match (e.g. full-dataset IM ICC)
-        target_metric: Which metric to match — "icc", "alpha", "mse", "rho", or "tau"
-        compute_ms_fn: Function that returns a PointwiseICC object (for MSE)
+        target_metric: Which metric to match — "icc", "alpha", "mean_squared_error",
+                       "rho", or "tau". Use "mean_squared_error" for average pairwise
+                       sklearn mean squared error between raters.
+        compute_ms_fn: Function that returns a PointwiseICC object (for ANOVA mse/icc)
         compute_icc_fn: Function to compute ICC given a DataFrame and models kwarg
         compute_alpha_fn: Function to compute Krippendorff's alpha given a DataFrame and models kwarg
         seed: Base random seed
@@ -677,6 +783,8 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
                     incremental IDs needed to reach k are sampled from the remaining pool.
                     The score is computed on the full combined set (forced + new).
                     Pass None or an empty array for batch/independent selection.
+        target_model: Required when target_metric == "mean_squared_error". The model whose
+                      scores are compared pairwise against all other models in the candidate subset.
 
     Returns:
         Array of selected text_ids, or None if no valid subset found
