@@ -19,15 +19,18 @@ from src.utils.match_metrics import (
     compute_krippendorff_alpha,
     compute_spearman_rho,
     compute_reliability_ppi_corrected,
-    compute_kendall_tau
+    compute_reliability_active_corrected,
+    compute_kendall_tau,
+    active_uncertainty_fn
 )
 from src.utils.selection_strategies import (
     variance_matched_selection_ms,
     metric_matched_selection,
     max_expand_selection,
     stratified_target_selection,
-    pairwise_metric_matched_selection,
-    pairwise_variance_matched_selection_ms
+    batch_active_statistical_inf_selection,
+    # pairwise_metric_matched_selection,
+    # pairwise_variance_matched_selection_ms
 )
 
 from src.utils.plotting import plot_all_results, load_results_dataframes, save_predictor_inputs
@@ -44,18 +47,19 @@ DEFAULT_N_BOOTSTRAP_SAMPLES = 40
 DEFAULT_N_CANDIDATE_SUBSETS = 20
 DEFAULT_TOTAL_ANNOTATIONS = 300
 DEFAULT_DATASET = "hanna"
-DEFAULT_MODEL_NAMES = ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"] #["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "deepseek-r1", "gemini-2.5-pro"]
+DEFAULT_MODEL_NAMES = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "deepseek-r1", "gemini-2.5-pro"] # ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
 DEFAULT_TARGET_MODELS = None   # None → same as model_names
 DEFAULT_ENSEMBLE_MODELS = None #["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"] #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct") #("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro") #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")   # None → same as model_names
 DEFAULT_DATA_DIR = "data/judge_scores"
-DEFAULT_PLOTS_DIR = f"results/{DEFAULT_DATASET}"
+DEFAULT_PLOTS_DIR = f"results/09_02/{DEFAULT_DATASET}"
 DEFAULT_COMPARISON_MODE = "pairwise_average"
 DEFAULT_ONLINE_ACQUISITION = False
 DEFAULT_STEP_SIZE = 5
 DEFAULT_MAX_BUDGET = 50
+DEFAULT_UNCERTAINTY_FN = active_uncertainty_fn
 
 SAMPLING_STRATEGIES = [
-    "random",
+    # "random",
     # "random_imc",
     # "stratified",
     # "variance_matched_combined",
@@ -84,11 +88,12 @@ SAMPLING_STRATEGIES = [
     # "oracle_mean_squared_error",
     # "oracle_rho",
     # "oracle_tau",
-    "metric_matched_icc", 
-    "metric_matched_alpha",
-    "metric_matched_rho",
-    "metric_matched_tau",
+    # "metric_matched_icc", 
+    # "metric_matched_alpha",
+    # "metric_matched_rho",
+    # "metric_matched_tau",
     # "metric_matched_mse",
+    "batch_active_statistical_inf"
 ]
 
 EVALUATION_AXES = {
@@ -519,7 +524,9 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
     )
 
     needs_ppi = any(imc for _, imc in [_parse_strategy(s) for s in strategy_variants])
-    needs_plain = any(not imc for _, imc in [_parse_strategy(s) for s in strategy_variants])
+    needs_plain = any(not imc for _, imc in [_parse_strategy(s) for s in strategy_variants]) or \
+                (base_strategy == "batch_active_statistical_inf")
+    needs_inf = (base_strategy == "batch_active_statistical_inf")
 
     results = {s: {"icc_errors": [], "alpha_errors": [], "msre_errors": [],
                    "rho_errors": [], "tau_errors": [],
@@ -546,7 +553,11 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             breakpoint()
             forced_ids = updated_selected_per_trial.get(trial_idx, np.array([], dtype=text_ids.dtype))
         else:
-            forced_ids = np.array([], dtype=text_ids.dtype)
+            try:
+                forced_ids = np.array([], dtype=text_ids.dtype)
+            except:
+                forced_ids = []
+                
 
         # ── Compute effective selection targets ────────────────────────────────
         # For _tc (target-corrected) strategies: adjust targets using the mean
@@ -705,6 +716,10 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                 )
             if sampled_ids is None:
                 continue
+        elif base_strategy == "batch_active_statistical_inf":
+            # sample for either comparison mode
+            sampled_ids = batch_active_statistical_inf_selection(
+                    text_ids, k, im_full_df, u_fn=DEFAULT_UNCERTAINTY_FN, seed=seed, target_model=model)
         elif base_strategy in _PROXY_ORACLE_BASES:
             # Proxy oracle: IM scores for selection, HM MSB/MSE as targets.
             # Isolates whether target misspecification is the bottleneck —
@@ -774,6 +789,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
         # ── Compute each correction type exactly once ───────────────────────
         plain_icc = plain_alpha = plain_rho = plain_tau = plain_msre = None
         ppi_icc = ppi_alpha = ppi_rho = ppi_tau = ppi_msre = None
+        active_icc = active_alpha = active_rho = active_tau = active_msre = None
 
         try:
             if needs_plain:
@@ -794,7 +810,21 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
                 ppi_rho = ppi_results.get("rho")
                 ppi_tau = ppi_results.get("tau")
                 ppi_msre = ppi_results.get("msre")
-        except Exception:
+
+            if needs_inf: # active statistical inference correction
+                active_results = compute_reliability_active_corrected(
+                    hm_sample, im_full_df, # true_im_icc, true_im_alpha, true_im_rho, true_im_tau, true_im_msre,
+                    u_fn=DEFAULT_UNCERTAINTY_FN,
+                    hm_models=[model, "original"], im_models=im_models
+                ) 
+
+                active_icc = active_results.get("icc")
+                active_alpha = active_results.get("alpha")
+                active_rho = active_results.get("rho")
+                active_tau = active_results.get("tau")
+                active_msre = active_results.get("msre")
+        except Exception as e:
+            print(e)
             continue
 
         # ── Record errors for each strategy variant ─────────────────────────
@@ -802,7 +832,22 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             base, imc = _parse_strategy(strategy)
             matched_metric = _METRIC_MATCH_TARGET.get(base)  # None means report all metrics
 
-            if imc:
+            if base == "batch_active_statistical_inf":
+                # Use plain estimates for non-icc metrics
+                # est_icc, est_alpha = plain_icc, plain_alpha
+                est_alpha = plain_alpha
+                est_msre = plain_msre
+                # Rho and tau use plain estimates only (no PPI correction defined)
+                est_rho = plain_rho
+                est_tau = plain_tau
+
+                # Only use active icc right now
+                est_icc = active_icc
+                # est_icc, est_alpha = active_icc, active_alpha
+                # est_msre = active_msre
+                # est_rho = active_rho
+                # est_tau = active_tau
+            elif imc:
                 est_icc, est_alpha = ppi_icc, ppi_alpha
                 est_msre = ppi_msre
                 est_rho = ppi_rho
@@ -875,7 +920,8 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
     print("STRATEGIES BY BASE", strategies_by_base)
     # Reusable fast MS function that skips expensive pivot_table validation.
     # Safe because all candidate subsets are drawn from pre-filtered shared text_ids.
-    _fast_ms = partial(compute_ms_components, validate=False)
+    # _fast_ms = partial(compute_ms_components, validate=False)
+    _fast_ms = compute_ms_components
 
     for model in target_models:
         im_msb_target = per_model_variance[model]["im_msb"]
@@ -967,7 +1013,11 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
         }
 
         text_ids = hm_full_df["text_id"].unique()
-        text_ids.sort()
+        try:
+            text_ids.sort()
+        except:
+            text_ids = text_ids.tolist()
+            text_ids.sort()
 
         # Outer loop over strategies so each base strategy accumulates its own
         # observation history across budget levels for bias-corrected targeting,

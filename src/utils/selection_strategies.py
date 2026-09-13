@@ -275,3 +275,59 @@ def max_expand_selection(im_full_df, k, compute_ms_fn, alpha_weight=0.5, forced_
         return sorted_text_ids[:min(k, len(sorted_text_ids))]
     except Exception:
         return None
+
+
+def batch_active_statistical_inf_selection(text_ids, k, im_full_df, u_fn, seed, target_model, tau=0.5):
+    """
+    Select subset via batch active statistical inference sampling method as in Zrnic & Candes (2024).
+    https://arxiv.org/pdf/2403.03208
+
+    Args:
+        text_ids: Array of text IDs to sample from
+        k: Number of items to select
+        im_full_df: DataFrame with inter-model data (text_id, model_name, evaluation_score)
+        u_fn: Uncertainty function that computes the uncertainty on each text id ==> returns 
+        seed: Base random seed
+        target_model: The model whose scores are used from im_full_df.
+        tau: the scaling parameter for the uniform function vs. the determined sampling distribution
+
+    Returns:
+        Array of selected text_ids, or None if no valid subset found
+    """
+    rng = np.random.RandomState(seed)
+    selected_ids = []
+
+    # Sort text ids and get uncertainty measure values
+    try:
+        text_ids.sort()
+    except:
+        text_ids = text_ids.tolist()
+        text_ids.sort()
+    n = len(text_ids)
+    u_values = u_fn(text_ids, im_full_df, target_model) # numpy array of size len(im_full_df)
+
+    # mixture components for sampling strategy
+    sample = (k / (n * np.mean(u_values))) * u_values
+    unif = k / n
+    mixture_probs = (1 - tau) * sample + (tau * unif)
+
+    # sample from each bernoulli by determined mixture probability
+    for i in range(len(text_ids)):
+        try:
+            draw = rng.binomial(1, mixture_probs[i])
+        except:
+            draw = 0
+        if draw:
+            selected_ids.append(text_ids[i])
+    
+    if not len(selected_ids):
+        selected_ids = rng.choice(text_ids, k, replace=False)
+        # selected_ids = None
+    elif len(selected_ids) < k:
+        unselected_ids = [id for id in text_ids if id not in selected_ids]
+        new_selected_ids = rng.choice(unselected_ids, k-len(selected_ids), replace=False)
+        selected_ids.extend(new_selected_ids)
+    elif len(selected_ids) > k:
+        selected_ids = rng.choice(selected_ids, k, replace=False)
+
+    return selected_ids

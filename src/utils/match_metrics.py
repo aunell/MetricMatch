@@ -19,6 +19,98 @@ from sklearn.metrics import mean_squared_error
 
 from src.utils.intraclass_corr import PointwiseICC
 
+def active_uncertainty_fn(
+    text_ids, im_full_df, target_model, var_or_mse="var"
+):
+    # mean squared error between target model and other models for each text id
+    im_df = im_full_df.set_index("text_id").loc[text_ids].reset_index()
+
+    if var_or_mse == "mse":
+        target_model_df = im_df.loc[im_df["model_name"] == target_model]
+        other_model_df = im_df.loc[im_df["model_name"] != target_model]
+
+        comparison_df = pd.merge(other_model_df, 
+                                target_model_df.drop("model_name", axis=1).rename(
+                                    {"evaluation_score": "target_score"}, axis=1), 
+                                on="text_id")
+        comparison_df["diff"] = \
+            comparison_df["evaluation_score"] - comparison_df["target_score"]
+        u = comparison_df.groupby("text_id")["diff"].agg(lambda x: np.mean(x**2))
+
+    elif var_or_mse == "var":
+        u = im_df.groupby("text_id")["evaluation_score"].var()
+
+    return u.loc[text_ids].values
+
+def compute_reliability_active_corrected(
+    hm_data,
+    im_data,
+    # true_im_icc,
+    # true_im_alpha,
+    # true_im_spearman,
+    # true_im_kendall,
+    # true_im_msre,
+    u_fn,
+    hm_models=None,
+    im_models=None,
+    tau=0.5
+):
+    """
+    Compute active-corrected reliability metrics:
+        - ICC
+        - Krippendorff's alpha
+        - Spearman's rho
+        - Kendall's tau
+        - Mean Squared Error (MSE)
+
+    Active correction:
+        corrected = weighted [ metric ]
+    """
+
+    # --- Restrict IM to same items ---
+    subset_ids = hm_data["text_id"].unique()
+
+    # --- Sampling probability calculation --- #
+    u_values = u_fn(im_data['text_id'].unique(), im_data, im_models) # numpy array of size len(im_full_df)
+    nb = len(subset_ids)
+    n = len(im_data["text_id"].unique())
+    mixture_probs = (1 - tau) * (nb / (n * np.mean(u_values))) * u_values \
+        + (tau * (nb / n))
+    weights = pd.DataFrame({"text_id": im_data["text_id"].unique(), 
+                            "weight": (1 / mixture_probs)})
+    # weights["weight"] = np.where(weights["text_id"].isin(subset_ids), weights["weight"], 0.)
+
+    # --- HM metrics ---
+    hm_weighted = compute_icc_reweighted(hm_data, weights=weights, models=hm_models)
+    hm_icc = hm_weighted
+
+    hm_alpha = None
+    hm_spearman = None
+    hm_kendall = None
+    hm_msre = None
+
+    # --- active corrections ---
+    # def active_correct(hm, im_sub, true_im):
+    #     return (
+    #         true_im + ((hm - im_sub) * inv_sampling_prob)
+    #         if np.isfinite(hm) and np.isfinite(im_sub) and np.isfinite(true_im)
+    #         else hm
+    #     )
+
+    # corrected_icc = active_correct(hm_icc, im_subset_icc, true_im_icc)
+    # corrected_alpha = active_correct(hm_alpha, im_subset_alpha, true_im_alpha)
+    # corrected_spearman = active_correct(hm_spearman, im_subset_spearman, true_im_spearman)
+    # corrected_kendall = active_correct(hm_kendall, im_subset_kendall, true_im_kendall)
+    # corrected_msre = active_correct(hm_msre, im_subset_msre, true_im_msre)
+
+    return {
+        "icc": hm_icc,
+        "alpha": hm_alpha,
+        "rho": hm_spearman,
+        "tau": hm_kendall,
+        "msre": hm_msre,
+    }
+
 def compute_reliability_ppi_corrected(
     hm_data,
     im_data,
@@ -388,6 +480,77 @@ def compute_icc_pingouin(data, models=None):
     except Exception:
         return np.nan
 
+def compute_icc_reweighted(data, weights=None, models=None):
+    """
+    Compute weighted version of ICC(3,k) manually.
+
+    Filters to only include text_ids that have all required raters.
+
+    Args:
+        data: DataFrame with columns: text_id, model_name, evaluation_score
+        weights: DataFrame with columns: text_id, weight
+        models: Optional list of model names to include. If None, uses all models in data.
+                Can include special names like "original" or "avg_other".
+
+    Returns:
+        ICC(3,k) value or np.nan if computation fails
+    """
+    if weights is None:
+        return compute_icc_pingouin(data=data, models=models)
+
+    if len(data) == 0:
+        return np.nan
+
+    if models is not None:
+        data = data[data["model_name"].isin(models)].copy()
+
+    if len(data) == 0:
+        return np.nan
+
+    required_raters = data["model_name"].unique()
+    n_raters = len(required_raters)
+
+    if n_raters < 2:
+        return np.nan
+
+    # Filter to only include text_ids that have all required raters
+    data_filtered = (
+        data.groupby('text_id')
+            .filter(lambda x: x['model_name'].nunique() == n_raters)
+    )
+
+    if len(data_filtered) == 0:
+        return np.nan
+
+    n_ids = len(data_filtered['text_id'].unique())
+
+    data_weights = pd.merge(data_filtered, weights, on="text_id")
+
+    try:
+        s = data_weights.groupby('text_id')['evaluation_score', 'weight'].apply(
+            lambda x: x['weight'].unique().item() * np.mean(x['evaluation_score']),
+            # include_groups=False
+        )
+        m = data_weights.groupby('model_name')['evaluation_score', 'weight'].apply(
+            lambda x: np.dot(x['evaluation_score'], x['weight']) / len(x),
+            # include_groups=False
+        )
+
+        x_tot = np.dot(data_weights['evaluation_score'], data_weights['weight']) / len(data_weights)
+
+        ssb = np.sum((s - x_tot) ** 2)
+        msb = (n_raters / (n_ids - 1)) * ssb
+
+        sse = data_weights.groupby('text_id')[['model_name', 'evaluation_score', 'weight']].apply(
+            lambda x: x['weight'].unique().item() * np.sum((x.set_index('model_name').squeeze() - m) ** 2)
+        ).sum() - (n_raters * ssb)
+        mse = (sse / ((n_ids - 1) * (n_raters - 1)))
+
+        icc = (msb - mse) / msb
+    except Exception:
+        return np.nan
+
+    return icc
 
 def _compute_single_krippendorff_alpha(data):
     """
