@@ -7,7 +7,7 @@ import pandas as pd
 import warnings
 warnings.filterwarnings("ignore")
 
-from src.utils.data_loading import load_judge_scores
+from src.utils.data_loading import load_judge_scores, retrieve_embeddings
 
 from src.utils.match_metrics import (
     compute_ms_components,
@@ -29,6 +29,7 @@ from src.utils.selection_strategies import (
     max_expand_selection,
     stratified_target_selection,
     batch_active_statistical_inf_selection,
+    cluster_text_based
     # pairwise_metric_matched_selection,
     # pairwise_variance_matched_selection_ms
 )
@@ -46,12 +47,12 @@ np.random.seed(SEED)
 DEFAULT_N_BOOTSTRAP_SAMPLES = 40
 DEFAULT_N_CANDIDATE_SUBSETS = 20
 DEFAULT_TOTAL_ANNOTATIONS = 300
-DEFAULT_DATASET = "hanna"
+DEFAULT_DATASET = "medval"
 DEFAULT_MODEL_NAMES = ["claude-3.5-sonnet", "gpt-4.1", "gpt-5", "deepseek-r1", "gemini-2.5-pro"] # ["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"]
 DEFAULT_TARGET_MODELS = None   # None → same as model_names
 DEFAULT_ENSEMBLE_MODELS = None #["gpt-4o-mini", "meta-llama-Llama-3.1-8B-Instruct", "google-gemma-3-1b-it", "Qwen-Qwen2.5-7B-Instruct"] #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct") #("claude-3.5-sonnet" "gpt-4.1" "gpt-5" "deepseek-r1" "gemini-2.5-pro") #("gpt-4o-mini" "meta-llama-Llama-3.1-8B-Instruct" "google-gemma-3-1b-it" "Qwen-Qwen2.5-7B-Instruct")   # None → same as model_names
 DEFAULT_DATA_DIR = "data/judge_scores"
-DEFAULT_PLOTS_DIR = f"results/09_02/{DEFAULT_DATASET}"
+DEFAULT_PLOTS_DIR = f"results/09_18_cluster_text_only/{DEFAULT_DATASET}"
 DEFAULT_COMPARISON_MODE = "pairwise_average"
 DEFAULT_ONLINE_ACQUISITION = False
 DEFAULT_STEP_SIZE = 5
@@ -93,7 +94,8 @@ SAMPLING_STRATEGIES = [
     # "metric_matched_rho",
     # "metric_matched_tau",
     # "metric_matched_mse",
-    "batch_active_statistical_inf"
+    # "batch_active_statistical_inf"
+    "cluster_text_based"
 ]
 
 EVALUATION_AXES = {
@@ -478,7 +480,7 @@ _METRIC_MATCH_TARGET = {
 }
 
 
-def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials,
+def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials, text_info,
                           hm_full_df, im_full_df, im_pair_df, model, true_icc, true_alpha, true_msre,
                           true_rho=None, true_tau=None,
                           im_msb_target=None, im_mse_target=None,
@@ -720,6 +722,9 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
             # sample for either comparison mode
             sampled_ids = batch_active_statistical_inf_selection(
                     text_ids, k, im_full_df, u_fn=DEFAULT_UNCERTAINTY_FN, seed=seed, target_model=model)
+        elif base_strategy == "cluster_text_based":
+            sampled_ids = cluster_text_based(
+                text_ids, k, im_full_df, text_info, seed=seed, target_model=model)
         elif base_strategy in _PROXY_ORACLE_BASES:
             # Proxy oracle: IM scores for selection, HM MSB/MSE as targets.
             # Isolates whether target misspecification is the bottleneck —
@@ -882,7 +887,7 @@ def _run_trials_for_base(base_strategy, strategy_variants, text_ids, k, n_trials
     return results, new_im_msb_obs, new_im_mse_obs, new_hm_msb_obs, new_hm_mse_obs, updated_selected_per_trial, sampled_ids_list
 
 
-def evaluate_reliability_estimators(df, target_models, ensemble_models, per_model_variance,
+def evaluate_reliability_estimators(df, text_info, target_models, ensemble_models, per_model_variance,
                                      budgets=range(5, 55, 5), n_trials=None,
                                      online_acquisition=False):
     """
@@ -890,6 +895,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
 
     Args:
         df: DataFrame with text_id, model_name, evaluation_score, evaluation_axis
+        text_info: DataFrame with text_id, input_text, source_text
         target_models: List of target model names to evaluate independently
         ensemble_models: List of ensemble model names for variance matching / IMC
         per_model_variance: Dict from compute_variance_alignment
@@ -1034,7 +1040,7 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
             for k in budgets:
                 trial_results, new_im_msb, new_im_mse, new_hm_msb, new_hm_mse, prev_selected_per_trial, sampled_ids_list = (
                     _run_trials_for_base(
-                        base_strategy, strategy_variants, text_ids, k, n_trials,
+                        base_strategy, strategy_variants, text_ids, k, n_trials, text_info,
                         hm_full_df, im_full_df, im_pair_df, model, true_icc, true_alpha, true_msre,
                         true_rho=true_rho, true_tau=true_tau,
                         im_msb_target=im_msb_target, im_mse_target=im_mse_target,
@@ -1086,12 +1092,12 @@ def evaluate_reliability_estimators(df, target_models, ensemble_models, per_mode
 # -------------------------
 def _run_axis_worker(args):
     """Process a single evaluation axis. Runs in a worker process via multiprocessing."""
-    axis, axis_df = args
+    axis, axis_df, axis_text_info = args
     axis_per_model_variance = compute_variance_alignment(
         axis_df, target_models, ensemble_models, mode=COMPARISON_MODE
     )
     axis_icc, axis_alpha, axis_msre, axis_rho, axis_tau, axis_metadata = evaluate_reliability_estimators(
-        axis_df, target_models, ensemble_models, axis_per_model_variance,
+        axis_df, axis_text_info, target_models, ensemble_models, axis_per_model_variance,
         budgets=range(5, MAX_BUDGET + 1, STEP_SIZE),
         online_acquisition=ONLINE_ACQUISITION
     )
@@ -1107,7 +1113,8 @@ def main():
     print("Loading data...")
     print("=" * 50)
 
-    df = load_judge_scores(dataset, models_to_load, DATA_DIR, EVALUATION_AXES)
+    df, text_info = load_judge_scores(dataset, models_to_load, DATA_DIR, EVALUATION_AXES)
+    text_info = retrieve_embeddings(text_info)
 
     print("\n" + "=" * 50)
     print("Running ICC and Krippendorff's Alpha estimation experiment...")
@@ -1123,8 +1130,9 @@ def main():
         texts_per_model = axis_df.groupby("text_id")["model_name"].nunique()
         shared_text_ids = texts_per_model[texts_per_model == num_models].index[:TOTAL_ANNOTATIONS]
         axis_df = axis_df[axis_df["text_id"].isin(shared_text_ids)]
+        axis_text_info = text_info[text_info["text_id"].isin(shared_text_ids)]
         print(f"Axis '{axis}': {len(axis_df)} rows after filtering to {len(shared_text_ids)} shared text_ids")
-        axis_jobs.append((axis, axis_df))
+        axis_jobs.append((axis, axis_df, axis_text_info))
 
     n_workers = min(len(axis_jobs), os.cpu_count() or 1)
     print(f"\nRunning {len(axis_jobs)} axes across {n_workers} parallel workers...")

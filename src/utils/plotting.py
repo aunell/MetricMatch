@@ -749,11 +749,11 @@ def save_predictor_inputs(plots_dir, dataset, axis_jobs,
     with open(os.path.join(pred_dir, "per_model_variance.json"), "w") as f:
         json.dump(per_model_variance_by_axis, f, cls=_NumpyEncoder)
 
-    for axis, axis_df in axis_jobs:
+    for axis, axis_df, _ in axis_jobs:
         safe_axis = axis.replace("/", "-").replace("\\", "-").replace(" ", "_")
         axis_df.to_csv(os.path.join(pred_dir, f"axis_data_{safe_axis}.csv"), index=False)
 
-    axes = [axis for axis, _ in axis_jobs]
+    axes = [axis for axis, _, _ in axis_jobs]
     with open(os.path.join(pred_dir, "axes.json"), "w") as f:
         json.dump(axes, f)
 

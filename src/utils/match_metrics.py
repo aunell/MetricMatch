@@ -527,11 +527,11 @@ def compute_icc_reweighted(data, weights=None, models=None):
     data_weights = pd.merge(data_filtered, weights, on="text_id")
 
     try:
-        s = data_weights.groupby('text_id')['evaluation_score', 'weight'].apply(
+        s = data_weights.groupby('text_id')[['evaluation_score', 'weight']].apply(
             lambda x: x['weight'].unique().item() * np.mean(x['evaluation_score']),
             # include_groups=False
         )
-        m = data_weights.groupby('model_name')['evaluation_score', 'weight'].apply(
+        m = data_weights.groupby('model_name')[['evaluation_score', 'weight']].apply(
             lambda x: np.dot(x['evaluation_score'], x['weight']) / len(x),
             # include_groups=False
         )
@@ -547,7 +547,8 @@ def compute_icc_reweighted(data, weights=None, models=None):
         mse = (sse / ((n_ids - 1) * (n_raters - 1)))
 
         icc = (msb - mse) / msb
-    except Exception:
+    except Exception as e:
+        print(e)
         return np.nan
 
     return icc

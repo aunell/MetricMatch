@@ -2,6 +2,10 @@ import numpy as np
 import pandas as pd
 from src.utils.match_metrics import compute_mean_sq_err
 
+from kmodes.kprototypes import KPrototypes
+from sklearn_extra.cluster import KMedoids
+from sklearn.metrics.pairwise import euclidean_distances
+
 def random_selection(cheap_ratings, n_expensive, seed):
     """Random selection strategy."""
     np.random.seed(seed)
@@ -329,5 +333,64 @@ def batch_active_statistical_inf_selection(text_ids, k, im_full_df, u_fn, seed, 
         selected_ids.extend(new_selected_ids)
     elif len(selected_ids) > k:
         selected_ids = rng.choice(selected_ids, k, replace=False)
+
+    return selected_ids
+
+def cluster_text_based(text_ids, k, im_full_df, text_info, seed, target_model, include_label=False):
+    """
+    Args:
+        text_ids: Array of text IDs to sample from
+        k: Number of items to select
+        im_full_df: DataFrame with inter-model data (text_id, model_name, evaluation_score)
+        text_info: DataFrame with text_id, input_text, source_text, embedding
+        seed: Base random seed
+        target_model: The model whose scores are used from im_full_df.
+        text_to_include: Columns to include in text-based clustering
+        include_label: whether to include label in clustering (as last dimension)
+
+    Returns:
+        Array of selected text_ids, or None if no valid subset found
+    """
+    rng = np.random.RandomState(seed)
+
+    # Sort text ids and get uncertainty measure values
+    try:
+        text_ids.sort()
+    except:
+        text_ids = text_ids.tolist()
+        text_ids.sort()
+
+    im_full_df.loc[im_full_df["model_name"] == target_model]
+    text_based_df = pd.merge(im_full_df[["text_id", "evaluation_score"]], 
+                             text_info[["text_id", "embedding"]],
+                             on="text_id")
+    text_based_df = text_based_df.loc[text_based_df["text_id"].isin(text_ids)]
+
+    if include_label:
+        stacked_data = np.concatenate([
+            np.stack(text_based_df["embedding"].values, axis=0), 
+            text_based_df["evaluation_score"].values.reshape(-1, 1)], 
+            axis=1)
+        cat_cols = [stacked_data.shape[1]-1]
+        kprototype = KPrototypes(n_clusters = k, init = 'Huang', random_state = rng)
+        kprototype.fit_predict(stacked_data, categorical = cat_cols)
+
+        centroids = kprototype.cluster_centroids_
+        # cluster_labels = kprototype.labels_
+
+        distance_to_centroids = euclidean_distances(stacked_data, centroids)
+        min_dist_idx = np.argmin(distance_to_centroids, axis=1)
+
+        selected_ids = text_based_df.iloc[min_dist_idx]["text_id"].values.tolist()
+    else:
+        x = np.stack(text_based_df["embedding"].values, axis=0)
+        dist_matrix = euclidean_distances(x, x)
+
+        kmedoids = KMedoids(n_clusters=k, metric='precomputed', random_state=rng)
+        kmedoids.fit(dist_matrix)
+
+        medoid_idx = kmedoids.medoid_indices_
+
+        selected_ids = text_based_df.iloc[medoid_idx]["text_id"].values.tolist()
 
     return selected_ids
