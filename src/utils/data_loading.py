@@ -14,7 +14,6 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModel
 
 from sentence_transformers import SentenceTransformer
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 def load_judge_scores(dataset, model_names, data_dir, evaluation_axes):
     """
@@ -100,7 +99,10 @@ def mean_pooling(model_output, attention_mask):
     sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
     return sum_embeddings / sum_mask
 
-def retrieve_embeddings(text_info, text_to_include=["input_text", "source_text"], lightweight=False, normalize=False):
+def retrieve_embeddings(text_info, 
+                        text_to_include=["source_text", "input_text"], 
+                        lightweight=True, 
+                        normalize=False):
     # Define text sequences to embed
     sentences = text_info[text_to_include].replace({None: ""}).agg(' '.join, axis=1).values.tolist()
 

@@ -31,7 +31,7 @@ def stratified_target_selection(text_ids, k, target_scores, seed=42, n_strata=4,
     """
     rng = np.random.RandomState(seed)
 
-    forced_ids = np.asarray(forced_ids) if forced_ids is not None and len(forced_ids) > 0 else np.array([], dtype=text_ids.dtype)
+    forced_ids = np.asarray(forced_ids) if forced_ids is not None and len(forced_ids) > 0 else np.array([])
     available_ids = np.setdiff1d(text_ids, forced_ids)
     n_new = min(k - len(forced_ids), len(available_ids))
 
@@ -336,7 +336,15 @@ def batch_active_statistical_inf_selection(text_ids, k, im_full_df, u_fn, seed, 
 
     return selected_ids
 
-def cluster_text_based(text_ids, k, im_full_df, text_info, seed, target_model, include_label=False):
+def cluster_text_based(text_ids, 
+                       k, 
+                       im_full_df, 
+                       text_info, 
+                       seed, 
+                       target_model, 
+                       include_label=False,
+                       stratify_by_label=False,
+                       n_strata=4):
     """
     Args:
         text_ids: Array of text IDs to sample from
@@ -353,7 +361,6 @@ def cluster_text_based(text_ids, k, im_full_df, text_info, seed, target_model, i
     """
     rng = np.random.RandomState(seed)
 
-    # Sort text ids and get uncertainty measure values
     try:
         text_ids.sort()
     except:
@@ -366,7 +373,7 @@ def cluster_text_based(text_ids, k, im_full_df, text_info, seed, target_model, i
                              on="text_id")
     text_based_df = text_based_df.loc[text_based_df["text_id"].isin(text_ids)]
 
-    if include_label:
+    if include_label and not stratify_by_label:
         stacked_data = np.concatenate([
             np.stack(text_based_df["embedding"].values, axis=0), 
             text_based_df["evaluation_score"].values.reshape(-1, 1)], 
@@ -382,12 +389,58 @@ def cluster_text_based(text_ids, k, im_full_df, text_info, seed, target_model, i
         min_dist_idx = np.argmin(distance_to_centroids, axis=1)
 
         selected_ids = text_based_df.iloc[min_dist_idx]["text_id"].values.tolist()
+    elif include_label and stratify_by_label:
+        # if not enough for clustering in each stratified sample
+        if k // n_strata <= 1:
+            target_scores_for_stratified = (
+                    im_full_df[im_full_df["model_name"] == target_model]
+                    .groupby("text_id")["evaluation_score"].mean()
+                )
+            return stratified_target_selection(text_ids=text_ids, 
+                                                k=k, 
+                                                target_scores=target_scores_for_stratified,
+                                                seed=seed)
+
+        ###########################
+        x = np.stack(text_based_df["embedding"].values, axis=0)
+        target_scores = text_based_df["evaluation_score"].values
+
+        quantile_edges = np.quantile(target_scores, np.linspace(0, 1, n_strata + 1))
+        bin_indices = np.digitize(target_scores, quantile_edges[1:-1])  # 0-indexed 0..n_strata-1
+
+        default_per_stratum = k // n_strata
+        strata_counts = [np.sum(bin_indices == stratum) for stratum in range(n_strata)]
+        k_per_stratum = [min(default_per_stratum, strata_counts[i]) for i in range(n_strata)]
+        remainder = k - np.sum(k_per_stratum)
+        if remainder > 0:
+            possible_extra_idx = [i for i in range(n_strata) if strata_counts[i] > default_per_stratum]
+            extra_idx = rng.choice(possible_extra_idx, 
+                                   size=remainder, 
+                                   replace=(len(possible_extra_idx) < remainder))
+            k_per_stratum = [nc + np.sum(extra_idx == i) for i, nc in enumerate(k_per_stratum)]
+
+        selected_ids = []
+        for stratum in range(n_strata):
+            if k_per_stratum[stratum] == 0:
+                continue
+
+            if k_per_stratum[stratum] >= strata_counts[stratum]:
+                selected_ids.extend(text_based_df.loc[bin_indices == stratum]["text_id"].values.tolist())
+                continue
+            
+            stratum_x = x[bin_indices == stratum]
+            kmedoids = KMedoids(n_clusters=k_per_stratum[stratum], init='k-medoids++', random_state=rng) # metric='precomputed', 
+            kmedoids.fit(stratum_x) # kmedoids.fit(dist_matrix)
+
+            medoid_idx = kmedoids.medoid_indices_
+
+            selected_ids.extend(text_based_df.iloc[medoid_idx]["text_id"].values.tolist())
     else:
         x = np.stack(text_based_df["embedding"].values, axis=0)
-        dist_matrix = euclidean_distances(x, x)
+        # dist_matrix = euclidean_distances(x, x)
 
-        kmedoids = KMedoids(n_clusters=k, metric='precomputed', random_state=rng)
-        kmedoids.fit(dist_matrix)
+        kmedoids = KMedoids(n_clusters=k, init='k-medoids++', random_state=rng) # metric='precomputed', 
+        kmedoids.fit(x) # kmedoids.fit(dist_matrix)
 
         medoid_idx = kmedoids.medoid_indices_
 
