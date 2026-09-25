@@ -1,4 +1,4 @@
-# Smarter_Sampling
+# Metric Match
 
 ## Overview
 We aim to provide theoretical and experimental guarantees regarding improved sampling method to accurately predict ICC of human and LLM judge rankings of non-verifiable text, improving robustness of LLM-judge applications in data poor regimes.
@@ -8,7 +8,7 @@ We aim to provide theoretical and experimental guarantees regarding improved sam
 ```bash
 # Clone the repository
 git clone 
-cd SmartSample_local
+cd Metric Match
 
 # Create and activate the conda environment
 conda env create -f environment.yml
