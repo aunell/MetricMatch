@@ -234,6 +234,90 @@ def metric_matched_selection(text_ids, k, im_full_df, target_value, target_metri
             best_ids = candidate_ids
     return best_ids
 
+def min_regret_subset_selection(text_ids, k, im_full_df, target_value, target_metric,
+                              compute_ms_fn, compute_icc_fn, compute_alpha_fn,
+                              seed=42, n_candidates=20, im_models=None,
+                              forced_ids=None,
+                              compute_rho_fn=None, compute_tau_fn=None,
+                              target_model=None):
+    
+    if not np.isfinite(target_value):
+        return None
+
+    rng = np.random.RandomState(seed)
+    best_ids = []
+    best_score = 0
+
+    text_ids.sort()
+    for _ in range(n_candidates):
+        candidate_ids = rng.choice(text_ids, size=min(k, len(text_ids)), replace=False)
+        im_candidate = im_full_df[~im_full_df["text_id"].isin(candidate_ids)]
+        if len(im_candidate) == 0:
+            continue
+
+        if target_metric == "icc":
+            cand_value = compute_icc_fn(im_candidate, models=im_models) 
+        elif target_metric == "alpha":
+            cand_value = compute_alpha_fn(im_candidate, models=im_models)
+        elif target_metric == "mse":
+            cand_value = compute_mean_sq_err(im_candidate) #, models=im_models)
+        elif target_metric == "rho":
+            if compute_rho_fn is None:
+                continue
+            cand_value = compute_rho_fn(im_candidate, models=im_models)
+        elif target_metric == "tau":
+            if compute_tau_fn is None:
+                continue
+            cand_value = compute_tau_fn(im_candidate, models=im_models)
+        else:
+            continue
+
+        if not np.isfinite(cand_value):
+            continue
+
+        score = abs(cand_value - target_value)
+        if score > best_score:
+            best_score = score
+            best_ids = candidate_ids
+    return best_ids
+
+def min_regret_elementwise_selection(text_ids, k, im_full_df, target_value, target_metric,
+                              compute_icc_fn, compute_alpha_fn,
+                              im_models=None, compute_rho_fn=None, compute_tau_fn=None):
+    if not np.isfinite(target_value):
+        return None
+
+    best_ids = None
+
+    text_ids.sort()
+    comparisons = []
+    for text_id in text_ids:
+        im_candidate = im_full_df.loc[im_full_df["text_id"]!=text_id]
+        if target_metric == "icc":
+            cand_value = compute_icc_fn(im_candidate, models=im_models) 
+        elif target_metric == "alpha":
+            cand_value = compute_alpha_fn(im_candidate, models=im_models)
+        elif target_metric == "rho":
+            if compute_rho_fn is None:
+                continue
+            cand_value = compute_rho_fn(im_candidate, models=im_models)
+        elif target_metric == "tau":
+            if compute_tau_fn is None:
+                continue
+            cand_value = compute_tau_fn(im_candidate, models=im_models)
+        else:
+            continue
+
+        if not np.isfinite(cand_value):
+            continue
+
+        score = abs(cand_value - target_value)
+        comparisons.append({"text_id": text_id, "score": score})
+
+    comparisons = pd.DataFrame.from_records(comparisons)
+    best_ids = comparisons.sort_values(by="score", ascending=False)["text_id"].values[:min(k, len(comparisons))]
+    return best_ids
+
 def max_expand_selection(im_full_df, k, compute_ms_fn, alpha_weight=0.5, forced_ids=None):
     """
     Select most informative points based on MS component contributions.
