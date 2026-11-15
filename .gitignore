@@ -10,3 +10,4 @@ pyproject.toml
 *.sh
 deprecated_experiments/*
 deprecated_merge/
+**.DS_Store
